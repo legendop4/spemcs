@@ -1,0 +1,17 @@
+# Visual Studio / .NET
+.vs/
+bin/
+obj/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+TestResults/
+*.db
+*.db-shm
+*.db-wal
+*.log
+
+# Build and publish output
+publish/
+artifacts/

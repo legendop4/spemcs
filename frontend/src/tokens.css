@@ -1,0 +1,132 @@
+/* ============================================
+   Design System Tokens
+   ============================================ */
+:root {
+  /* ---- Colors ---- */
+  /* Neutrals & Base */
+  --color-bg: #FDFCF8; /* Cream/off-white */
+  --color-surface: #FFFFFF;
+  --color-surface-raised: #F7F4EF;
+  --color-border: rgba(26, 13, 6, 0.12);
+  --color-border-subtle: rgba(26, 13, 6, 0.06);
+
+  /* Typography */
+  --color-text-primary: #1A0D06; /* Dark espresso */
+  --color-text-secondary: #54350E;
+  --color-text-muted: #887B70;
+
+  /* Accents (Amber/Gold) */
+  --color-accent: #D89400;
+  --color-accent-hover: #B87010;
+  --color-accent-bg: #F5E8D0;
+  --color-accent-fg: #6B3410;
+
+  /* Semantics */
+  --color-success: #2EA043;
+  --color-success-bg: #E8F5EC;
+  --color-success-fg: #1D6B2D;
+
+  --color-warning: #D89400;
+  --color-warning-bg: #F5EDDF;
+  --color-warning-fg: #B87010;
+
+  --color-danger: #D1242F;
+  --color-danger-bg: #FCE8E9;
+  --color-danger-fg: #8C1820;
+
+  --color-info: #0056D8;
+  --color-info-bg: #E6F0FF;
+  --color-info-fg: #00378A;
+
+  --color-gray: #6b7280;
+  --color-gray-bg: #f3f4f6;
+  --color-gray-fg: #374151;
+
+  /* ---- Spacing Scale ---- */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+  --space-8: 64px;
+
+  /* ---- Typography Scale ---- */
+  --font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif;
+  --font-mono: 'SF Mono', 'Monaco', 'Consolas', monospace;
+  
+  --text-xs: 12px;
+  --text-sm: 14px;
+  --text-base: 16px;
+  --text-lg: 18px;
+  --text-xl: 22px;
+  --text-2xl: 28px;
+  --text-3xl: 36px;
+
+  /* Font Weights */
+  --font-medium: 500;
+  --font-semibold: 600;
+  --font-bold: 700;
+
+  /* Role-based Type */
+  --text-label: var(--text-xs);
+  --text-body-sm: var(--text-sm);
+  --text-body: var(--text-base);
+  --text-heading-sm: var(--text-lg);
+  --text-heading-md: var(--text-xl);
+  --text-heading-lg: var(--text-2xl);
+  --text-display: var(--text-3xl);
+
+  /* ---- Radius & Elevation ---- */
+  --radius-sm: 6px; /* for inputs, badges */
+  --radius-md: 12px; /* for inner cards */
+  --radius-lg: 16px; /* for main containers/modals */
+  --radius-pill: 9999px;
+
+  --shadow-sm: 0 1px 2px rgba(26, 13, 6, 0.05); /* resting elements */
+  --shadow-md: 0 4px 6px -1px rgba(26, 13, 6, 0.05), 0 2px 4px -1px rgba(26, 13, 6, 0.03); /* hovered/interactive */
+  --shadow-lg: 0 10px 15px -3px rgba(26, 13, 6, 0.1), 0 4px 6px -2px rgba(26, 13, 6, 0.05); /* modals, dropdowns */
+
+  /* Global variables */
+  --sidebar-width: 256px;
+  --sidebar-width-collapsed: 72px;
+  --header-height: 64px;
+}
+
+/* Base resets using tokens */
+body.new-ds {
+  background-color: var(--color-bg);
+  color: var(--color-text-primary);
+  font-family: var(--font-family);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Common Layout Utilities (Independent of Tailwind) */
+.ds-grid-stats {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: var(--space-5); /* 24px */
+}
+
+@media (max-width: 1024px) {
+  .ds-grid-stats {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 640px) {
+  .ds-grid-stats {
+    grid-template-columns: 1fr;
+  }
+}
+
+.ds-flex-row { display: flex; flex-direction: row; }
+.ds-flex-col { display: flex; flex-direction: column; }
+.ds-items-center { align-items: center; }
+.ds-items-start { align-items: flex-start; }
+.ds-justify-between { justify-content: space-between; }
+.ds-justify-center { justify-content: center; }
+.ds-w-full { width: 100%; }
+.ds-flex-1 { flex: 1; }
+.ds-shrink-0 { flex-shrink: 0; }
