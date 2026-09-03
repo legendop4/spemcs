@@ -1,0 +1,48 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Spemcs.Agent.Core", "src\Spemcs.Agent.Core\Spemcs.Agent.Core.csproj", "{A3A2E5C4-1F0F-4DE2-A4D2-0C1A8E97B001}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Spemcs.Agent.Ipc", "src\Spemcs.Agent.Ipc\Spemcs.Agent.Ipc.csproj", "{A3A2E5C4-1F0F-4DE2-A4D2-0C1A8E97B002}"
+EndProject
+Project("{8BB2217D-0F2D-49D1-97BC-3654ED321F3B}") = "Spemcs.Agent.Service", "src\Spemcs.Agent.Service\Spemcs.Agent.Service.csproj", "{A3A2E5C4-1F0F-4DE2-A4D2-0C1A8E97B003}"
+EndProject
+Project("{60DC8134-BA46-4301-BEFE-FFC8B3A41A54}") = "Spemcs.Agent.UI", "src\Spemcs.Agent.UI\Spemcs.Agent.UI.csproj", "{A3A2E5C4-1F0F-4DE2-A4D2-0C1A8E97B004}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Spemcs.Agent.TestHarness", "src\Spemcs.Agent.TestHarness\Spemcs.Agent.TestHarness.csproj", "{A3A2E5C4-1F0F-4DE2-A4D2-0C1A8E97B005}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Spemcs.Agent.Tests", "tests\Spemcs.Agent.Tests\Spemcs.Agent.Tests.csproj", "{A3A2E5C4-1F0F-4DE2-A4D2-0C1A8E97B006}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{A3A2E5C4-1F0F-4DE2-A4D2-0C1A8E97B001}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A3A2E5C4-1F0F-4DE2-A4D2-0C1A8E97B001}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A3A2E5C4-1F0F-4DE2-A4D2-0C1A8E97B001}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A3A2E5C4-1F0F-4DE2-A4D2-0C1A8E97B001}.Release|Any CPU.Build.0 = Release|Any CPU
+		{A3A2E5C4-1F0F-4DE2-A4D2-0C1A8E97B002}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A3A2E5C4-1F0F-4DE2-A4D2-0C1A8E97B002}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A3A2E5C4-1F0F-4DE2-A4D2-0C1A8E97B002}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A3A2E5C4-1F0F-4DE2-A4D2-0C1A8E97B002}.Release|Any CPU.Build.0 = Release|Any CPU
+		{A3A2E5C4-1F0F-4DE2-A4D2-0C1A8E97B003}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A3A2E5C4-1F0F-4DE2-A4D2-0C1A8E97B003}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A3A2E5C4-1F0F-4DE2-A4D2-0C1A8E97B003}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A3A2E5C4-1F0F-4DE2-A4D2-0C1A8E97B003}.Release|Any CPU.Build.0 = Release|Any CPU
+		{A3A2E5C4-1F0F-4DE2-A4D2-0C1A8E97B004}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A3A2E5C4-1F0F-4DE2-A4D2-0C1A8E97B004}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A3A2E5C4-1F0F-4DE2-A4D2-0C1A8E97B004}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A3A2E5C4-1F0F-4DE2-A4D2-0C1A8E97B004}.Release|Any CPU.Build.0 = Release|Any CPU
+		{A3A2E5C4-1F0F-4DE2-A4D2-0C1A8E97B005}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A3A2E5C4-1F0F-4DE2-A4D2-0C1A8E97B005}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A3A2E5C4-1F0F-4DE2-A4D2-0C1A8E97B005}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A3A2E5C4-1F0F-4DE2-A4D2-0C1A8E97B005}.Release|Any CPU.Build.0 = Release|Any CPU
+		{A3A2E5C4-1F0F-4DE2-A4D2-0C1A8E97B006}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A3A2E5C4-1F0F-4DE2-A4D2-0C1A8E97B006}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A3A2E5C4-1F0F-4DE2-A4D2-0C1A8E97B006}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A3A2E5C4-1F0F-4DE2-A4D2-0C1A8E97B006}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+EndGlobal

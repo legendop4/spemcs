@@ -1,0 +1,1 @@
+<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net8.0-windows</TargetFramework></PropertyGroup><ItemGroup><ProjectReference Include="..\Spemcs.Agent.Core\Spemcs.Agent.Core.csproj" /><ProjectReference Include="..\Spemcs.Agent.Ipc\Spemcs.Agent.Ipc.csproj" /></ItemGroup></Project>

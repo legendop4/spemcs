@@ -1,0 +1,63 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="SPEMCS Endpoint Agent"
+           Manufacturer="SPEMCS Security Inc."
+           Version="2.0.0.0"
+           UpgradeCode="C781A814-118D-4F23-9D5C-2782A0399587"
+           Scope="perMachine">
+
+    <MajorUpgrade DowngradeErrorMessage="A newer version of SPEMCS Endpoint Agent is already installed." />
+    
+    <MediaTemplate EmbedCab="yes" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="MANUFACTURERFOLDER" Name="SPEMCS">
+        <Directory Id="INSTALLFOLDER" Name="Endpoint Agent" />
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="ApplicationProgramsFolder" Name="SPEMCS" />
+    </StandardDirectory>
+
+    <ComponentGroup Id="ProductComponents" Directory="INSTALLFOLDER">
+      <!-- Harvest all published files from win-x64 self-contained output -->
+      <Files Include="..\src\Spemcs.Agent.UI\bin\Release\net8.0-windows\win-x64\publish\**">
+        <Exclude Files="..\src\Spemcs.Agent.UI\bin\Release\net8.0-windows\win-x64\publish\Spemcs.Agent.UI.exe" />
+      </Files>
+
+      <!-- Main Executable Component with Start Menu and Startup Registry -->
+      <Component Id="MainExecutableComponent" Guid="D5A9137B-7362-421A-9872-C081977BEA12">
+        <File Id="MainExecutableFile"
+              Source="..\src\Spemcs.Agent.UI\bin\Release\net8.0-windows\win-x64\publish\Spemcs.Agent.UI.exe"
+              KeyPath="yes">
+          <!-- Start Menu Shortcut -->
+          <Shortcut Id="ApplicationStartMenuShortcut"
+                    Directory="ApplicationProgramsFolder"
+                    Name="SPEMCS Endpoint Agent"
+                    Description="SPEMCS Secure Examination Endpoint Agent"
+                    WorkingDirectory="INSTALLFOLDER"
+                    Advertise="no" />
+        </File>
+
+        <!-- Machine-wide Windows Run Startup Key -->
+        <RegistryValue Root="HKLM"
+                       Key="Software\Microsoft\Windows\CurrentVersion\Run"
+                       Name="SpemcsEndpointAgent"
+                       Value="&quot;[INSTALLFOLDER]Spemcs.Agent.UI.exe&quot;"
+                       Type="string" />
+      </Component>
+    </ComponentGroup>
+
+    <!-- Start Menu Directory Component -->
+    <Component Id="ProgramMenuDirComponent" Directory="ApplicationProgramsFolder" Guid="6A493012-58BC-4318-8A3B-DC47E82C84A9">
+      <RemoveFolder Id="CleanUpProgramMenuFolder" On="uninstall" />
+      <RegistryValue Root="HKCU" Key="Software\SPEMCS\EndpointAgent" Name="installed" Type="integer" Value="1" KeyPath="yes" />
+    </Component>
+
+    <Feature Id="MainFeature" Title="SPEMCS Endpoint Agent" Level="1">
+      <ComponentGroupRef Id="ProductComponents" />
+      <ComponentRef Id="ProgramMenuDirComponent" />
+    </Feature>
+
+  </Package>
+</Wix>

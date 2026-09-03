@@ -1,0 +1,4 @@
+<Project Sdk="Microsoft.NET.Sdk.Worker">
+  <PropertyGroup><TargetFramework>net8.0-windows</TargetFramework><OutputType>Exe</OutputType><Nullable>enable</Nullable></PropertyGroup>
+  <ItemGroup><ProjectReference Include="..\Spemcs.Agent.Core\Spemcs.Agent.Core.csproj" /><ProjectReference Include="..\Spemcs.Agent.Ipc\Spemcs.Agent.Ipc.csproj" /><PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" /><PackageReference Include="Microsoft.Extensions.Http" /></ItemGroup>
+</Project>

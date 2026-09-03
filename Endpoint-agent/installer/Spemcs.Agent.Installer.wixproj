@@ -1,0 +1,10 @@
+<Project Sdk="WixToolset.Sdk/5.0.0">
+  <PropertyGroup>
+    <OutputName>Spemcs.Agent.Setup</OutputName>
+    <OutputType>Package</OutputType>
+    <Platform>x64</Platform>
+    <Platforms>x64</Platforms>
+    <OutputPath>dist\</OutputPath>
+    <IntermediateOutputPath>obj\</IntermediateOutputPath>
+  </PropertyGroup>
+</Project>
