@@ -20,6 +20,8 @@ def create_exam(
     exam_link: Optional[str] = None,
     approved_browser: str = "chrome",
     device_ids: Optional[list[UUID]] = None,
+    network_enforcement: Optional[bool] = False,
+    vendor_profile_id: Optional[UUID] = None,
 ) -> Exam:
     """Create an exam and optionally assign devices."""
     exam = Exam(
@@ -27,6 +29,8 @@ def create_exam(
         exam_link=exam_link,
         approved_browser=approved_browser,
         status=ExamStatus.PENDING.value,
+        network_enforcement=bool(network_enforcement),
+        vendor_profile_id=vendor_profile_id,
     )
     db.add(exam)
     db.flush()  # Get exam_id before adding devices

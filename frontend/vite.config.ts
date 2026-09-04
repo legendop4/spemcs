@@ -31,6 +31,25 @@ export default defineConfig(({ mode }) => {
           target: `http://${backendHost}:${backendPort}`,
           changeOrigin: true,
           ws: true,
+          configure: (proxy, _options) => {
+            proxy.on('error', (err) => {
+              const code = (err as any)?.code || '';
+              const msg = err?.message || '';
+              if (code === 'ECONNABORTED' || code === 'ECONNRESET' || msg.includes('ECONNABORTED') || msg.includes('ECONNRESET')) {
+                return;
+              }
+              console.error('[vite] proxy error:', err);
+            });
+            proxy.on('proxyReqWs', (_proxyReq, _req, socket) => {
+              socket.on('error', (err) => {
+                const code = (err as any)?.code || '';
+                const msg = err?.message || '';
+                if (code === 'ECONNABORTED' || code === 'ECONNRESET' || msg.includes('ECONNABORTED') || msg.includes('ECONNRESET')) {
+                  return;
+                }
+              });
+            });
+          },
         },
       },
     },

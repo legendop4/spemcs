@@ -23,6 +23,8 @@ class ExamCreate(BaseModel):
     exam_link: Optional[str] = None
     approved_browser: str = "chrome"
     device_ids: Optional[List[UUID]] = None  # devices to assign on creation
+    network_enforcement: Optional[bool] = False
+    vendor_profile_id: Optional[UUID] = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -35,6 +37,8 @@ class ExamUpdate(BaseModel):
     status: Optional[str] = None
     started_at: Optional[datetime] = None
     ended_at: Optional[datetime] = None
+    network_enforcement: Optional[bool] = None
+    vendor_profile_id: Optional[UUID] = None
 
     model_config = ConfigDict(from_attributes=True)
 

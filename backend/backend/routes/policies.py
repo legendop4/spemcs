@@ -31,6 +31,13 @@ _dev_priv, _ = generate_development_keypair()
 _dev_signer = PolicySigner(private_key=_dev_priv, key_id="dev-key-1")
 
 
+@router.get("/signing-key/public")
+def get_signing_public_key():
+    """Export the active signing public key PEM for agent trusted key store."""
+    from backend.services.policy_signer import export_public_key_pem
+    return {"key_id": _dev_signer.key_id, "public_key_pem": export_public_key_pem(_dev_signer.public_key)}
+
+
 # ==============================================================================
 # VendorProfile Endpoints
 # ==============================================================================
@@ -107,19 +114,33 @@ def delete_vendor_profile(
 @router.post("/compile/{exam_id}", response_model=NetworkPolicyRead, status_code=status.HTTP_201_CREATED)
 def compile_exam_policy(
     exam_id: UUID,
-    payload: PolicyCompileRequest,
+    payload: Optional[PolicyCompileRequest] = None,
     db: Session = Depends(get_db),
     _user=Depends(require_role(["admin"])),
 ):
     """Compiles, signs, and persists a NetworkPolicy for an exam."""
+    from datetime import datetime, timedelta, timezone
+
+    if payload is None:
+        payload = PolicyCompileRequest()
+
+    now = datetime.now(timezone.utc)
+    mgmt = payload.management_server or {
+        "ip_addresses": ["127.0.0.1"],
+        "port": 8002,
+        "use_tls": False,
+    }
+    nb = payload.not_before or now
+    exp = payload.expires_at or (now + timedelta(hours=8))
+
     try:
         policy = policy_service.compile_and_persist_exam_policy(
             db=db,
             exam_id=exam_id,
-            version=payload.version,
-            management_server=payload.management_server,
-            not_before=payload.not_before,
-            expires_at=payload.expires_at,
+            version=payload.version or 1,
+            management_server=mgmt,
+            not_before=nb,
+            expires_at=exp,
             signer=_dev_signer,
             vendor_profile_id=payload.vendor_profile_id,
             resolved_destinations=payload.resolved_destinations,

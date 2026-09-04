@@ -7,9 +7,8 @@
         WindowStyle="None"
         AllowsTransparency="True"
         Topmost="True"
-        ShowInTaskbar="False"
-        Background="#CC231E18"
-        Visibility="Hidden">
+        ShowInTaskbar="True"
+        Background="#CC231E18">
     
     <Window.Resources>
         <Style TargetType="TextBlock">

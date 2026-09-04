@@ -87,6 +87,21 @@ export const getExamSessions = (examId: string) => fetchJson(`/exams/${examId}/s
 export const getExamAlerts = (examId: string) => fetchJson(`/exams/${examId}/alerts`);
 export const getExamTimeline = (examId: string) => fetchJson(`/exams/${examId}/timeline`);
 
+// --- Policies ---
+export const getPolicyVendors = () => fetchJson('/policies/vendors');
+export const createPolicyVendor = (data: any) => fetchJson('/policies/vendors', { method: 'POST', body: JSON.stringify(data) });
+export const getPolicyVendor = (id: string) => fetchJson(`/policies/vendors/${id}`);
+export const updatePolicyVendor = (id: string, data: any) => fetchJson(`/policies/vendors/${id}`, { method: 'PUT', body: JSON.stringify(data) });
+export const deletePolicyVendor = (id: string) => fetchJson(`/policies/vendors/${id}`, { method: 'DELETE' });
+
+export const getExamPolicy = (examId: string) => fetchJson(`/policies/exam/${examId}`);
+export const compileExamPolicy = (examId: string, data: any = {}) =>
+  fetchJson(`/policies/compile/${examId}`, { method: 'POST', body: JSON.stringify(data) });
+export const distributeExamPolicy = (examId: string, hardwareUuid: string) =>
+  fetchJson(`/policies/distribute/${examId}/${hardwareUuid}`, { method: 'POST' });
+export const updateExamPolicy = (examId: string, hardwareUuid: string) =>
+  fetchJson(`/policies/update/${examId}/${hardwareUuid}`, { method: 'POST' });
+
 // --- Alerts ---
 export const getAlerts = () => fetchJson('/alerts');
 export const getAlert = (id: string) => fetchJson(`/alerts/${id}`);

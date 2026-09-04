@@ -31,6 +31,10 @@ public static class MessageTypes
     public const string StartExam = "START_EXAM";
     public const string StopExam = "STOP_EXAM";
     public const string CommandResult = "COMMAND_RESULT";
+    public const string ApplyNetworkPolicy = "APPLY_NETWORK_POLICY";
+    public const string UpdateNetworkPolicy = "UPDATE_NETWORK_POLICY";
+    public const string RemoveNetworkPolicy = "REMOVE_NETWORK_POLICY";
+    public const string NetworkPolicyResult = "NETWORK_POLICY_RESULT";
 }
 
 public sealed record PipeEnvelope(string Type, int Version, string CorrelationId, DateTimeOffset TimestampUtc, JsonElement Payload);
@@ -41,6 +45,33 @@ public sealed record CommandResultPayload(bool Accepted, string State, string? E
 
 public sealed record ProcessDisplayPayload(string Name, string? ExecutablePath, string Category, string? Reason);
 public sealed record PreComplianceScanPayload(bool IsLoading, bool IsClean, IReadOnlyList<ProcessDisplayPayload> SuspiciousProcesses, string StatusText);
+
+public sealed record SignedPolicyMessagePayload(
+    string MessageType,
+    int ProtocolVersion,
+    string RawPolicyJson,
+    string SignatureBase64
+);
+
+public sealed record ApplyNetworkPolicyPayload(
+    Guid SessionId,
+    Guid ExamId,
+    SignedPolicyMessagePayload SignedMessage,
+    int TargetProfiles = 6
+);
+
+public sealed record RemoveNetworkPolicyPayload(
+    Guid SessionId,
+    string Reason
+);
+
+public sealed record NetworkPolicyResultPayload(
+    bool Success,
+    Guid SessionId,
+    string State,
+    string? FailureReason,
+    int InstalledRuleCount = 0
+);
 
 public static class PipeProtocol
 {
@@ -66,8 +97,12 @@ public static class PipeProtocol
         {
             var security = new PipeSecurity();
             security.AddAccessRule(new PipeAccessRule(
-                new SecurityIdentifier(WellKnownSidType.WorldSid, null),
-                PipeAccessRights.ReadWrite,
+                new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null),
+                PipeAccessRights.FullControl,
+                AccessControlType.Allow));
+            security.AddAccessRule(new PipeAccessRule(
+                new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null),
+                PipeAccessRights.FullControl,
                 AccessControlType.Allow));
             security.AddAccessRule(new PipeAccessRule(
                 new SecurityIdentifier(WellKnownSidType.AuthenticatedUserSid, null),

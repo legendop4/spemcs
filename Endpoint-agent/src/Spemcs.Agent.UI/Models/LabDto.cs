@@ -51,6 +51,9 @@ public class DeviceRegistrationRequest
 
     [JsonPropertyName("hostname")]
     public string? Hostname { get; set; }
+
+    [JsonPropertyName("enrollmentKey")]
+    public string? EnrollmentKey { get; set; } = "spemcs-enrollment-bootstrap-key-default";
 }
 
 public class DeviceRegistrationResponse
@@ -63,6 +66,9 @@ public class DeviceRegistrationResponse
 
     [JsonPropertyName("hardwareUuid")]
     public string? HardwareUuid { get; set; }
+
+    [JsonPropertyName("deviceToken")]
+    public string? DeviceToken { get; set; }
 
     [JsonPropertyName("buildingName")]
     public string? BuildingName { get; set; }

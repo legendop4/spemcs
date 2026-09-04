@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Spemcs.Agent.Core.Network;
 
@@ -11,9 +13,11 @@ public sealed class WindowsFirewallAdapter : IFirewallAdapter
 {
     private readonly Type _policyType;
     private readonly Type _ruleType;
+    private readonly ILogger<WindowsFirewallAdapter> _logger;
 
-    public WindowsFirewallAdapter()
+    public WindowsFirewallAdapter(ILogger<WindowsFirewallAdapter>? logger = null)
     {
+        _logger = logger ?? NullLogger<WindowsFirewallAdapter>.Instance;
         _policyType = Type.GetTypeFromProgID("HNetCfg.FwPolicy2", throwOnError: true)
                       ?? throw new PlatformNotSupportedException("HNetCfg.FwPolicy2 COM class not found.");
         _ruleType = Type.GetTypeFromProgID("HNetCfg.FWRule", throwOnError: true)
@@ -79,40 +83,81 @@ public sealed class WindowsFirewallAdapter : IFirewallAdapter
 
     public void AddRule(FirewallRuleModel rule)
     {
+        ArgumentNullException.ThrowIfNull(rule);
+
+        _logger.LogInformation(
+            "WindowsFirewallAdapter.AddRule: Preparing COM rule '{Name}' [Grouping='{Grouping}', Enabled={Enabled}, Direction={Direction}, Action={Action}, Protocol={Protocol}, Profiles={Profiles}, LocalAddresses='{LocalAddresses}', RemoteAddresses='{RemoteAddresses}', LocalPorts='{LocalPorts}', RemotePorts='{RemotePorts}', ApplicationName='{ApplicationName}', ServiceName='{ServiceName}']",
+            rule.Name,
+            rule.Group,
+            rule.Enabled,
+            rule.Direction,
+            rule.Action,
+            rule.Protocol,
+            rule.Profiles,
+            rule.LocalAddresses,
+            rule.RemoteAddresses,
+            rule.LocalPorts,
+            rule.RemotePorts,
+            rule.ApplicationPath ?? "none",
+            rule.ServiceName ?? "none"
+        );
+
         dynamic policy = CreatePolicyInstance();
         dynamic fwRule = CreateRuleInstance();
 
-        fwRule.Name = rule.Name;
-        fwRule.Description = $"SPEMCS Exam Lockdown Rule: {rule.Purpose}";
-        fwRule.Grouping = rule.Group;
-        fwRule.Direction = (int)rule.Direction;
-        fwRule.Action = (int)rule.Action;
-        fwRule.Protocol = (int)rule.Protocol;
-
-        if (!string.IsNullOrWhiteSpace(rule.LocalPorts) && rule.LocalPorts != "*")
+        try
         {
-            fwRule.LocalPorts = rule.LocalPorts;
-        }
+            fwRule.Name = rule.Name;
+            fwRule.Description = $"SPEMCS Exam Lockdown Rule: {rule.Purpose}";
+            fwRule.Grouping = rule.Group;
+            fwRule.Direction = (int)rule.Direction;
+            fwRule.Action = (int)rule.Action;
+            fwRule.Protocol = (int)rule.Protocol;
 
-        if (!string.IsNullOrWhiteSpace(rule.RemotePorts) && rule.RemotePorts != "*")
+            if (!string.IsNullOrWhiteSpace(rule.LocalPorts) && rule.LocalPorts != "*")
+            {
+                fwRule.LocalPorts = rule.LocalPorts;
+            }
+
+            if (!string.IsNullOrWhiteSpace(rule.RemotePorts) && rule.RemotePorts != "*")
+            {
+                fwRule.RemotePorts = rule.RemotePorts;
+            }
+
+            if (!string.IsNullOrWhiteSpace(rule.RemoteAddresses) && rule.RemoteAddresses != "*")
+            {
+                fwRule.RemoteAddresses = rule.RemoteAddresses;
+            }
+
+            if (!string.IsNullOrWhiteSpace(rule.LocalAddresses) && rule.LocalAddresses != "*")
+            {
+                fwRule.LocalAddresses = rule.LocalAddresses;
+            }
+
+            if (!string.IsNullOrWhiteSpace(rule.ApplicationPath))
+            {
+                fwRule.ApplicationName = rule.ApplicationPath;
+            }
+
+            // Diagnostic Requirement 3: Never assign ServiceName unless rule.ServiceName is non-null, non-empty, and valid
+            if (!string.IsNullOrWhiteSpace(rule.ServiceName) &&
+                !string.Equals(rule.ServiceName, "none", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(rule.ServiceName, "*", StringComparison.OrdinalIgnoreCase))
+            {
+                fwRule.ServiceName = rule.ServiceName;
+            }
+
+            fwRule.Profiles = (int)rule.Profiles;
+            fwRule.Enabled = rule.Enabled;
+
+            policy.Rules.Add(fwRule);
+            _logger.LogInformation("WindowsFirewallAdapter.AddRule: Successfully added rule '{Name}'", rule.Name);
+        }
+        catch (Exception ex)
         {
-            fwRule.RemotePorts = rule.RemotePorts;
+            _logger.LogError(ex, "WindowsFirewallAdapter.AddRule: FAILED on rule '{Name}' with error: {Message}", rule.Name, ex.Message);
+            throw;
         }
-
-        if (!string.IsNullOrWhiteSpace(rule.RemoteAddresses) && rule.RemoteAddresses != "*")
-        {
-            fwRule.RemoteAddresses = rule.RemoteAddresses;
-        }
-
-        if (!string.IsNullOrWhiteSpace(rule.ApplicationPath))
-        {
-            fwRule.ApplicationName = rule.ApplicationPath;
-        }
-
-        fwRule.Profiles = (int)rule.Profiles;
-        fwRule.Enabled = rule.Enabled;
-
-        policy.Rules.Add(fwRule);
     }
 
     public bool RemoveRule(string ruleName)
@@ -195,7 +240,10 @@ public sealed class WindowsFirewallAdapter : IFirewallAdapter
                     string localPorts = r.LocalPorts ?? "*";
                     string remotePorts = r.RemotePorts ?? "*";
                     string remoteAddresses = r.RemoteAddresses ?? "*";
+                    string localAddresses = r.LocalAddresses ?? "*";
                     string? appPath = r.ApplicationName;
+                    string? serviceName = null;
+                    try { serviceName = r.ServiceName; } catch { }
                     int profiles = (int)r.Profiles;
                     bool enabled = (bool)r.Enabled;
 
@@ -208,11 +256,13 @@ public sealed class WindowsFirewallAdapter : IFirewallAdapter
                         LocalPorts: localPorts,
                         RemotePorts: remotePorts,
                         RemoteAddresses: remoteAddresses,
+                        LocalAddresses: localAddresses,
                         ApplicationPath: appPath,
                         Profiles: (FirewallProfiles)profiles,
                         Enabled: enabled,
                         Purpose: "Discovered",
-                        SessionId: Guid.Empty
+                        SessionId: Guid.Empty,
+                        ServiceName: serviceName
                     ));
                 }
             }

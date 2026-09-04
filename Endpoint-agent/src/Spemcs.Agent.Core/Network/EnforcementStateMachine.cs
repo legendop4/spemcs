@@ -184,50 +184,7 @@ public sealed class EnforcementStateMachine : IEnforcementStateMachine
             // -----------------------------------------------------------------
             // Step 4: Build M4 Firewall Rules (Section 5)
             // -----------------------------------------------------------------
-            var rules = new List<FirewallRuleModel>();
-
-            // Management server rules (TCP)
-            foreach (var mgmtIp in policy.ManagementServer.IpAddresses)
-            {
-                rules.Add(FirewallRuleModel.CreateOutboundAllow(
-                    sessionId,
-                    "Mgmt",
-                    FirewallProtocol.TCP,
-                    mgmtIp,
-                    policy.ManagementServer.Port.ToString(),
-                    profiles: targetProfiles));
-            }
-
-            // Vendor & exam allowed destinations
-            foreach (var dest in policy.AllowedDestinations)
-            {
-                foreach (var ip in dest.IpRanges)
-                {
-                    if (dest.TcpPorts.Count > 0)
-                    {
-                        var tcpPortsStr = string.Join(",", dest.TcpPorts);
-                        rules.Add(FirewallRuleModel.CreateOutboundAllow(
-                            sessionId,
-                            dest.Name,
-                            FirewallProtocol.TCP,
-                            ip,
-                            tcpPortsStr,
-                            profiles: targetProfiles));
-                    }
-
-                    if (dest.UdpPorts.Count > 0)
-                    {
-                        var udpPortsStr = string.Join(",", dest.UdpPorts);
-                        rules.Add(FirewallRuleModel.CreateOutboundAllow(
-                            sessionId,
-                            dest.Name,
-                            FirewallProtocol.UDP,
-                            ip,
-                            udpPortsStr,
-                            profiles: targetProfiles));
-                    }
-                }
-            }
+            var rules = BuildSessionRules(sessionId, policy, targetProfiles);
 
             var enforcementSession = new EnforcementSession(
                 SessionId: sessionId,
@@ -581,50 +538,7 @@ public sealed class EnforcementStateMachine : IEnforcementStateMachine
             // 5. Generate Candidate Firewall Rules
             var now = currentTimeUtc ?? DateTimeOffset.UtcNow;
             var targetProfiles = FirewallProfiles.All;
-            var candidateRules = new List<FirewallRuleModel>();
-
-            // Management server rules
-            foreach (var mgmtIp in candidate.ManagementServer.IpAddresses)
-            {
-                candidateRules.Add(FirewallRuleModel.CreateOutboundAllow(
-                    sessionId,
-                    "Mgmt",
-                    FirewallProtocol.TCP,
-                    mgmtIp,
-                    candidate.ManagementServer.Port.ToString(),
-                    profiles: targetProfiles));
-            }
-
-            // Vendor rules
-            foreach (var dest in candidate.AllowedDestinations)
-            {
-                foreach (var ip in dest.IpRanges)
-                {
-                    if (dest.TcpPorts.Count > 0)
-                    {
-                        var tcpPortsStr = string.Join(",", dest.TcpPorts);
-                        candidateRules.Add(FirewallRuleModel.CreateOutboundAllow(
-                            sessionId,
-                            dest.Name,
-                            FirewallProtocol.TCP,
-                            ip,
-                            tcpPortsStr,
-                            profiles: targetProfiles));
-                    }
-
-                    if (dest.UdpPorts.Count > 0)
-                    {
-                        var udpPortsStr = string.Join(",", dest.UdpPorts);
-                        candidateRules.Add(FirewallRuleModel.CreateOutboundAllow(
-                            sessionId,
-                            dest.Name,
-                            FirewallProtocol.UDP,
-                            ip,
-                            udpPortsStr,
-                            profiles: targetProfiles));
-                    }
-                }
-            }
+            var candidateRules = BuildSessionRules(sessionId, candidate, targetProfiles);
 
             // Diff rules:
             var currentInstalledRules = _firewall.GetRulesByGroup(FirewallRuleModel.SpemcsRuleGroup);
@@ -762,6 +676,71 @@ public sealed class EnforcementStateMachine : IEnforcementStateMachine
         {
             _gate.Release();
         }
+    }
+
+    public static List<FirewallRuleModel> BuildSessionRules(
+        Guid sessionId,
+        ValidatedPolicy policy,
+        FirewallProfiles targetProfiles)
+    {
+        var rules = new List<FirewallRuleModel>();
+
+        // 1. Explicit product-owned loopback rules (Outbound Any, Local <-> Remote 127.0.0.1 and ::1)
+        rules.Add(FirewallRuleModel.CreateLoopbackIPv4Allow(sessionId, targetProfiles));
+        rules.Add(FirewallRuleModel.CreateLoopbackIPv6Allow(sessionId, targetProfiles));
+
+        // 2. Management server allow rules (Outbound TCP, clean IP, specific port, no program restriction)
+        foreach (var mgmtIp in policy.ManagementServer.IpAddresses)
+        {
+            var cleanIp = mgmtIp.Contains('/') ? mgmtIp.Split('/')[0] : mgmtIp;
+            rules.Add(FirewallRuleModel.CreateOutboundAllow(
+                sessionId: sessionId,
+                purpose: "Mgmt",
+                protocol: FirewallProtocol.TCP,
+                remoteAddresses: cleanIp,
+                remotePorts: policy.ManagementServer.Port.ToString(),
+                localAddresses: "*",
+                applicationPath: null,
+                serviceName: null,
+                profiles: targetProfiles));
+        }
+
+        // 2. Vendor & exam allowed destinations
+        foreach (var dest in policy.AllowedDestinations)
+        {
+            foreach (var ip in dest.IpRanges)
+            {
+                if (dest.TcpPorts.Count > 0)
+                {
+                    var tcpPortsStr = string.Join(",", dest.TcpPorts);
+                    rules.Add(FirewallRuleModel.CreateOutboundAllow(
+                        sessionId: sessionId,
+                        purpose: dest.Name,
+                        protocol: FirewallProtocol.TCP,
+                        remoteAddresses: ip,
+                        remotePorts: tcpPortsStr,
+                        localAddresses: "*",
+                        applicationPath: null,
+                        profiles: targetProfiles));
+                }
+
+                if (dest.UdpPorts.Count > 0)
+                {
+                    var udpPortsStr = string.Join(",", dest.UdpPorts);
+                    rules.Add(FirewallRuleModel.CreateOutboundAllow(
+                        sessionId: sessionId,
+                        purpose: dest.Name,
+                        protocol: FirewallProtocol.UDP,
+                        remoteAddresses: ip,
+                        remotePorts: udpPortsStr,
+                        localAddresses: "*",
+                        applicationPath: null,
+                        profiles: targetProfiles));
+                }
+            }
+        }
+
+        return rules;
     }
 
     private async Task<EnforcementActivationResult> HandleApplyFailureAsync(

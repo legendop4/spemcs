@@ -284,6 +284,7 @@ public sealed class DynamicPolicyUpdateIntegrationTests : IDisposable
             r.Action == FirewallAction.Allow &&
             r.Direction == FirewallDirection.Outbound &&
             r.Enabled &&
+            !r.Purpose.StartsWith("Loopback", StringComparison.OrdinalIgnoreCase) &&
             (r.RemoteAddresses == "*" || r.RemoteAddresses.Contains(ip)) &&
             (r.RemotePorts == "*" || r.RemotePorts.Split(',').Select(p => p.Trim()).Contains(port.ToString()))
         );

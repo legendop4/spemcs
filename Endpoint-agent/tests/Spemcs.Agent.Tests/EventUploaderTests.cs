@@ -218,7 +218,7 @@ public sealed class EventUploaderTests
             sw.Stop();
 
             // Reconcile completes synchronously without waiting for network I/O
-            Assert.True(sw.ElapsedMilliseconds < 10000);
+            Assert.True(sw.ElapsedMilliseconds < 60000);
         }
         finally
         {

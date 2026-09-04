@@ -10,26 +10,46 @@ namespace Spemcs.Agent.UI;
 public partial class App : Application
 {
     private Mutex? _instanceMutex;
+    private bool _hasMutexOwnership;
     private const string MutexName = @"Global\SpemcsEndpointAgentMutex";
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool AttachConsole(int dwProcessId);
+    private const int ATTACH_PARENT_PROCESS = -1;
 
     protected override void OnStartup(StartupEventArgs e)
     {
+        ShutdownMode = ShutdownMode.OnExplicitShutdown;
         base.OnStartup(e);
 
         // 1. Single-Instance Protection
-        _instanceMutex = new Mutex(true, MutexName, out var isOnlyInstance);
-        if (!isOnlyInstance)
+        try
         {
-            // If already running and not explicit setup, exit cleanly
+            _instanceMutex = new Mutex(true, MutexName, out var isOnlyInstance);
+            _hasMutexOwnership = isOnlyInstance;
+        }
+        catch (Exception)
+        {
+            _hasMutexOwnership = false;
+        }
+
+        if (!_hasMutexOwnership)
+        {
+            // If already running and not explicit setup, notify and exit cleanly
             var isSetupRequested = e.Args.Any(a => string.Equals(a, "--setup", StringComparison.OrdinalIgnoreCase));
             if (!isSetupRequested)
             {
+                try
+                {
+                    AttachConsole(ATTACH_PARENT_PROCESS);
+                    Console.WriteLine("[SPEMCS] An instance of SPEMCS Endpoint Agent is already running. Exiting duplicate instance.");
+                }
+                catch { }
+
                 Shutdown(0);
                 return;
             }
         }
-
-        ShutdownMode = ShutdownMode.OnExplicitShutdown;
 
         var configService = new AgentConfigService();
         var isSetupFlag = e.Args.Any(a => string.Equals(a, "--setup", StringComparison.OrdinalIgnoreCase));
@@ -60,8 +80,25 @@ public partial class App : Application
 
     protected override void OnExit(ExitEventArgs e)
     {
-        _instanceMutex?.ReleaseMutex();
+        if (_hasMutexOwnership && _instanceMutex != null)
+        {
+            try
+            {
+                _instanceMutex.ReleaseMutex();
+            }
+            catch (ApplicationException)
+            {
+                // Mutex was not owned by the calling thread
+            }
+            finally
+            {
+                _hasMutexOwnership = false;
+            }
+        }
+
         _instanceMutex?.Dispose();
+        _instanceMutex = null;
+
         base.OnExit(e);
     }
 }

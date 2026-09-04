@@ -17,6 +17,9 @@ public class AgentConfig
     [JsonPropertyName("hardwareUuid")]
     public string? HardwareUuid { get; set; }
 
+    [JsonPropertyName("deviceToken")]
+    public string? DeviceToken { get; set; }
+
     [JsonPropertyName("labId")]
     public string? LabId { get; set; }
 

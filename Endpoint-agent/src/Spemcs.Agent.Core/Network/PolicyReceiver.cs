@@ -317,7 +317,7 @@ public sealed class PolicyReceiver : IPolicyReceiver
 
             var mgmtPort = mgmtEl.GetProperty("port").GetInt32();
             var expectedHost = mgmtEl.TryGetProperty("hostname", out var hostEl) ? hostEl.GetString() : null;
-            var useTls = !mgmtEl.TryGetProperty("use_tls", out var tlsEl) || tlsEl.GetBoolean();
+            var useTls = mgmtEl.TryGetProperty("use_tls", out var tlsEl) ? tlsEl.GetBoolean() : (mgmtPort == 443);
             var mgmtDest = new ManagementDestination(mgmtIps, mgmtPort, expectedHost, useTls);
 
             // -----------------------------------------------------------------

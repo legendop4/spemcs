@@ -51,6 +51,8 @@ public sealed class NetworkEnforcer : INetworkEnforcer
 
             // 1. Capture current baseline
             var baseline = _firewall.GetBaseline();
+            _logger.LogInformation("Active runtime firewall profile bitmask: {Profiles} ({ProfileNames}), Domain={Domain}, Private={Private}, Public={Public}",
+                baseline.ActiveProfiles, baseline.ActiveProfiles.ToString(), baseline.DomainDefaultOutbound, baseline.PrivateDefaultOutbound, baseline.PublicDefaultOutbound);
 
             // 2. Persist PREPARED state to durable journal
             var record = new JournalRecord(
@@ -93,20 +95,29 @@ public sealed class NetworkEnforcer : INetworkEnforcer
                     installedCount++;
                 }
 
-                // 4. Verify all rules exist in firewall
-                foreach (var rule in session.Rules)
-                {
-                    if (!_firewall.RuleExists(rule.Name))
-                    {
-                        throw new InvalidOperationException($"Firewall rule '{rule.Name}' could not be verified after installation.");
-                    }
-                }
+                // 4. READ BACK AND VERIFY ALL INSTALLED RULES BEFORE BLOCK (Requirements 4, 5, 6, 7, 10)
+                LogAndVerifyRules("BEFORE_BLOCK", session.Rules, baseline.ActiveProfiles);
 
-                // 5. ENFORCING DEFAULT BLOCK
+                // 5. ENFORCING DEFAULT BLOCK: Only AFTER all allow rules are verified!
                 _journal.UpdatePhase(session.SessionId, EnforcementPhase.EnforcingDefaultBlock);
                 _logger.LogInformation("Switching DefaultOutboundAction to BLOCK for profiles: {Profiles}", session.TargetProfiles);
 
                 _firewall.SetDefaultOutboundAction(session.TargetProfiles, FirewallAction.Block);
+
+                // Verify readback of DefaultOutboundAction immediately
+                var activeBaseline = _firewall.GetBaseline();
+                _logger.LogInformation("Effective firewall baseline after BLOCK: Domain={Domain}, Private={Private}, Public={Public}, ActiveProfiles={ActiveProfiles}",
+                    activeBaseline.DomainDefaultOutbound, activeBaseline.PrivateDefaultOutbound, activeBaseline.PublicDefaultOutbound, activeBaseline.ActiveProfiles);
+
+                if (session.TargetProfiles.HasFlag(FirewallProfiles.Domain) && activeBaseline.DomainDefaultOutbound != FirewallAction.Block)
+                    throw new InvalidOperationException("Domain profile DefaultOutboundAction failed to apply BLOCK.");
+                if (session.TargetProfiles.HasFlag(FirewallProfiles.Private) && activeBaseline.PrivateDefaultOutbound != FirewallAction.Block)
+                    throw new InvalidOperationException("Private profile DefaultOutboundAction failed to apply BLOCK.");
+                if (session.TargetProfiles.HasFlag(FirewallProfiles.Public) && activeBaseline.PublicDefaultOutbound != FirewallAction.Block)
+                    throw new InvalidOperationException("Public profile DefaultOutboundAction failed to apply BLOCK.");
+
+                // CRITICAL Requirement 10: Log rule details immediately AFTER setting block
+                LogAndVerifyRules("AFTER_BLOCK", session.Rules, activeBaseline.ActiveProfiles);
 
                 // 6. ACTIVE: Transition complete
                 _journal.UpdatePhase(session.SessionId, EnforcementPhase.Active);
@@ -123,10 +134,11 @@ public sealed class NetworkEnforcer : INetworkEnforcer
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Failed to apply enforcement for Session: {SessionId}. Initiating emergency rollback.", session.SessionId);
+                var failurePhase = _journal.GetSession(session.SessionId)?.Phase ?? EnforcementPhase.ApplyingRules;
                 _journal.UpdatePhase(session.SessionId, EnforcementPhase.Failed, ex.Message);
 
-                // Execute safe rollback on failure
-                PerformSafeRollbackInternal(session.SessionId, baseline, session.TargetProfiles, EnforcementPhase.Failed);
+                // Execute safe rollback on failure using the phase where failure occurred
+                PerformSafeRollbackInternal(session.SessionId, baseline, session.TargetProfiles, failurePhase);
 
                 return Task.FromResult(new ApplyResult(
                     Success: false,
@@ -145,9 +157,22 @@ public sealed class NetworkEnforcer : INetworkEnforcer
         {
             _logger.LogInformation("Removing enforcement for Session: {SessionId}", sessionId);
             var sessionRecord = _journal.GetSession(sessionId);
-            var baseline = sessionRecord?.Baseline ?? _firewall.GetBaseline();
-            var targetProfiles = sessionRecord?.TargetProfiles ?? baseline.ActiveProfiles;
-            var currentPhase = sessionRecord?.Phase ?? EnforcementPhase.Active;
+            if (sessionRecord is null)
+            {
+                _logger.LogInformation("No active enforcement session recorded for Session: {SessionId}. Nothing to remove.", sessionId);
+                return Task.FromResult(new RollbackResult(
+                    Success: true,
+                    SessionId: sessionId,
+                    RulesRemovedCount: 0,
+                    BaselineRestored: false,
+                    ConflictDetected: false,
+                    ErrorMessage: null
+                ));
+            }
+
+            var baseline = sessionRecord.Baseline;
+            var targetProfiles = sessionRecord.TargetProfiles;
+            var currentPhase = sessionRecord.Phase;
 
             var result = PerformSafeRollbackInternal(sessionId, baseline, targetProfiles, currentPhase);
             return Task.FromResult(result);
@@ -295,8 +320,7 @@ public sealed class NetworkEnforcer : INetworkEnforcer
         var defaultBlockWasAttempted = currentPhase is EnforcementPhase.EnforcingDefaultBlock
             or EnforcementPhase.Active
             or EnforcementPhase.RollingBackDefault
-            or EnforcementPhase.RollingBackRules
-            or EnforcementPhase.Failed;
+            or EnforcementPhase.RollingBackRules;
 
         (bool Success, bool Restored, bool Conflict, string? Error) baselineRestore;
 
@@ -360,45 +384,32 @@ public sealed class NetworkEnforcer : INetworkEnforcer
             var current = _firewall.GetBaseline();
             var conflictDetected = false;
 
-            // Inspect each profile: only restore if the current action is still BLOCK (owned by SPEMCS).
-            // If an external admin or GPO changed it away from BLOCK, yield and record conflict.
-            if (targetProfiles.HasFlag(FirewallProfiles.Domain))
+            void RestoreProfile(FirewallProfiles profile, FirewallAction currentAction, FirewallAction baselineAction)
             {
-                if (current.DomainDefaultOutbound == FirewallAction.Block)
+                if (currentAction == FirewallAction.Block)
                 {
-                    _firewall.SetDefaultOutboundAction(FirewallProfiles.Domain, baseline.DomainDefaultOutbound);
+                    _firewall.SetDefaultOutboundAction(profile, baselineAction);
                 }
                 else
                 {
-                    _logger.LogWarning("Domain profile outbound default modified externally (Current: {Current}, expected SPEMCS Block). Yielding to external policy.", current.DomainDefaultOutbound);
+                    _logger.LogWarning("{Profile} profile outbound default modified externally (Current: {Current}, expected SPEMCS Block). Yielding to external policy.", profile, currentAction);
                     conflictDetected = true;
                 }
+            }
+
+            if (targetProfiles.HasFlag(FirewallProfiles.Domain))
+            {
+                RestoreProfile(FirewallProfiles.Domain, current.DomainDefaultOutbound, baseline.DomainDefaultOutbound);
             }
 
             if (targetProfiles.HasFlag(FirewallProfiles.Private))
             {
-                if (current.PrivateDefaultOutbound == FirewallAction.Block)
-                {
-                    _firewall.SetDefaultOutboundAction(FirewallProfiles.Private, baseline.PrivateDefaultOutbound);
-                }
-                else
-                {
-                    _logger.LogWarning("Private profile outbound default modified externally (Current: {Current}, expected SPEMCS Block). Yielding to external policy.", current.PrivateDefaultOutbound);
-                    conflictDetected = true;
-                }
+                RestoreProfile(FirewallProfiles.Private, current.PrivateDefaultOutbound, baseline.PrivateDefaultOutbound);
             }
 
             if (targetProfiles.HasFlag(FirewallProfiles.Public))
             {
-                if (current.PublicDefaultOutbound == FirewallAction.Block)
-                {
-                    _firewall.SetDefaultOutboundAction(FirewallProfiles.Public, baseline.PublicDefaultOutbound);
-                }
-                else
-                {
-                    _logger.LogWarning("Public profile outbound default modified externally (Current: {Current}, expected SPEMCS Block). Yielding to external policy.", current.PublicDefaultOutbound);
-                    conflictDetected = true;
-                }
+                RestoreProfile(FirewallProfiles.Public, current.PublicDefaultOutbound, baseline.PublicDefaultOutbound);
             }
 
             if (conflictDetected)
@@ -414,5 +425,72 @@ public sealed class NetworkEnforcer : INetworkEnforcer
             _logger.LogError(ex, "Failed to restore firewall baseline for Session: {SessionId}", sessionId);
             return (false, false, false, ex.Message);
         }
+    }
+
+    private void LogAndVerifyRules(
+        string phaseDescription,
+        IReadOnlyList<FirewallRuleModel> expectedRules,
+        FirewallProfiles activeProfiles)
+    {
+        _logger.LogInformation("--- Inspecting Installed Rules [{Phase}] (Active runtime profile bitmask: {ActiveProfiles}) ---",
+            phaseDescription, activeProfiles);
+
+        var installedRules = _firewall.GetRulesByGroup(FirewallRuleModel.SpemcsRuleGroup);
+
+        foreach (var rule in expectedRules)
+        {
+            if (!_firewall.RuleExists(rule.Name))
+            {
+                throw new InvalidOperationException($"[{phaseDescription}] Firewall rule '{rule.Name}' could not be verified in Windows Firewall.");
+            }
+
+            var matched = installedRules.FirstOrDefault(m => string.Equals(m.Name, rule.Name, StringComparison.OrdinalIgnoreCase));
+            if (matched is null)
+            {
+                throw new InvalidOperationException($"[{phaseDescription}] Firewall rule '{rule.Name}' was not found in readback group '{FirewallRuleModel.SpemcsRuleGroup}'.");
+            }
+
+            // CRITICAL Requirement 5: Log all 13 properties
+            _logger.LogInformation(
+                "[{Phase}] Rule: DisplayName='{DisplayName}', Group='{Group}', Enabled={Enabled}, Direction={Direction}, Action={Action}, Protocol={Protocol}, Profiles={Profiles}, LocalAddresses='{LocalAddresses}', RemoteAddresses='{RemoteAddresses}', LocalPorts='{LocalPorts}', RemotePorts='{RemotePorts}', ApplicationName='{ApplicationName}', ServiceName='{ServiceName}'",
+                phaseDescription,
+                matched.Name,
+                matched.Group,
+                matched.Enabled,
+                matched.Direction,
+                matched.Action,
+                matched.Protocol,
+                matched.Profiles,
+                matched.LocalAddresses,
+                matched.RemoteAddresses,
+                matched.LocalPorts,
+                matched.RemotePorts,
+                matched.ApplicationPath ?? "none",
+                matched.ServiceName ?? "none"
+            );
+
+            if (!matched.Enabled)
+            {
+                throw new InvalidOperationException($"[{phaseDescription}] Firewall rule '{rule.Name}' is DISABLED.");
+            }
+
+            if (matched.Direction != rule.Direction ||
+                matched.Action != rule.Action ||
+                matched.Protocol != rule.Protocol)
+            {
+                throw new InvalidOperationException($"[{phaseDescription}] Firewall rule '{rule.Name}' failed property verification (Direction={matched.Direction} vs {rule.Direction}, Action={matched.Action} vs {rule.Action}, Protocol={matched.Protocol} vs {rule.Protocol}).");
+            }
+
+            // Requirement 6: Specifically verify that loopback rule survives under each active firewall profile and is enabled
+            if (rule.Purpose.StartsWith("Loopback", StringComparison.OrdinalIgnoreCase))
+            {
+                if ((matched.Profiles & activeProfiles) == 0 && activeProfiles != FirewallProfiles.None)
+                {
+                    throw new InvalidOperationException($"[{phaseDescription}] Loopback rule '{rule.Name}' profile bitmask ({matched.Profiles}) does not cover active profile ({activeProfiles}).");
+                }
+            }
+        }
+
+        _logger.LogInformation("--- Finished Inspecting Installed Rules [{Phase}] ---", phaseDescription);
     }
 }

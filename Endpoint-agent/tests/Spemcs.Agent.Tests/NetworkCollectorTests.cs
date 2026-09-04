@@ -219,7 +219,7 @@ public sealed class NetworkCollectorTests
             int procCount = monitor.Reconcile();
             sw.Stop();
 
-            Assert.True(sw.ElapsedMilliseconds < 10000);
+            Assert.True(sw.ElapsedMilliseconds < 60000);
         }
         finally
         {

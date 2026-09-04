@@ -116,9 +116,9 @@ class VendorProfileRead(VendorProfileBase):
 class PolicyCompileRequest(BaseModel):
     vendor_profile_id: Optional[UUID] = None
     version: int = 1
-    management_server: Dict[str, Any]
-    not_before: datetime
-    expires_at: datetime
+    management_server: Optional[Dict[str, Any]] = None
+    not_before: Optional[datetime] = None
+    expires_at: Optional[datetime] = None
     resolved_destinations: Optional[List[Dict[str, Any]]] = None
 
     model_config = ConfigDict(from_attributes=True)
