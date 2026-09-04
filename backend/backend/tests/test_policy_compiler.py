@@ -261,6 +261,8 @@ def test_compiler_determinism_under_reordered_inputs():
         management_server=mgmt_a,
         not_before=now,
         expires_at=now + timedelta(hours=3),
+        approved_browser="chrome",
+        key_id="dev-key-1",
     )
 
     payload_b = compile_exam_policy(
@@ -271,6 +273,8 @@ def test_compiler_determinism_under_reordered_inputs():
         management_server=mgmt_b,
         not_before=now,
         expires_at=now + timedelta(hours=3),
+        approved_browser="chrome",
+        key_id="dev-key-1",
     )
 
     bytes_a = canonicalize_to_bytes(payload_a)
@@ -299,6 +303,8 @@ def test_management_server_separation_from_vendor():
         management_server=mgmt,
         not_before=now,
         expires_at=now + timedelta(hours=1),
+        approved_browser="chrome",
+        key_id="dev-key-1",
     )
 
     # Management server is its own top-level structure
@@ -338,6 +344,7 @@ def test_compiled_policy_signs_and_verifies_with_m2(keypair):
         management_server={"ip_addresses": ["10.0.0.1"], "port": 8000},
         not_before=now - timedelta(minutes=1),
         expires_at=now + timedelta(hours=2),
+        approved_browser="chrome",
         key_id="dev-key-1",
     )
 
@@ -348,6 +355,9 @@ def test_compiled_policy_signs_and_verifies_with_m2(keypair):
     verified = verifier.verify_policy(compiled, sig, current_time=now)
     assert verified["exam_id"] == str(exam_id)
     assert verified["version"] == 1
+    # Requirement 4/5: the browser identity the endpoint scopes allow rules to must survive
+    # compilation, signing, and verification unchanged.
+    assert verified["approved_browser"] == "chrome"
 
 
 from backend.models.user import User
@@ -429,34 +439,44 @@ def test_vendor_profile_crud_api(client: TestClient, db_session, admin_headers):
 
 
 def test_compile_endpoint_for_exam(client: TestClient, db_session, admin_headers):
-    """Tests POST /api/policies/compile/{exam_id} and GET /api/policies/exam/{exam_id}."""
+    """Tests POST /api/policies/compile/{exam_id} and GET /api/policies/exam/{exam_id}.
+
+    The destination in the compiled policy comes from the vendor profile stored server-side, not
+    from the request body. See test_compile_endpoint_rejects_client_supplied_addresses for the
+    other half of this contract.
+    """
     db, cleanup = db_session
 
-    # 1. Create Exam in DB
+    # 1. Vendor profile with explicit, server-side approved ranges.
+    profile = VendorProfile(
+        vendor_name=f"Compile-Endpoint-Vendor-{uuid.uuid4().hex[:6]}",
+        required_domains=[],
+        approved_ip_ranges=["198.51.100.0/24"],
+        required_tcp_ports=[443],
+        required_udp_ports=[],
+    )
+    db.add(profile)
+    db.commit()
+    cleanup.append(profile)
+
+    # 2. Create Exam in DB, bound to that profile
     exam = Exam(
         exam_name=f"Compile-Endpoint-Exam-{uuid.uuid4().hex[:6]}",
         approved_browser=ApprovedBrowser.CHROME.value,
         network_enforcement=True,
+        vendor_profile_id=profile.vendor_id,
     )
     db.add(exam)
     db.commit()
     cleanup.append(exam)
 
-    # 2. Call compile endpoint
+    # 3. Call compile endpoint
     now = datetime.now(timezone.utc)
     compile_req = {
         "version": 1,
         "management_server": {"ip_addresses": ["127.0.0.1"], "port": 8000},
         "not_before": (now - timedelta(minutes=5)).isoformat(),
         "expires_at": (now + timedelta(hours=3)).isoformat(),
-        "resolved_destinations": [
-            {
-                "name": "Local Resolver",
-                "ip_ranges": ["127.0.0.53/32"],
-                "tcp_ports": [53],
-                "udp_ports": [53],
-            }
-        ],
     }
 
     resp = client.post(f"/api/policies/compile/{exam.exam_id}", headers=admin_headers, json=compile_req)
@@ -467,8 +487,131 @@ def test_compile_endpoint_for_exam(client: TestClient, db_session, admin_headers
     assert compiled_policy["version"] == 1
     assert compiled_policy["signature"] is not None
     assert len(compiled_policy["allowed_destinations"]) == 1
+    # The address is the profile's, and it is the only one.
+    assert compiled_policy["allowed_destinations"][0]["ip_ranges"] == ["198.51.100.0/24"]
 
-    # 3. Retrieve compiled policy via GET
+    # 4. Retrieve compiled policy via GET
     resp_get = client.get(f"/api/policies/exam/{exam.exam_id}", headers=admin_headers)
     assert resp_get.status_code == 200
     assert resp_get.json()["policy_id"] == compiled_policy["policy_id"]
+
+
+@pytest.mark.parametrize(
+    "malicious_ranges",
+    [
+        ["0.0.0.0/0"],           # the whole IPv4 internet
+        ["::/0"],                # the whole IPv6 internet
+        ["203.0.113.99/32"],     # a single attacker-controlled host
+        ["127.0.0.53/32"],       # loopback, previously accepted by this very endpoint
+        ["169.254.169.254/32"],  # cloud instance metadata
+    ],
+)
+def test_compile_endpoint_rejects_client_supplied_addresses(
+    client: TestClient, db_session, admin_headers, malicious_ranges
+):
+    """Requirement 3 regression: a request body must not be able to put an address into a
+    signed policy.
+
+    This endpoint used to copy `resolved_destinations[].ip_ranges` straight into the payload it
+    signed. Because the endpoint agent turns every allowed_destinations entry directly into a
+    Windows Firewall allow rule, a single request containing 0.0.0.0/0 produced a validly signed
+    policy that re-opened the entire internet for the examination browser - defeating
+    default-deny while looking, to every downstream check, completely legitimate.
+
+    Addresses may only come from the vendor profile or from the server's own trusted DNS
+    resolution. The rejection must be an error, not a silent drop: silently ignoring the field
+    would leave the caller believing a destination was allowed when it was not.
+    """
+    db, cleanup = db_session
+
+    profile = VendorProfile(
+        vendor_name=f"Reject-Vendor-{uuid.uuid4().hex[:6]}",
+        required_domains=[],
+        approved_ip_ranges=["198.51.100.0/24"],
+        required_tcp_ports=[443],
+        required_udp_ports=[],
+    )
+    db.add(profile)
+    db.commit()
+    cleanup.append(profile)
+
+    exam = Exam(
+        exam_name=f"Reject-Exam-{uuid.uuid4().hex[:6]}",
+        approved_browser=ApprovedBrowser.CHROME.value,
+        network_enforcement=True,
+        vendor_profile_id=profile.vendor_id,
+    )
+    db.add(exam)
+    db.commit()
+    cleanup.append(exam)
+
+    now = datetime.now(timezone.utc)
+    resp = client.post(
+        f"/api/policies/compile/{exam.exam_id}",
+        headers=admin_headers,
+        json={
+            "version": 1,
+            "management_server": {"ip_addresses": ["127.0.0.1"], "port": 8000},
+            "not_before": (now - timedelta(minutes=5)).isoformat(),
+            "expires_at": (now + timedelta(hours=3)).isoformat(),
+            "resolved_destinations": [
+                {"name": "Injected", "ip_ranges": malicious_ranges, "tcp_ports": [443]}
+            ],
+        },
+    )
+
+    assert resp.status_code == 400, (
+        f"client-supplied ip_ranges {malicious_ranges} must be rejected, got "
+        f"{resp.status_code}: {resp.text}"
+    )
+    # No policy may have been persisted for this exam.
+    assert client.get(f"/api/policies/exam/{exam.exam_id}", headers=admin_headers).status_code == 404
+
+
+def test_compile_endpoint_fails_loudly_when_a_domain_cannot_be_resolved(
+    client: TestClient, db_session, admin_headers
+):
+    """A profile that declares only domains must not compile to an empty allowlist.
+
+    With no trusted resolver configured (the test environment's default), the compile must fail
+    with a 400 that names the domain. The alternative - compiling a policy whose
+    allowed_destinations is empty - would pass every signature and schema check and then block
+    the examination outright, at exam time, with no diagnostic pointing at the profile.
+    """
+    db, cleanup = db_session
+
+    profile = VendorProfile(
+        vendor_name=f"Domain-Only-Vendor-{uuid.uuid4().hex[:6]}",
+        required_domains=["lms.example.invalid"],
+        approved_ip_ranges=[],
+        required_tcp_ports=[443],
+        required_udp_ports=[],
+    )
+    db.add(profile)
+    db.commit()
+    cleanup.append(profile)
+
+    exam = Exam(
+        exam_name=f"Domain-Only-Exam-{uuid.uuid4().hex[:6]}",
+        approved_browser=ApprovedBrowser.CHROME.value,
+        network_enforcement=True,
+        vendor_profile_id=profile.vendor_id,
+    )
+    db.add(exam)
+    db.commit()
+    cleanup.append(exam)
+
+    now = datetime.now(timezone.utc)
+    resp = client.post(
+        f"/api/policies/compile/{exam.exam_id}",
+        headers=admin_headers,
+        json={
+            "version": 1,
+            "management_server": {"ip_addresses": ["127.0.0.1"], "port": 8000},
+            "not_before": (now - timedelta(minutes=5)).isoformat(),
+            "expires_at": (now + timedelta(hours=3)).isoformat(),
+        },
+    )
+
+    assert resp.status_code == 400, resp.text
+    assert "lms.example.invalid" in resp.text

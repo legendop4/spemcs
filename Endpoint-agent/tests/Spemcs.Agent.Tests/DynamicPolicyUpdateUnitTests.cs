@@ -34,7 +34,9 @@ public sealed class DynamicPolicyUpdateUnitTests : IDisposable
         _receiver = new PolicyReceiver(_keyStore, _journal, _connectivity);
         _firewall = new MockFirewallAdapter();
         _enforcer = new NetworkEnforcer(_firewall, _journal);
-        _machine = new EnforcementStateMachine(_receiver, _enforcer, _firewall, _journal, _connectivity);
+        _machine = new EnforcementStateMachine(
+            _receiver, _enforcer, _firewall, _journal, _connectivity,
+            browserResolver: StubBrowserExecutableResolver.Succeeding());
 
         _rsa = RSA.Create(2048);
         _keyStore.RegisterPublicKey(_keyId, _rsa);
@@ -66,12 +68,13 @@ public sealed class DynamicPolicyUpdateUnitTests : IDisposable
 
         var payloadObj = new Dictionary<string, object?>
         {
-            ["schema_version"] = "1.0",
+            ["schema_version"] = "1.1",
             ["key_id"] = _keyId,
             ["exam_id"] = examId.ToString(),
             ["policy_id"] = policyId.ToString(),
             ["version"] = version,
             ["vendor_profile_id"] = null,
+            ["approved_browser"] = "chrome",
             ["allowed_destinations"] = new List<object>
             {
                 new Dictionary<string, object>
@@ -301,7 +304,9 @@ public sealed class DynamicPolicyUpdateUnitTests : IDisposable
         _journal.SaveUpdateJournal(inFlightUpdate);
 
         // Create new state machine simulating service restart
-        var newMachine = new EnforcementStateMachine(_receiver, _enforcer, _firewall, _journal, _connectivity);
+        var newMachine = new EnforcementStateMachine(
+            _receiver, _enforcer, _firewall, _journal, _connectivity,
+            browserResolver: StubBrowserExecutableResolver.Succeeding());
         var recovery = await newMachine.ReconcileStartupStateAsync();
 
         Assert.True(recovery.Success);
@@ -412,7 +417,9 @@ public sealed class DynamicPolicyUpdateUnitTests : IDisposable
         _journal.SaveUpdateJournal(inFlightUpdate);
 
         // Restart reconciliation
-        var restartMachine = new EnforcementStateMachine(_receiver, _enforcer, _firewall, _journal, _connectivity);
+        var restartMachine = new EnforcementStateMachine(
+            _receiver, _enforcer, _firewall, _journal, _connectivity,
+            browserResolver: StubBrowserExecutableResolver.Succeeding());
         var recovery = await restartMachine.ReconcileStartupStateAsync();
 
         Assert.True(recovery.Success);
@@ -462,7 +469,9 @@ public sealed class DynamicPolicyUpdateUnitTests : IDisposable
         _journal.SaveUpdateJournal(unfinalizedJournal);
 
         // Restart reconciliation
-        var restartMachine = new EnforcementStateMachine(_receiver, _enforcer, _firewall, _journal, _connectivity);
+        var restartMachine = new EnforcementStateMachine(
+            _receiver, _enforcer, _firewall, _journal, _connectivity,
+            browserResolver: StubBrowserExecutableResolver.Succeeding());
         var recovery = await restartMachine.ReconcileStartupStateAsync();
 
         Assert.True(recovery.Success);

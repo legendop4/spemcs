@@ -59,12 +59,15 @@ public sealed class SecurityHardeningUnitTests : IDisposable
     {
         var payloadObj = new Dictionary<string, object?>
         {
-            ["schema_version"] = "1.0",
+            ["schema_version"] = "1.1",
             ["key_id"] = keyId,
             ["exam_id"] = TestExamId.ToString(),
             ["policy_id"] = Guid.NewGuid().ToString(),
             ["version"] = version,
             ["vendor_profile_id"] = null,
+            // Mandatory from schema 1.1: the approved browser is the identity every vendor allow
+            // rule is scoped to, so it has to be inside the signed bytes.
+            ["approved_browser"] = "chrome",
             ["allowed_destinations"] = new List<object>
             {
                 new Dictionary<string, object>
@@ -445,7 +448,11 @@ public sealed class SecurityHardeningUnitTests : IDisposable
     {
         // An attacker attempting to use an HMAC device token as an RSA-PSS policy signature
         var fakeSignature = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes("fake-hmac-device-token-cannot-sign"));
-        var rawJson = "{\"schema_version\":\"1.0\",\"key_id\":\"dev-key-1\",\"exam_id\":\"" + TestExamId + "\",\"policy_id\":\"" + Guid.NewGuid() + "\",\"version\":1,\"vendor_profile_id\":null,\"allowed_destinations\":[],\"management_server\":{\"ip_addresses\":[\"127.0.0.1\"],\"port\":8000},\"not_before\":\"2026-09-03T11:00:00Z\",\"expires_at\":\"2026-09-03T13:00:00Z\"}";
+
+        // Schema 1.1 and structurally complete on purpose: the payload has to survive the
+        // mandatory-field and schema checks so the rejection provably comes from SIGNATURE
+        // verification, not from an earlier well-formedness gate.
+        var rawJson = "{\"schema_version\":\"1.1\",\"key_id\":\"dev-key-1\",\"exam_id\":\"" + TestExamId + "\",\"policy_id\":\"" + Guid.NewGuid() + "\",\"version\":1,\"vendor_profile_id\":null,\"approved_browser\":\"chrome\",\"allowed_destinations\":[],\"management_server\":{\"ip_addresses\":[\"127.0.0.1\"],\"port\":8000},\"not_before\":\"2026-09-03T11:00:00Z\",\"expires_at\":\"2026-09-03T13:00:00Z\"}";
 
         var tamperedMsg = new SignedPolicyMessage(
             MessageType: "SIGNED_NETWORK_POLICY",

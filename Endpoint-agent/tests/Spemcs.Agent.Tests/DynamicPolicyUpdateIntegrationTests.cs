@@ -15,6 +15,27 @@ namespace Spemcs.Agent.Tests;
 
 public sealed class DynamicPolicyUpdateIntegrationTests : IDisposable
 {
+    /// <summary>
+    /// The vendor destination address in the signed fixtures below.
+    /// <para>
+    /// Deliberately NOT loopback. <c>127.0.0.0/8</c> is a forbidden destination range on both sides
+    /// of the system - <see cref="PolicyDestinationValidator"/> refuses it and so does
+    /// <c>policy_compiler.py::_ALWAYS_FORBIDDEN_V4</c> - because a destination allow rule exists to
+    /// let traffic leave the machine, loopback never does, and SPEMCS already opens loopback
+    /// unconditionally. These fixtures originally used <c>127.0.0.1</c> so the harness could bind a
+    /// real <see cref="TcpListener"/>, which is why <see cref="IsTrafficPermitted"/> has to exclude
+    /// the product's own loopback rules to stay meaningful at all. Nothing after activation opens a
+    /// socket, so the listeners only need their ports - not their address - to match the policy.
+    /// </para>
+    /// <para>
+    /// 198.51.100.0/24 is RFC 5737 TEST-NET-2: reserved for documentation, never routable, and
+    /// unmistakably a fixture rather than someone's LAN. A single host rather than a CIDR because
+    /// <see cref="IsTrafficPermitted"/> matches <c>RemoteAddresses</c> by substring, not by prefix
+    /// containment.
+    /// </para>
+    /// </summary>
+    private const string VendorIp = "198.51.100.7";
+
     private readonly TcpListener _mgmtListener;
     private readonly TcpListener _vendorListenerA;
     private readonly TcpListener _vendorListenerB;
@@ -75,19 +96,20 @@ public sealed class DynamicPolicyUpdateIntegrationTests : IDisposable
         var policyId = Guid.NewGuid();
         var payloadObj = new Dictionary<string, object?>
         {
-            ["schema_version"] = "1.0",
+            ["schema_version"] = "1.1",
             ["key_id"] = keyId,
             ["exam_id"] = examId.ToString(),
             ["policy_id"] = policyId.ToString(),
             ["version"] = version,
             ["vendor_profile_id"] = null,
+            ["approved_browser"] = "chrome",
             ["allowed_destinations"] = new List<object>
             {
                 new Dictionary<string, object>
                 {
                     ["name"] = "VendorApp",
                     ["domains"] = new List<string> { "vendor.local" },
-                    ["ip_ranges"] = new List<string> { "127.0.0.1" },
+                    ["ip_ranges"] = new List<string> { VendorIp },
                     ["tcp_ports"] = new List<int> { vendorPort },
                     ["udp_ports"] = new List<int>()
                 }
@@ -145,7 +167,9 @@ public sealed class DynamicPolicyUpdateIntegrationTests : IDisposable
             var receiver = new PolicyReceiver(keyStore, journal, connectivity);
             var mockFirewall = new MockFirewallAdapter();
             var enforcer = new NetworkEnforcer(mockFirewall, journal);
-            var machine = new EnforcementStateMachine(receiver, enforcer, mockFirewall, journal, connectivity);
+            var machine = new EnforcementStateMachine(
+                receiver, enforcer, mockFirewall, journal, connectivity,
+                browserResolver: StubBrowserExecutableResolver.Succeeding());
 
             using var rsa = RSA.Create(2048);
             var keyId = "dev-key-1";
@@ -160,14 +184,14 @@ public sealed class DynamicPolicyUpdateIntegrationTests : IDisposable
             var msgV1 = CreateSignedMessage(rsa, keyId, examId, version: 1, vendorPort: _vendorPortA);
             var act = await machine.ActivateAsync(sessionId, msgV1, examId, FirewallProfiles.Private);
 
-            Assert.True(act.Success);
+            Assert.True(act.Success, act.FailureReason);
             Assert.Equal(EnforcementState.Active, machine.CurrentState);
             Assert.Equal(FirewallAction.Block, mockFirewall.GetBaseline().PrivateDefaultOutbound);
 
             // Traffic Under Policy v1:
             Assert.True(IsTrafficPermitted(mockFirewall, "127.0.0.1", _mgmtPort), "Management must be permitted");
-            Assert.True(IsTrafficPermitted(mockFirewall, "127.0.0.1", _vendorPortA), "Vendor Port A must be permitted");
-            Assert.False(IsTrafficPermitted(mockFirewall, "127.0.0.1", _vendorPortB), "Vendor Port B must be BLOCKED under v1");
+            Assert.True(IsTrafficPermitted(mockFirewall, VendorIp, _vendorPortA), "Vendor Port A must be permitted");
+            Assert.False(IsTrafficPermitted(mockFirewall, VendorIp, _vendorPortB), "Vendor Port B must be BLOCKED under v1");
 
             // -----------------------------------------------------------------
             // 4. Dynamic Policy Update to v2 (Rotated: Management + VendorPortB)
@@ -175,7 +199,7 @@ public sealed class DynamicPolicyUpdateIntegrationTests : IDisposable
             var msgV2 = CreateSignedMessage(rsa, keyId, examId, version: 2, vendorPort: _vendorPortB, msgType: "UPDATE_EXAM_POLICY");
             var update = await machine.UpdatePolicyAsync(msgV2);
 
-            Assert.True(update.Success);
+            Assert.True(update.Success, update.FailureReason);
             Assert.Equal(2, update.NewVersion);
             Assert.Equal(2, machine.CurrentSession?.PolicyVersion);
             Assert.Equal(EnforcementState.Active, machine.CurrentState); // Remained ACTIVE!
@@ -185,20 +209,20 @@ public sealed class DynamicPolicyUpdateIntegrationTests : IDisposable
 
             // Traffic Under Policy v2 (Rotated!):
             Assert.True(IsTrafficPermitted(mockFirewall, "127.0.0.1", _mgmtPort), "Management remains permitted");
-            Assert.True(IsTrafficPermitted(mockFirewall, "127.0.0.1", _vendorPortB), "Rotated Vendor Port B is now PERMITTED");
-            Assert.False(IsTrafficPermitted(mockFirewall, "127.0.0.1", _vendorPortA), "Retired Vendor Port A is now BLOCKED");
+            Assert.True(IsTrafficPermitted(mockFirewall, VendorIp, _vendorPortB), "Rotated Vendor Port B is now PERMITTED");
+            Assert.False(IsTrafficPermitted(mockFirewall, VendorIp, _vendorPortA), "Retired Vendor Port A is now BLOCKED");
 
             // -----------------------------------------------------------------
             // 5. Deactivate / Stop Exam
             // -----------------------------------------------------------------
             var deact = await machine.DeactivateAsync(sessionId, "Exam completed");
-            Assert.True(deact.Success);
+            Assert.True(deact.Success, deact.FailureReason);
             Assert.Equal(EnforcementState.Idle, machine.CurrentState);
 
             // Baseline restored to ALLOW
             Assert.Equal(FirewallAction.Allow, mockFirewall.GetBaseline().PrivateDefaultOutbound);
-            Assert.True(IsTrafficPermitted(mockFirewall, "127.0.0.1", _vendorPortA), "Port A restored after exam");
-            Assert.True(IsTrafficPermitted(mockFirewall, "127.0.0.1", _vendorPortB), "Port B restored after exam");
+            Assert.True(IsTrafficPermitted(mockFirewall, VendorIp, _vendorPortA), "Port A restored after exam");
+            Assert.True(IsTrafficPermitted(mockFirewall, VendorIp, _vendorPortB), "Port B restored after exam");
 
             // SPEMCS rules purged; unrelated rules intact
             Assert.Empty(mockFirewall.Rules);
@@ -224,7 +248,9 @@ public sealed class DynamicPolicyUpdateIntegrationTests : IDisposable
             var receiver = new PolicyReceiver(keyStore, journal, connectivity);
             var mockFirewall = new MockFirewallAdapter();
             var enforcer = new NetworkEnforcer(mockFirewall, journal);
-            var machine = new EnforcementStateMachine(receiver, enforcer, mockFirewall, journal, connectivity);
+            var machine = new EnforcementStateMachine(
+                receiver, enforcer, mockFirewall, journal, connectivity,
+                browserResolver: StubBrowserExecutableResolver.Succeeding());
 
             using var rsa = RSA.Create(2048);
             var keyId = "dev-key-1";
@@ -236,7 +262,7 @@ public sealed class DynamicPolicyUpdateIntegrationTests : IDisposable
             // 1. Activate Policy v1 (Allowed: Management + VendorPortA)
             var msgV1 = CreateSignedMessage(rsa, keyId, examId, version: 1, vendorPort: _vendorPortA);
             var act = await machine.ActivateAsync(sessionId, msgV1, examId, FirewallProfiles.Private);
-            Assert.True(act.Success);
+            Assert.True(act.Success, act.FailureReason);
             Assert.Equal(EnforcementState.Active, machine.CurrentState);
 
             // 2. Candidate B arrives attempting to rotate to _vendorPortB, but management probe fails
@@ -255,10 +281,10 @@ public sealed class DynamicPolicyUpdateIntegrationTests : IDisposable
             Assert.True(IsTrafficPermitted(mockFirewall, "127.0.0.1", _mgmtPort), "Management remains permitted");
 
             // Old Vendor Port A: SUCCESS (Policy A still active!)
-            Assert.True(IsTrafficPermitted(mockFirewall, "127.0.0.1", _vendorPortA), "Vendor Port A remains permitted");
+            Assert.True(IsTrafficPermitted(mockFirewall, VendorIp, _vendorPortA), "Vendor Port A remains permitted");
 
             // Candidate-only Vendor Port B: BLOCKED (Rolled back!)
-            Assert.False(IsTrafficPermitted(mockFirewall, "127.0.0.1", _vendorPortB), "Candidate-only Port B must be BLOCKED");
+            Assert.False(IsTrafficPermitted(mockFirewall, VendorIp, _vendorPortB), "Candidate-only Port B must be BLOCKED");
 
             // Unauthorized port: BLOCKED
             Assert.False(IsTrafficPermitted(mockFirewall, "127.0.0.1", 9999), "Unauthorized traffic remains BLOCKED");

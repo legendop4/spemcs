@@ -212,7 +212,7 @@ public sealed class NetworkCollectorTests
             var store = new SqliteAgentStore(root);
             var provider = new MockNetworkTableProvider();
             var collector = new NetworkCollector(store, provider);
-            var monitor = new ProcessMonitor(new WindowsProcessSource(), new ConfigurableProcessClassifier(), store, store.LoadSnapshot);
+            var monitor = new ProcessMonitor(new WindowsProcessSource(), new ConfigurableProcessClassifier(ApprovedBrowserFamily.Chrome), store, store.LoadSnapshot);
 
             var sw = System.Diagnostics.Stopwatch.StartNew();
             collector.PollOnce();

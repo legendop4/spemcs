@@ -44,7 +44,9 @@ public sealed class AdversarialSecurityValidationTests : IDisposable
         _firewall = new MockFirewallAdapter();
         _enforcer = new NetworkEnforcer(_firewall, _journal);
         _receiver = new PolicyReceiver(_keyStore, _journal, _connectivity);
-        _machine = new EnforcementStateMachine(_receiver, _enforcer, _firewall, _journal, _connectivity);
+        _machine = new EnforcementStateMachine(
+            _receiver, _enforcer, _firewall, _journal, _connectivity,
+            browserResolver: StubBrowserExecutableResolver.Succeeding());
 
         _rsa = RSA.Create(2048);
         _keyStore.RegisterPublicKey(ActiveKeyId, _rsa);
@@ -76,12 +78,13 @@ public sealed class AdversarialSecurityValidationTests : IDisposable
 
         var payload = new Dictionary<string, object?>
         {
-            ["schema_version"] = "1.0",
+            ["schema_version"] = "1.1",
             ["key_id"] = keyId,
             ["exam_id"] = targetExam.ToString(),
             ["policy_id"] = Guid.NewGuid().ToString(),
             ["version"] = version,
             ["vendor_profile_id"] = null,
+            ["approved_browser"] = "chrome",
             ["allowed_destinations"] = new List<object>
             {
                 new Dictionary<string, object>
@@ -229,7 +232,9 @@ public sealed class AdversarialSecurityValidationTests : IDisposable
     {
         var unreachableConnectivity = new MockManagementConnectivityVerifier(shouldSucceed: false);
         var receiver = new PolicyReceiver(_keyStore, _journal, unreachableConnectivity);
-        var machine = new EnforcementStateMachine(receiver, _enforcer, _firewall, _journal, unreachableConnectivity);
+        var machine = new EnforcementStateMachine(
+            receiver, _enforcer, _firewall, _journal, unreachableConnectivity,
+            browserResolver: StubBrowserExecutableResolver.Succeeding());
 
         var sessionId = Guid.NewGuid();
         var validMsg = CreatePolicyMessage(ActiveKeyId, version: 1);
@@ -328,7 +333,9 @@ public sealed class AdversarialSecurityValidationTests : IDisposable
         // Simulate crash & restart by creating a new state machine pointing to the same SQLite journal
         var newJournal = new SqliteRollbackJournal(_tempDbPath);
         var newReceiver = new PolicyReceiver(_keyStore, newJournal, _connectivity);
-        var restartedMachine = new EnforcementStateMachine(newReceiver, _enforcer, _firewall, newJournal, _connectivity);
+        var restartedMachine = new EnforcementStateMachine(
+            newReceiver, _enforcer, _firewall, newJournal, _connectivity,
+            browserResolver: StubBrowserExecutableResolver.Succeeding());
 
         // Startup reconciliation
         var recResult = await restartedMachine.ReconcileStartupStateAsync();

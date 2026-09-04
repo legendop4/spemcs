@@ -307,6 +307,7 @@ def test_class_c_websocket_genuine_registration_succeeds():
 def test_class_e_policy_signature_tamper_detection():
     """Tamper with destinations and management server; verify signature rejection."""
     from backend.services.policy_signer import (
+        CURRENT_SCHEMA_VERSION,
         generate_development_keypair,
         create_canonical_payload,
         InvalidSignatureError,
@@ -334,8 +335,9 @@ def test_class_e_policy_signature_tamper_detection():
         management_server=management,
         not_before=now - timedelta(minutes=5),
         expires_at=now + timedelta(hours=2),
+        approved_browser="chrome",
         key_id="redteam-key-1",
-        schema_version="1.0",
+        schema_version=CURRENT_SCHEMA_VERSION,
     )
 
     sig = signer.sign_payload(payload)
@@ -355,6 +357,14 @@ def test_class_e_policy_signature_tamper_detection():
     tampered_payload2["management_server"]["port"] = 9999
     with pytest.raises(InvalidSignatureError):
         verifier.verify_policy(tampered_payload2, sig, current_time=now)
+
+    # 4. Tamper the approved browser (requirement 4/5): swapping the browser identity
+    # would re-scope every endpoint allow rule onto a different executable. It is inside
+    # the signed bytes, so it must be caught as a signature failure, not silently accepted.
+    tampered_payload3 = copy.deepcopy(payload)
+    tampered_payload3["approved_browser"] = "edge"
+    with pytest.raises(InvalidSignatureError):
+        verifier.verify_policy(tampered_payload3, sig, current_time=now)
 
 
 # ==============================================================================
