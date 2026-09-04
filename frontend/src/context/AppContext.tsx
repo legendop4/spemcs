@@ -136,6 +136,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   // WebSocket connection and real-time updates
   useEffect(() => {
+    if (!currentUser) {
+      wsClient.disconnect();
+      setWsConnected(false);
+      return;
+    }
+
     wsClient.connect();
 
     const offDeviceStatus = wsClient.on('DEVICE_STATUS_CHANGE', (msg: WsMessage) => {
@@ -188,7 +194,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       clearInterval(checkConnection);
       wsClient.disconnect();
     };
-  }, []);
+  }, [currentUser]);
 
   // Auth
   const login = useCallback(async (username: string, password: string): Promise<boolean> => {

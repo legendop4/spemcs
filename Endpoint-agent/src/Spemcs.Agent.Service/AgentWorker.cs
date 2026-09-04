@@ -48,8 +48,15 @@ public sealed class AgentWorker : BackgroundService
             _log.LogWarning("Browser Secure DNS policy enforcement warning: {Status}", dnsPolicyStatus);
         }
 
-        if (!await new RegistrationCoordinator(_store, _ui, _regService).EnsureRegisteredAsync(GetCurrentIpAddress(), stoppingToken))
-            _log.LogWarning("Device registration was not completed; START_EXAM will be rejected.");
+        try
+        {
+            if (!await new RegistrationCoordinator(_store, _ui, _regService).EnsureRegisteredAsync(GetCurrentIpAddress(), stoppingToken))
+                _log.LogWarning("Device registration was not completed; START_EXAM will be rejected.");
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning("Device registration check deferred: {Message}", ex.Message);
+        }
 
         var source = new WindowsProcessSource();
         var approvedBrowser = ApprovedBrowserFamily.Chrome;

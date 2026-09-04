@@ -83,6 +83,8 @@ def create_exam(
         exam_link=payload.exam_link,
         approved_browser=payload.approved_browser,
         device_ids=payload.device_ids,
+        network_enforcement=payload.network_enforcement,
+        vendor_profile_id=payload.vendor_profile_id,
     )
     return _enrich_exam(db, exam)
 

@@ -64,17 +64,25 @@ public sealed record FirewallRuleModel(
     string LocalPorts,
     string RemotePorts,
     string RemoteAddresses,
+    string LocalAddresses,
     string? ApplicationPath,
     FirewallProfiles Profiles,
     bool Enabled,
     string Purpose,
-    Guid SessionId
+    Guid SessionId,
+    string? ServiceName = null
 )
 {
-    public const string SpemcsRuleGroup = "SPEMCS-EXAM-ENFORCEMENT";
+    public const string SpemcsRuleGroup = "SPEMCS_EXAM_LOCKDOWN";
 
     public static string GenerateRuleName(Guid sessionId, string purpose, string remoteAddresses, string remotePorts)
     {
+        if (string.Equals(purpose, "Mgmt", StringComparison.OrdinalIgnoreCase))
+        {
+            var cleanIp = remoteAddresses.Contains('/') ? remoteAddresses.Split('/')[0] : remoteAddresses;
+            return $"SPEMCS-{sessionId:N}-Mgmt-{cleanIp}-{remotePorts}";
+        }
+
         var rawKey = $"{sessionId:N}-{purpose}-{remoteAddresses}-{remotePorts}";
         using var sha = SHA256.Create();
         var hashBytes = sha.ComputeHash(Encoding.UTF8.GetBytes(rawKey));
@@ -88,7 +96,9 @@ public sealed record FirewallRuleModel(
         FirewallProtocol protocol,
         string remoteAddresses,
         string remotePorts,
+        string localAddresses = "*",
         string? applicationPath = null,
+        string? serviceName = null,
         FirewallProfiles profiles = FirewallProfiles.All)
     {
         var name = GenerateRuleName(sessionId, purpose, remoteAddresses, remotePorts);
@@ -101,12 +111,67 @@ public sealed record FirewallRuleModel(
             LocalPorts: "*",
             RemotePorts: string.IsNullOrWhiteSpace(remotePorts) ? "*" : remotePorts,
             RemoteAddresses: string.IsNullOrWhiteSpace(remoteAddresses) ? "*" : remoteAddresses,
+            LocalAddresses: string.IsNullOrWhiteSpace(localAddresses) ? "*" : localAddresses,
             ApplicationPath: string.IsNullOrWhiteSpace(applicationPath) ? null : applicationPath,
             Profiles: profiles,
             Enabled: true,
             Purpose: purpose,
-            SessionId: sessionId
+            SessionId: sessionId,
+            ServiceName: string.IsNullOrWhiteSpace(serviceName) ? null : serviceName
         );
+    }
+
+    public static FirewallRuleModel CreateLoopbackIPv4Allow(
+        Guid sessionId,
+        FirewallProfiles profiles = FirewallProfiles.All)
+    {
+        return new FirewallRuleModel(
+            Name: $"SPEMCS-{sessionId:N}-Loopback-IPv4",
+            Group: SpemcsRuleGroup,
+            Direction: FirewallDirection.Outbound,
+            Action: FirewallAction.Allow,
+            Protocol: FirewallProtocol.Any,
+            LocalPorts: "*",
+            RemotePorts: "*",
+            RemoteAddresses: "127.0.0.1",
+            LocalAddresses: "127.0.0.1",
+            ApplicationPath: null,
+            Profiles: profiles,
+            Enabled: true,
+            Purpose: "Loopback-IPv4",
+            SessionId: sessionId,
+            ServiceName: null
+        );
+    }
+
+    public static FirewallRuleModel CreateLoopbackIPv6Allow(
+        Guid sessionId,
+        FirewallProfiles profiles = FirewallProfiles.All)
+    {
+        return new FirewallRuleModel(
+            Name: $"SPEMCS-{sessionId:N}-Loopback-IPv6",
+            Group: SpemcsRuleGroup,
+            Direction: FirewallDirection.Outbound,
+            Action: FirewallAction.Allow,
+            Protocol: FirewallProtocol.Any,
+            LocalPorts: "*",
+            RemotePorts: "*",
+            RemoteAddresses: "::/127",
+            LocalAddresses: "::/127",
+            ApplicationPath: null,
+            Profiles: profiles,
+            Enabled: true,
+            Purpose: "Loopback-IPv6",
+            SessionId: sessionId,
+            ServiceName: null
+        );
+    }
+
+    public static FirewallRuleModel CreateLoopbackAllow(
+        Guid sessionId,
+        FirewallProfiles profiles = FirewallProfiles.All)
+    {
+        return CreateLoopbackIPv4Allow(sessionId, profiles);
     }
 }
 

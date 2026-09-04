@@ -16,7 +16,8 @@ public sealed class RollingFileLoggerProvider : ILoggerProvider
 
 internal sealed class RollingFileLogger : ILogger, IDisposable
 {
-    private readonly string _directory; private readonly long _maxBytes; private readonly string _category; private readonly object _gate = new(); private StreamWriter? _writer; private string? _path;
+    private static readonly object s_gate = new();
+    private readonly string _directory; private readonly long _maxBytes; private readonly string _category; private StreamWriter? _writer; private string? _path;
     public RollingFileLogger(string directory, long maxBytes, string category) { _directory=directory; _maxBytes=maxBytes; _category=category; }
     public IDisposable BeginScope<TState>(TState state) where TState : notnull => NullScope.Instance;
     public bool IsEnabled(LogLevel logLevel) => logLevel != LogLevel.None;
@@ -25,7 +26,7 @@ internal sealed class RollingFileLogger : ILogger, IDisposable
         if (!IsEnabled(logLevel)) return;
         var record = new { TimestampUtc=DateTimeOffset.UtcNow, Level=logLevel.ToString(), Category=_category, EventId=eventId.Id, Message=formatter(state, exception), Exception=exception?.ToString() };
         var line = JsonSerializer.Serialize(record);
-        lock (_gate)
+        lock (s_gate)
         {
             EnsureWriter(line.Length + Environment.NewLine.Length);
             _writer!.WriteLine(line); _writer.Flush();
@@ -41,6 +42,6 @@ internal sealed class RollingFileLogger : ILogger, IDisposable
             _path = candidate; _writer = new StreamWriter(new FileStream(candidate, FileMode.Append, FileAccess.Write, FileShare.ReadWrite)) { AutoFlush = true };
         }
     }
-    public void Dispose() { lock (_gate) { _writer?.Dispose(); _writer = null; } }
+    public void Dispose() { lock (s_gate) { _writer?.Dispose(); _writer = null; } }
     private sealed class NullScope : IDisposable { public static readonly NullScope Instance = new(); public void Dispose() { } }
 }

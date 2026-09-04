@@ -56,6 +56,9 @@ export class SpemcsWebSocket {
 
   connect(): void {
     if (this._isConnecting || this._isConnected) return;
+    if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
+      return;
+    }
     this._isConnecting = true;
     this._shouldReconnect = true;
 
@@ -122,8 +125,15 @@ export class SpemcsWebSocket {
       this.reconnectTimer = null;
     }
     if (this.ws) {
-      this.ws.close(1000, 'Client disconnect');
+      const socket = this.ws;
       this.ws = null;
+      if (socket.readyState === WebSocket.OPEN) {
+        socket.close(1000, 'Client disconnect');
+      } else if (socket.readyState === WebSocket.CONNECTING) {
+        socket.onopen = () => {
+          socket.close(1000, 'Client disconnect');
+        };
+      }
     }
     this._isConnected = false;
     this._isConnecting = false;

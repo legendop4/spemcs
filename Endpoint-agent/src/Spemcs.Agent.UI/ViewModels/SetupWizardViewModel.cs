@@ -243,6 +243,7 @@ public class SetupWizardViewModel : ViewModelBase
                 DeviceId = res.DeviceId,
                 DeviceName = res.DeviceName,
                 HardwareUuid = res.HardwareUuid ?? hwUuid,
+                DeviceToken = res.DeviceToken,
                 LabId = SelectedLab.LabId.ToString(),
                 LabCode = SelectedLab.BuildingId,
                 LabName = SelectedLab.LabName,

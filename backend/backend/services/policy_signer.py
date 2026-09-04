@@ -147,8 +147,15 @@ def create_canonical_payload(
     Ensures all IDs are string representations and timestamps are strict ISO-8601 UTC.
     The 'signature' field is explicitly EXCLUDED from this payload.
     """
-    nb_str = not_before if isinstance(not_before, str) else not_before.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    exp_str = expires_at if isinstance(expires_at, str) else expires_at.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    def _format_utc(dt: datetime | str) -> str:
+        if isinstance(dt, str):
+            return dt
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    nb_str = _format_utc(not_before)
+    exp_str = _format_utc(expires_at)
 
     payload = {
         "schema_version": str(schema_version),
