@@ -11,6 +11,10 @@ from backend.app.database import get_db
 from backend.schemas.policy import (
     NetworkPolicyRead,
     PolicyCompileRequest,
+    SigningKeyRead,
+    SigningKeyRevokeRequest,
+    SigningKeyRotateRequest,
+    SigningKeyringRead,
     VendorProfileCreate,
     VendorProfileRead,
     VendorProfileUpdate,
@@ -18,24 +22,141 @@ from backend.schemas.policy import (
 from backend.services import policy_service
 from backend.services.auth_service import require_role
 from backend.services.policy_compiler import PolicyCompilationError
-from backend.services.policy_signer import (
-    PolicySigner,
-    generate_development_keypair,
+from backend.services.signing_key_manager import (
+    SigningKeyManager,
+    SigningKeyStateError,
+    SigningKeyUnavailableError,
+    get_signing_key_manager,
 )
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/policies", tags=["policies"])
 
-# Singleton development signer for dev/test compilation
-_dev_priv, _ = generate_development_keypair()
-_dev_signer = PolicySigner(private_key=_dev_priv, key_id="dev-key-1")
+
+def signing_keys() -> SigningKeyManager:
+    """FastAPI dependency yielding the process-wide signing key manager.
+
+    A dependency rather than a module-level singleton so the key is created on first use
+    instead of at import. The previous code generated a fresh RSA keypair while this module was
+    being imported, which meant every process start - including a test run, an autoreload, and
+    each additional uvicorn worker - silently replaced the key that had already signed and
+    distributed policies. See services/signing_key_manager.py.
+    """
+    return get_signing_key_manager()
 
 
-@router.get("/signing-key/public")
-def get_signing_public_key():
-    """Export the active signing public key PEM for agent trusted key store."""
-    from backend.services.policy_signer import export_public_key_pem
-    return {"key_id": _dev_signer.key_id, "public_key_pem": export_public_key_pem(_dev_signer.public_key)}
+def _unavailable(err: SigningKeyUnavailableError) -> HTTPException:
+    """Maps a missing/unusable signing key to 503.
+
+    503 rather than 500: the request was valid and retrying after the deployment is fixed will
+    work. The message is the manager's own remediation text, which names paths and settings but
+    never key material.
+    """
+    logger.error("Policy signing key unavailable: %s", err)
+    return HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(err))
+
+
+# ==============================================================================
+# Signing Key Lifecycle Endpoints
+# ==============================================================================
+# AUTHORIZATION NOTE
+# The two GET endpoints publish PUBLIC key material and are reachable without a user session,
+# because the consumer is the endpoint agent service - a machine account with no operator
+# credentials, which must be able to populate its trust store before any exam starts. Nothing
+# secret is exposed: SigningKeyRead has no field capable of holding a private key.
+#
+# What these endpoints do NOT provide is proof of origin. An agent that fetches its trust
+# anchors over plaintext HTTP will trust whatever a network attacker returns, so the transport
+# must be HTTPS with a verified hostname; the agent's ManagementConnectivityVerifier enforces
+# StrictHttps for any https:// backend URL. Rotation and revocation change server state and are
+# therefore admin-only.
+
+
+@router.get("/signing-key/public", response_model=SigningKeyRead)
+def get_signing_public_key(keys: SigningKeyManager = Depends(signing_keys)):
+    """Export the ACTIVE signing public key for an agent's trusted key store.
+
+    Kept for agents that only need the current key. Prefer /signing-key/keyring, which also
+    carries retired keys (needed to verify policies issued before a rotation) and revocations.
+    """
+    try:
+        return SigningKeyRead(**keys.active_descriptor().to_public_dict())
+    except SigningKeyUnavailableError as err:
+        raise _unavailable(err)
+
+
+@router.get("/signing-key/keyring", response_model=SigningKeyringRead)
+def get_signing_keyring(keys: SigningKeyManager = Depends(signing_keys)):
+    """Export every signing key this server has issued, with its lifecycle state."""
+    try:
+        keyring = keys.keyring()
+        return SigningKeyringRead(
+            active_key_id=keys.active_key_id(),
+            keys=[SigningKeyRead(**d.to_public_dict()) for d in keyring],
+            revoked_key_ids=[d.key_id for d in keyring if d.is_revoked],
+            ephemeral=keys.is_ephemeral,
+        )
+    except SigningKeyUnavailableError as err:
+        raise _unavailable(err)
+
+
+@router.post("/signing-key/rotate", response_model=SigningKeyringRead)
+def rotate_signing_key(
+    payload: Optional[SigningKeyRotateRequest] = None,
+    keys: SigningKeyManager = Depends(signing_keys),
+    _user=Depends(require_role(["admin"])),
+):
+    """Generate a new active signing key and retire the current one.
+
+    Retirement is not revocation: the outgoing key stays published so policies it already
+    signed keep verifying. Newly compiled policies use the new key, and agents pick it up on
+    their next keyring fetch.
+    """
+    try:
+        rotated = keys.rotate(reason=(payload.reason if payload else None))
+        keyring = keys.keyring()
+        logger.info("Signing key rotated to '%s' by an administrator.", rotated.key_id)
+        return SigningKeyringRead(
+            active_key_id=rotated.key_id,
+            keys=[SigningKeyRead(**d.to_public_dict()) for d in keyring],
+            revoked_key_ids=[d.key_id for d in keyring if d.is_revoked],
+            ephemeral=keys.is_ephemeral,
+        )
+    except SigningKeyUnavailableError as err:
+        raise _unavailable(err)
+    except SigningKeyStateError as err:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(err))
+
+
+@router.post("/signing-key/{key_id}/revoke", response_model=SigningKeyringRead)
+def revoke_signing_key(
+    key_id: str,
+    payload: SigningKeyRevokeRequest,
+    keys: SigningKeyManager = Depends(signing_keys),
+    _user=Depends(require_role(["admin"])),
+):
+    """Mark a signing key untrusted so agents reject everything it signed.
+
+    Use this for suspected key compromise, not for routine replacement - revocation
+    invalidates policies that are already deployed, so any exam still relying on a policy
+    signed by this key must have that policy recompiled.
+    """
+    try:
+        revoked = keys.revoke(key_id, payload.reason)
+        keyring = keys.keyring()
+        logger.warning(
+            "Signing key '%s' revoked by an administrator. Reason: %s", revoked.key_id, payload.reason
+        )
+        return SigningKeyringRead(
+            active_key_id=keys.active_key_id(),
+            keys=[SigningKeyRead(**d.to_public_dict()) for d in keyring],
+            revoked_key_ids=[d.key_id for d in keyring if d.is_revoked],
+            ephemeral=keys.is_ephemeral,
+        )
+    except SigningKeyStateError as err:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(err))
+    except SigningKeyUnavailableError as err:
+        raise _unavailable(err)
 
 
 # ==============================================================================
@@ -116,6 +237,7 @@ def compile_exam_policy(
     exam_id: UUID,
     payload: Optional[PolicyCompileRequest] = None,
     db: Session = Depends(get_db),
+    keys: SigningKeyManager = Depends(signing_keys),
     _user=Depends(require_role(["admin"])),
 ):
     """Compiles, signs, and persists a NetworkPolicy for an exam."""
@@ -133,6 +255,14 @@ def compile_exam_policy(
     nb = payload.not_before or now
     exp = payload.expires_at or (now + timedelta(hours=8))
 
+    # Resolved before any database work: if the signing key is unusable, compiling and
+    # persisting a policy row we cannot sign would leave an unusable policy behind for a later
+    # distribution attempt to trip over.
+    try:
+        signer = keys.active_signer()
+    except SigningKeyUnavailableError as err:
+        raise _unavailable(err)
+
     try:
         policy = policy_service.compile_and_persist_exam_policy(
             db=db,
@@ -141,7 +271,7 @@ def compile_exam_policy(
             management_server=mgmt,
             not_before=nb,
             expires_at=exp,
-            signer=_dev_signer,
+            signer=signer,
             vendor_profile_id=payload.vendor_profile_id,
             resolved_destinations=payload.resolved_destinations,
         )
@@ -179,21 +309,15 @@ async def distribute_policy_to_device(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No policy found for this exam")
 
     from backend.services.canonical_json import canonicalize
-    from backend.services.policy_signer import create_canonical_payload
     from backend.websocket.manager import realtime_manager
 
-    # Reconstruct the exact canonical dictionary signed by server
-    payload_dict = create_canonical_payload(
-        exam_id=policy.exam_id,
-        policy_id=policy.policy_id,
-        version=policy.version,
-        vendor_profile_id=policy.vendor_profile_id,
-        allowed_destinations=policy.allowed_destinations,
-        management_server=policy.management_server,
-        not_before=policy.not_before,
-        expires_at=policy.expires_at,
-        key_id="dev-key-1",
-    )
+    # Reconstruct the exact canonical dictionary signed by the server. key_id,
+    # schema_version and approved_browser all come from the persisted row - never from a
+    # constant - so the bytes are identical to what was signed.
+    try:
+        payload_dict = policy_service.rebuild_signed_payload(policy)
+    except PolicyCompilationError as err:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(err))
     raw_policy_json = canonicalize(payload_dict)
 
     sent = await realtime_manager.send_signed_policy_to_device(
@@ -230,20 +354,12 @@ async def distribute_policy_update_to_device(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No policy found for this exam")
 
     from backend.services.canonical_json import canonicalize
-    from backend.services.policy_signer import create_canonical_payload
     from backend.websocket.manager import realtime_manager
 
-    payload_dict = create_canonical_payload(
-        exam_id=policy.exam_id,
-        policy_id=policy.policy_id,
-        version=policy.version,
-        vendor_profile_id=policy.vendor_profile_id,
-        allowed_destinations=policy.allowed_destinations,
-        management_server=policy.management_server,
-        not_before=policy.not_before,
-        expires_at=policy.expires_at,
-        key_id="dev-key-1",
-    )
+    try:
+        payload_dict = policy_service.rebuild_signed_payload(policy)
+    except PolicyCompilationError as err:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(err))
     raw_policy_json = canonicalize(payload_dict)
 
     sent = await realtime_manager.send_signed_policy_to_device(

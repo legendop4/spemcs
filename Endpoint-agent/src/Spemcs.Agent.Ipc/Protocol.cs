@@ -57,7 +57,11 @@ public sealed record ApplyNetworkPolicyPayload(
     Guid SessionId,
     Guid ExamId,
     SignedPolicyMessagePayload SignedMessage,
-    int TargetProfiles = 6
+    // 7 == FirewallProfiles.All (Domain|Private|Public). Requirement 6: every profile must be
+    // locked down. The previous default of 6 omitted Domain, so on a domain-joined lab PC - which
+    // is what university labs actually are - the whole lockdown silently did not apply: the active
+    // profile kept its original DefaultOutboundAction and no allow rules were scoped to it.
+    int TargetProfiles = 7
 );
 
 public sealed record RemoveNetworkPolicyPayload(

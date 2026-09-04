@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -64,6 +65,8 @@ public sealed class EnforcementStateMachine : IEnforcementStateMachine
     private readonly IFirewallAdapter _firewall;
     private readonly IRollbackJournal _journal;
     private readonly IManagementConnectivityVerifier _connectivity;
+    private readonly IBrowserExecutableResolver _browserResolver;
+    private readonly IApprovedBrowserContext? _approvedBrowser;
     private readonly ILogger<EnforcementStateMachine> _logger;
 
     private readonly SemaphoreSlim _gate = new(1, 1);
@@ -73,19 +76,36 @@ public sealed class EnforcementStateMachine : IEnforcementStateMachine
     public EnforcementState CurrentState => _state;
     public DurableEnforcementRecord? CurrentSession => _currentSession;
 
+    /// <param name="browserResolver">
+    /// Resolves the approved browser family named in the signed policy to a concrete, trusted
+    /// executable path (requirements 4 and 5). Optional only so existing call sites keep compiling;
+    /// when omitted the real <see cref="BrowserExecutableResolver"/> is used, which fails closed if
+    /// no trusted browser is installed.
+    /// </param>
+    /// <param name="approvedBrowser">
+    /// Shared context through which the SIGNED approved-browser family reaches the detection side of
+    /// the agent (process classifier, network policy evaluator). Activation binds it; rollback
+    /// releases it. Optional so that firewall-only tests and existing call sites keep compiling -
+    /// when omitted, enforcement still scopes rules correctly, but the monitor falls back to its
+    /// host-configured family.
+    /// </param>
     public EnforcementStateMachine(
         IPolicyReceiver receiver,
         INetworkEnforcer enforcer,
         IFirewallAdapter firewall,
         IRollbackJournal journal,
         IManagementConnectivityVerifier connectivity,
-        ILogger<EnforcementStateMachine>? logger = null)
+        ILogger<EnforcementStateMachine>? logger = null,
+        IBrowserExecutableResolver? browserResolver = null,
+        IApprovedBrowserContext? approvedBrowser = null)
     {
         _receiver = receiver ?? throw new ArgumentNullException(nameof(receiver));
         _enforcer = enforcer ?? throw new ArgumentNullException(nameof(enforcer));
         _firewall = firewall ?? throw new ArgumentNullException(nameof(firewall));
         _journal = journal ?? throw new ArgumentNullException(nameof(journal));
         _connectivity = connectivity ?? throw new ArgumentNullException(nameof(connectivity));
+        _browserResolver = browserResolver ?? new BrowserExecutableResolver();
+        _approvedBrowser = approvedBrowser;
         _logger = logger ?? NullLogger<EnforcementStateMachine>.Instance;
 
         // Load existing active session from SQLite journal if present
@@ -164,6 +184,104 @@ public sealed class EnforcementStateMachine : IEnforcementStateMachine
             _state = EnforcementState.PolicyValidated;
 
             // -----------------------------------------------------------------
+            // Precondition 3: Resolve the Approved Examination Browser (Requirements 4 & 5)
+            // -----------------------------------------------------------------
+            // Vendor destination allow rules are scoped to this executable. Resolution happens
+            // BEFORE any durable Preparing record is written and before a single firewall rule is
+            // touched, so a machine without a trusted approved browser leaves the firewall
+            // completely untouched instead of needing a rollback.
+            //
+            // Failing closed here is deliberate: the alternative (installing unscoped rules) would
+            // hand the exam allowlist to every process on the machine.
+            var browserResolution = _browserResolver.Resolve(policy.ApprovedBrowser);
+            if (!browserResolution.Success || string.IsNullOrWhiteSpace(browserResolution.ExecutablePath))
+            {
+                _logger.LogError(
+                    "Activation aborted: could not resolve approved browser {ApprovedBrowser} to a trusted executable. {Details}",
+                    policy.ApprovedBrowser, browserResolution.Details);
+
+                _state = EnforcementState.Failed;
+                var browserFailureReason =
+                    $"Approved browser '{policy.ApprovedBrowser}' could not be resolved to a trusted executable, " +
+                    $"so vendor allow rules cannot be scoped to it. {browserResolution.Details}";
+
+                _journal.SaveEnforcementState(new DurableEnforcementRecord(
+                    SessionId: sessionId,
+                    ExamId: expectedExamId,
+                    PolicyId: policy.PolicyId,
+                    PolicyVersion: policy.Version,
+                    State: EnforcementState.Failed,
+                    ActivationUtc: DateTimeOffset.UtcNow,
+                    ExpiresAtUtc: DateTimeOffset.UtcNow,
+                    LastTransitionUtc: DateTimeOffset.UtcNow,
+                    FailureReason: browserFailureReason
+                ));
+
+                return new EnforcementActivationResult(false, sessionId, EnforcementState.Failed, browserFailureReason);
+            }
+
+            var browserExecutablePath = browserResolution.ExecutablePath;
+
+            if (browserResolution.IsUserWritableLocation)
+            {
+                // Not fatal - a per-user Chrome install is legitimate - but the firewall matches on
+                // path, so an operator needs to know the allowlisted image is user-writable.
+                _logger.LogWarning(
+                    "Approved browser {ApprovedBrowser} resolved to a USER-WRITABLE location: {Details}",
+                    policy.ApprovedBrowser, browserResolution.Details);
+            }
+            else
+            {
+                _logger.LogInformation("Approved browser resolved: {Details}", browserResolution.Details);
+            }
+
+            // -----------------------------------------------------------------
+            // Precondition 4: Publish the SIGNED family to the detection path (Requirement 4)
+            // -----------------------------------------------------------------
+            // The firewall is about to grant network access to exactly one executable. Unless the
+            // process classifier and the network policy evaluator agree on which browser that is,
+            // the endpoint contradicts itself: the approved browser gets reported as a violation
+            // while a non-approved browser's (already blocked) traffic is suppressed from telemetry.
+            // Binding here - after signature verification, before any firewall mutation - means the
+            // monitor can only ever be told a family that came out of the signed policy.
+            if (_approvedBrowser is not null
+                && !_approvedBrowser.BindSignedPolicy(
+                    sessionId,
+                    policy.ApprovedBrowser,
+                    $"signed policy {policy.PolicyId} v{policy.Version}"))
+            {
+                // Reached only if a DIFFERENT session still owns the binding. The duplicate/conflict
+                // precondition above already refuses a second concurrent session, so this means a
+                // previous session was torn down without releasing. Failing closed is the only safe
+                // answer: continuing would enforce this exam's browser while the monitor keeps
+                // approving the previous one.
+                var bindingOwner = _approvedBrowser.Current.SessionId;
+                var bindConflictReason =
+                    $"Approved browser context is still bound to session '{bindingOwner}'. " +
+                    "Enforcement and monitoring would disagree about the approved browser, so activation " +
+                    "was refused rather than applied inconsistently.";
+
+                _logger.LogError(
+                    "Activation aborted: approved-browser context still bound to session {OwnerSessionId}.",
+                    bindingOwner);
+
+                _state = EnforcementState.Failed;
+                _journal.SaveEnforcementState(new DurableEnforcementRecord(
+                    SessionId: sessionId,
+                    ExamId: expectedExamId,
+                    PolicyId: policy.PolicyId,
+                    PolicyVersion: policy.Version,
+                    State: EnforcementState.Failed,
+                    ActivationUtc: DateTimeOffset.UtcNow,
+                    ExpiresAtUtc: DateTimeOffset.UtcNow,
+                    LastTransitionUtc: DateTimeOffset.UtcNow,
+                    FailureReason: bindConflictReason
+                ));
+
+                return new EnforcementActivationResult(false, sessionId, EnforcementState.Failed, bindConflictReason);
+            }
+
+            // -----------------------------------------------------------------
             // Step 3: Persist Activation Intent (PREPARING)
             // -----------------------------------------------------------------
             _state = EnforcementState.Preparing;
@@ -184,7 +302,7 @@ public sealed class EnforcementStateMachine : IEnforcementStateMachine
             // -----------------------------------------------------------------
             // Step 4: Build M4 Firewall Rules (Section 5)
             // -----------------------------------------------------------------
-            var rules = BuildSessionRules(sessionId, policy, targetProfiles);
+            var rules = BuildSessionRules(sessionId, policy, targetProfiles, browserExecutablePath);
 
             var enforcementSession = new EnforcementSession(
                 SessionId: sessionId,
@@ -215,14 +333,8 @@ public sealed class EnforcementStateMachine : IEnforcementStateMachine
             _journal.UpdateEnforcementState(sessionId, EnforcementState.Enforcing);
 
             var baseline = _firewall.GetBaseline();
-            var readbackSuccess = true;
-
-            if (targetProfiles.HasFlag(FirewallProfiles.Domain) && baseline.DomainDefaultOutbound != FirewallAction.Block)
-                readbackSuccess = false;
-            if (targetProfiles.HasFlag(FirewallProfiles.Private) && baseline.PrivateDefaultOutbound != FirewallAction.Block)
-                readbackSuccess = false;
-            if (targetProfiles.HasFlag(FirewallProfiles.Public) && baseline.PublicDefaultOutbound != FirewallAction.Block)
-                readbackSuccess = false;
+            var readbackSuccess = AllTargetProfilesAreBlocking(
+                targetProfiles, baseline, sessionId, "Activation readback");
 
             if (!readbackSuccess)
             {
@@ -287,6 +399,11 @@ public sealed class EnforcementStateMachine : IEnforcementStateMachine
                     failureReason: "External configuration conflict detected during rollback.",
                     conflictDetected: true);
 
+                // Released even though rollback did not fully complete. The exam is over either way,
+                // and holding the binding would only prevent the NEXT session from starting; the
+                // conflict itself is recorded durably for an operator to act on.
+                ReleaseApprovedBrowserBinding(sessionId, "deactivation hit an external configuration conflict");
+
                 return new EnforcementDeactivationResult(
                     Success: false,
                     SessionId: sessionId,
@@ -302,6 +419,7 @@ public sealed class EnforcementStateMachine : IEnforcementStateMachine
 
             _state = EnforcementState.Idle;
             _currentSession = null;
+            ReleaseApprovedBrowserBinding(sessionId, reason);
 
             _logger.LogInformation("Deactivation complete. Endpoint returned to IDLE for Session: {SessionId}", sessionId);
             return new EnforcementDeactivationResult(
@@ -363,6 +481,7 @@ public sealed class EnforcementStateMachine : IEnforcementStateMachine
 
                 _state = EnforcementState.Idle;
                 _currentSession = null;
+                ReleaseApprovedBrowserBinding(incompleteState.SessionId, "session expired while the service was stopped");
 
                 return new RecoveryResult(
                     RecoveryRequired: true,
@@ -387,6 +506,7 @@ public sealed class EnforcementStateMachine : IEnforcementStateMachine
 
                 _state = EnforcementState.Idle;
                 _currentSession = null;
+                ReleaseApprovedBrowserBinding(incompleteState.SessionId, "incomplete activation rolled back at startup");
 
                 return new RecoveryResult(
                     RecoveryRequired: true,
@@ -401,20 +521,24 @@ public sealed class EnforcementStateMachine : IEnforcementStateMachine
 
             // Session was marked Active: verify if firewall state matches reality
             var baseline = _firewall.GetBaseline();
-            var isEnforced = baseline.PrivateDefaultOutbound == FirewallAction.Block ||
-                             baseline.PublicDefaultOutbound == FirewallAction.Block;
+            var reconcileProfiles = GetSessionTargetProfiles(incompleteState.SessionId);
+            var isEnforced = AllTargetProfilesAreBlocking(
+                reconcileProfiles, baseline, incompleteState.SessionId, "Startup reconciliation");
 
             if (!isEnforced)
             {
-                _logger.LogWarning("Session {SessionId} was marked ACTIVE but firewall is not enforcing BLOCK. Reconciling.",
-                    incompleteState.SessionId);
+                _logger.LogWarning("Session {SessionId} was marked ACTIVE but firewall is not enforcing BLOCK on every targeted profile ({Profiles}). Reconciling.",
+                    incompleteState.SessionId, reconcileProfiles);
 
                 await _enforcer.RemoveEnforcementAsync(incompleteState.SessionId, cancellationToken);
                 _journal.UpdateEnforcementState(incompleteState.SessionId, EnforcementState.Conflict,
-                    failureReason: "Firewall default outbound block was missing on startup.", conflictDetected: true);
+                    failureReason: $"Firewall default outbound block was missing on startup for one or more of {reconcileProfiles}.",
+                    conflictDetected: true);
 
                 _state = EnforcementState.Conflict;
                 _currentSession = incompleteState with { State = EnforcementState.Conflict };
+                ReleaseApprovedBrowserBinding(incompleteState.SessionId,
+                    "session was ACTIVE in the journal but the firewall was not enforcing at startup");
 
                 return new RecoveryResult(
                     RecoveryRequired: true,
@@ -457,6 +581,7 @@ public sealed class EnforcementStateMachine : IEnforcementStateMachine
 
             _state = EnforcementState.Active;
             _currentSession = incompleteState;
+            RebindApprovedBrowserAfterRestart(incompleteState.SessionId);
             _logger.LogInformation("Recovered existing valid ACTIVE session: {SessionId}", incompleteState.SessionId);
 
             return new RecoveryResult(
@@ -535,13 +660,69 @@ public sealed class EnforcementStateMachine : IEnforcementStateMachine
                     $"Candidate exam ID '{candidate.ExamId}' does not match active exam ID '{currentExamId}'.");
             }
 
-            // 5. Generate Candidate Firewall Rules
-            var now = currentTimeUtc ?? DateTimeOffset.UtcNow;
-            var targetProfiles = FirewallProfiles.All;
-            var candidateRules = BuildSessionRules(sessionId, candidate, targetProfiles);
+            // 5. Resolve the approved examination browser for the candidate policy.
+            //    Same fail-closed contract as activation: no trusted browser means no scoped rules,
+            //    and unscoped vendor rules are not an acceptable fallback. The active policy stays
+            //    in force, so refusing the update is strictly safe.
+            var candidateBrowser = _browserResolver.Resolve(candidate.ApprovedBrowser);
+            if (!candidateBrowser.Success || string.IsNullOrWhiteSpace(candidateBrowser.ExecutablePath))
+            {
+                _logger.LogError(
+                    "Policy update rejected: approved browser {ApprovedBrowser} could not be resolved to a trusted executable. {Details}",
+                    candidate.ApprovedBrowser, candidateBrowser.Details);
+                return new PolicyUpdateResult(false, sessionId, currentVersion, candidate.Version,
+                    $"Approved browser '{candidate.ApprovedBrowser}' could not be resolved to a trusted executable; " +
+                    $"vendor allow rules must be scoped to it. {candidateBrowser.Details}");
+            }
 
-            // Diff rules:
-            var currentInstalledRules = _firewall.GetRulesByGroup(FirewallRuleModel.SpemcsRuleGroup);
+            var candidateBrowserPath = candidateBrowser.ExecutablePath;
+
+            // 6. Generate Candidate Firewall Rules
+            var now = currentTimeUtc ?? DateTimeOffset.UtcNow;
+
+            // Reuse the profile set the session was activated with instead of assuming All.
+            // A session started for Private|Public must not silently widen to Domain on update
+            // (and vice versa: a Domain-inclusive session must not narrow). The journal is the
+            // durable record of that choice, so it survives a service restart.
+            var targetProfiles = _journal.GetSession(sessionId)?.TargetProfiles ?? FirewallProfiles.All;
+            var candidateRules = BuildSessionRules(sessionId, candidate, targetProfiles, candidateBrowserPath);
+
+            // Diff rules - restricted to THIS session's rules.
+            //
+            // Requirement 9: GetRulesByGroup returns every SPEMCS rule on the machine. Diffing
+            // against the whole group would mark a concurrent session's rules as "not in my
+            // candidate set" and retire them, tearing down another exam's lockdown. Rule names are
+            // session-prefixed, which is what makes ownership decidable here.
+            var sessionRulePrefix = $"SPEMCS-{sessionId:N}-";
+            var currentInstalledRules = _firewall.GetRulesByGroup(FirewallRuleModel.SpemcsRuleGroup)
+                .Where(r => r.Name.StartsWith(sessionRulePrefix, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+
+            // A mid-exam browser change would leave the endpoint internally contradictory: the
+            // firewall would permit the new browser while the process classifier still approves the
+            // browser bound at activation (see IApprovedBrowserContext - the binding is deliberately
+            // not re-asserted here). Detect it from live firewall state rather than memory so the
+            // check also holds after a service restart.
+            var installedScopedPaths = currentInstalledRules
+                .Where(r => !string.IsNullOrWhiteSpace(r.ApplicationPath))
+                .Select(r => r.ApplicationPath!)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            var conflictingPath = installedScopedPaths
+                .FirstOrDefault(p => !string.Equals(p, candidateBrowserPath, StringComparison.OrdinalIgnoreCase));
+
+            if (conflictingPath is not null)
+            {
+                _logger.LogError(
+                    "Policy update rejected: candidate scopes rules to '{CandidatePath}' but the active session is scoped to '{InstalledPath}'. Mid-exam browser changes are not permitted.",
+                    candidateBrowserPath, conflictingPath);
+                return new PolicyUpdateResult(false, sessionId, currentVersion, candidate.Version,
+                    $"Candidate policy would re-scope enforcement from '{conflictingPath}' to '{candidateBrowserPath}'. " +
+                    "The approved examination browser cannot change mid-session: the process classifier is fixed at " +
+                    "session start, so the firewall and the monitor would disagree. Stop and restart the session instead.");
+            }
+
             var currentRuleNames = currentInstalledRules.Select(r => r.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
             var candidateRuleNames = candidateRules.Select(r => r.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
 
@@ -549,7 +730,7 @@ public sealed class EnforcementStateMachine : IEnforcementStateMachine
             var rulesToRetire = currentInstalledRules.Where(r => !candidateRuleNames.Contains(r.Name)).ToList();
             var retiredRuleNames = rulesToRetire.Select(r => r.Name).ToList();
 
-            // 6. Record Update Transaction in SQLite Journal
+            // 7. Record Update Transaction in SQLite Journal
             var updateId = Guid.NewGuid();
             var updateRecord = new DurableUpdateJournalRecord(
                 UpdateId: updateId,
@@ -616,13 +797,17 @@ public sealed class EnforcementStateMachine : IEnforcementStateMachine
                 // -------------------------------------------------------------
                 // Phase F: Verify Final Restrictive State (Block Readback)
                 // -------------------------------------------------------------
+                // Checked against this session's own profile set (resolved at Phase 6 from the
+                // journal), not a fixed Private|Public pair: a rule swap must not be allowed to
+                // commit while any profile the session claims to lock down has drifted off BLOCK.
                 var baseline = _firewall.GetBaseline();
-                var readbackSuccess = baseline.PrivateDefaultOutbound == FirewallAction.Block ||
-                                      baseline.PublicDefaultOutbound == FirewallAction.Block;
+                var readbackSuccess = AllTargetProfilesAreBlocking(
+                    targetProfiles, baseline, sessionId, "Policy update Phase F readback");
 
                 if (!readbackSuccess)
                 {
-                    throw new InvalidOperationException("DefaultOutboundAction readback check failed during policy update.");
+                    throw new InvalidOperationException(
+                        $"DefaultOutboundAction readback check failed during policy update: not every targeted profile ({targetProfiles}) reports BLOCK.");
                 }
 
                 // -------------------------------------------------------------
@@ -678,18 +863,73 @@ public sealed class EnforcementStateMachine : IEnforcementStateMachine
         }
     }
 
+    /// <summary>
+    /// Builds the complete set of SPEMCS-owned outbound ALLOW rules for a session.
+    /// </summary>
+    /// <param name="sessionId">Session that owns (and will roll back) these rules.</param>
+    /// <param name="policy">The verified, signed policy.</param>
+    /// <param name="targetProfiles">Profiles the rules apply to.</param>
+    /// <param name="browserExecutablePath">
+    /// Absolute path to the approved examination browser, already resolved and trust-verified by
+    /// <see cref="IBrowserExecutableResolver"/>.
+    /// <para>
+    /// REQUIREMENTS 4 &amp; 5. Every vendor/exam destination rule below is scoped to this
+    /// executable. Without it, the allowlist is usable by every process on the machine: a student
+    /// could reach the permitted destinations with curl.exe, python.exe, or a tunnelling client
+    /// and exfiltrate through the one hole the exam has to leave open. The parameter is
+    /// deliberately REQUIRED with no default - a caller that has not resolved a browser must not
+    /// be able to accidentally produce unscoped rules.
+    /// </para>
+    /// </param>
+    /// <exception cref="ArgumentException">
+    /// Thrown when <paramref name="browserExecutablePath"/> is missing or not rooted. Throwing is
+    /// the fail-closed behaviour: it is strictly better for activation to abort than to install a
+    /// machine-wide allowlist.
+    /// </exception>
     public static List<FirewallRuleModel> BuildSessionRules(
         Guid sessionId,
         ValidatedPolicy policy,
-        FirewallProfiles targetProfiles)
+        FirewallProfiles targetProfiles,
+        string browserExecutablePath)
     {
+        ArgumentNullException.ThrowIfNull(policy);
+
+        if (string.IsNullOrWhiteSpace(browserExecutablePath))
+        {
+            throw new ArgumentException(
+                "browserExecutablePath is required: vendor allow rules must be scoped to the approved " +
+                "examination browser (requirements 4 and 5). Refusing to build unscoped rules.",
+                nameof(browserExecutablePath));
+        }
+
+        if (!Path.IsPathRooted(browserExecutablePath))
+        {
+            // A relative path in a firewall rule is resolved against an unspecified working
+            // directory - it would either match nothing or match the wrong image.
+            throw new ArgumentException(
+                $"browserExecutablePath must be an absolute path; got '{browserExecutablePath}'.",
+                nameof(browserExecutablePath));
+        }
+
         var rules = new List<FirewallRuleModel>();
 
         // 1. Explicit product-owned loopback rules (Outbound Any, Local <-> Remote 127.0.0.1 and ::1)
+        //
+        //    Intentionally NOT program-scoped. Loopback carries the agent's own IPC (named pipes
+        //    fall back to TCP loopback on some stacks), the local DNS stub resolver, and browser
+        //    helper processes. Restricting loopback to a single executable would break the agent's
+        //    own control plane, and loopback traffic cannot leave the machine, so it is not an
+        //    exfiltration path.
         rules.Add(FirewallRuleModel.CreateLoopbackIPv4Allow(sessionId, targetProfiles));
         rules.Add(FirewallRuleModel.CreateLoopbackIPv6Allow(sessionId, targetProfiles));
 
-        // 2. Management server allow rules (Outbound TCP, clean IP, specific port, no program restriction)
+        // 2. Management server allow rules (Outbound TCP, clean IP, specific port).
+        //
+        //    Also intentionally NOT program-scoped: this channel belongs to the SPEMCS agent
+        //    (a Windows service), not to the browser. Scoping it to the browser would sever the
+        //    agent's link to the management plane the moment default-deny engages - and step 7 of
+        //    ActivateAsync would then roll the whole activation back. It stays narrow by being
+        //    pinned to specific management IPs and a single port.
         foreach (var mgmtIp in policy.ManagementServer.IpAddresses)
         {
             var cleanIp = mgmtIp.Contains('/') ? mgmtIp.Split('/')[0] : mgmtIp;
@@ -705,7 +945,7 @@ public sealed class EnforcementStateMachine : IEnforcementStateMachine
                 profiles: targetProfiles));
         }
 
-        // 2. Vendor & exam allowed destinations
+        // 3. Vendor & exam allowed destinations - ALWAYS scoped to the approved browser.
         foreach (var dest in policy.AllowedDestinations)
         {
             foreach (var ip in dest.IpRanges)
@@ -720,7 +960,7 @@ public sealed class EnforcementStateMachine : IEnforcementStateMachine
                         remoteAddresses: ip,
                         remotePorts: tcpPortsStr,
                         localAddresses: "*",
-                        applicationPath: null,
+                        applicationPath: browserExecutablePath,
                         profiles: targetProfiles));
                 }
 
@@ -734,13 +974,128 @@ public sealed class EnforcementStateMachine : IEnforcementStateMachine
                         remoteAddresses: ip,
                         remotePorts: udpPortsStr,
                         localAddresses: "*",
-                        applicationPath: null,
+                        applicationPath: browserExecutablePath,
                         profiles: targetProfiles));
                 }
             }
         }
 
         return rules;
+    }
+
+    /// <summary>
+    /// Restores the approved-browser binding for a session that was still ACTIVE when the service
+    /// restarted.
+    /// <para>
+    /// The binding lives in memory, so it dies with the process while the exam keeps running. The
+    /// family is recovered from evidence rather than re-asserted: the installed allow rules are
+    /// scoped to the approved browser's executable, so the image name on those rules is what the
+    /// firewall is actually enforcing. Deriving it this way means the monitor cannot disagree with
+    /// the firewall even though the signed policy itself is no longer in memory.
+    /// </para>
+    /// <para>
+    /// Fails soft. If nothing can be derived, enforcement is unaffected - the firewall rules are
+    /// already installed and still scoped correctly - and monitoring falls back to the
+    /// host-configured family, which is logged as a warning so the resulting noise is explainable.
+    /// </para>
+    /// </summary>
+    private void RebindApprovedBrowserAfterRestart(Guid sessionId)
+    {
+        if (_approvedBrowser is null)
+        {
+            return;
+        }
+
+        var families = new HashSet<ApprovedBrowserFamily>();
+
+        try
+        {
+            var sessionRulePrefix = $"SPEMCS-{sessionId:N}-";
+
+            var scopedImageNames = _firewall.GetRulesByGroup(FirewallRuleModel.SpemcsRuleGroup)
+                .Where(r => r.Name.StartsWith(sessionRulePrefix, StringComparison.OrdinalIgnoreCase)
+                            && !string.IsNullOrWhiteSpace(r.ApplicationPath))
+                .Select(r => Path.GetFileName(r.ApplicationPath!))
+                .Where(n => !string.IsNullOrWhiteSpace(n))
+                .Distinct(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var imageName in scopedImageNames)
+            {
+                if (ApprovedBrowserFamilies.TryResolveFromProcessName(imageName, out var family))
+                {
+                    families.Add(family);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            // Reading the firewall can fail (service stopped, COM error). Enforcement state is
+            // untouched by this method, so degrading to host configuration is safe.
+            _logger.LogWarning(ex,
+                "Could not read installed rules to recover the approved browser for session {SessionId}.",
+                sessionId);
+            return;
+        }
+
+        if (families.Count != 1)
+        {
+            _logger.LogWarning(
+                "Could not determine the approved browser for recovered session {SessionId} from installed rules " +
+                "({MatchCount} candidate families). Monitoring will use the host-configured family ({Family}); " +
+                "browser-related findings for this session may be inaccurate until it is restarted.",
+                sessionId, families.Count, _approvedBrowser.Effective);
+            return;
+        }
+
+        var recovered = families.Single();
+
+        if (_approvedBrowser.BindSignedPolicy(sessionId, recovered,
+                $"recovered at startup from installed rules for session {sessionId}"))
+        {
+            _logger.LogInformation(
+                "Approved browser {Family} recovered for ACTIVE session {SessionId} from its installed firewall rules.",
+                recovered, sessionId);
+        }
+        else
+        {
+            _logger.LogError(
+                "Approved browser {Family} could not be re-bound for recovered session {SessionId}: the context is " +
+                "held by session {OwnerSessionId}.",
+                recovered, sessionId, _approvedBrowser.Current.SessionId);
+        }
+    }
+
+    /// <summary>
+    /// Hands the approved-browser decision back to host configuration once this session no longer
+    /// has firewall rules installed.
+    /// <para>
+    /// Called from EVERY terminal path (deactivation, activation failure, conflict, expiry, startup
+    /// reconciliation). That completeness is load-bearing: <see cref="ActivateAsync"/> refuses to
+    /// start while another session owns the binding, so a missed release would stop the next exam on
+    /// this machine from starting until the service restarts.
+    /// </para>
+    /// </summary>
+    private void ReleaseApprovedBrowserBinding(Guid sessionId, string reason)
+    {
+        if (_approvedBrowser is null)
+        {
+            return;
+        }
+
+        if (_approvedBrowser.ReleaseSignedPolicy(sessionId))
+        {
+            _logger.LogInformation(
+                "Approved-browser binding released for session {SessionId} ({Reason}); monitoring reverts to host configuration ({Family}).",
+                sessionId, reason, _approvedBrowser.Effective);
+        }
+        else
+        {
+            // Not an error: the common cases are "never bound" (activation failed before the bind
+            // step) and "already released" (expiry racing an operator stop).
+            _logger.LogDebug(
+                "No approved-browser binding held by session {SessionId} to release ({Reason}).",
+                sessionId, reason);
+        }
     }
 
     private async Task<EnforcementActivationResult> HandleApplyFailureAsync(
@@ -759,6 +1114,7 @@ public sealed class EnforcementStateMachine : IEnforcementStateMachine
             _journal.UpdateEnforcementState(sessionId, EnforcementState.Conflict,
                 failureReason: failureReason, conflictDetected: true);
             _currentSession = null;
+            ReleaseApprovedBrowserBinding(sessionId, "activation failed; rollback reported a conflict");
             return new EnforcementActivationResult(false, sessionId, EnforcementState.Conflict,
                 $"Activation failed and rollback detected conflict: {failureReason}");
         }
@@ -767,7 +1123,74 @@ public sealed class EnforcementStateMachine : IEnforcementStateMachine
         _journal.UpdateEnforcementState(sessionId, EnforcementState.Failed,
             failureReason: failureReason, rollbackCompleted: true);
         _currentSession = null;
+        ReleaseApprovedBrowserBinding(sessionId, "activation failed and was rolled back");
 
         return new EnforcementActivationResult(false, sessionId, EnforcementState.Failed, failureReason);
+    }
+
+    /// <summary>
+    /// The profile set a session was activated with, read from the durable journal.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="DurableEnforcementRecord"/> does not carry the profile mask - only
+    /// <see cref="JournalRecord"/> does - so any code holding a <c>DurableEnforcementRecord</c> (for
+    /// example after a service restart) must come back here rather than assume a value. The fallback
+    /// is <see cref="FirewallProfiles.All"/> because it is the strict reading: it asserts that every
+    /// profile must be BLOCK, so a missing journal row can only ever cause a false conflict that a
+    /// human investigates, never a false "enforced" that leaves a candidate online.
+    /// </remarks>
+    private FirewallProfiles GetSessionTargetProfiles(Guid sessionId)
+        => _journal.GetSession(sessionId)?.TargetProfiles ?? FirewallProfiles.All;
+
+    /// <summary>
+    /// Requirement 6: reports whether EVERY profile the session claims to enforce is actually
+    /// reporting <see cref="FirewallAction.Block"/> as its default outbound action.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This replaced an OR over Private and Public only. That test was wrong twice over. It ignored
+    /// Domain, so a domain-joined lab PC - the normal case for a university lab - could report
+    /// "enforced" with its active profile wide open. And because it was an OR, one profile being
+    /// BLOCK vouched for the others: a machine that had switched networks mid-exam, or where a GPO
+    /// refresh reverted a single profile, still passed.
+    /// </para>
+    /// <para>
+    /// Every profile is inspected before returning so the log names all of the ones that are
+    /// unenforced, not just the first. That difference matters when diagnosing whether one profile
+    /// drifted or the whole lockdown never applied.
+    /// </para>
+    /// </remarks>
+    private bool AllTargetProfilesAreBlocking(
+        FirewallProfiles targetProfiles,
+        FirewallProfileBaseline baseline,
+        Guid sessionId,
+        string context)
+    {
+        var unenforced = new List<string>();
+
+        if (targetProfiles.HasFlag(FirewallProfiles.Domain) && baseline.DomainDefaultOutbound != FirewallAction.Block)
+            unenforced.Add(nameof(FirewallProfiles.Domain));
+        if (targetProfiles.HasFlag(FirewallProfiles.Private) && baseline.PrivateDefaultOutbound != FirewallAction.Block)
+            unenforced.Add(nameof(FirewallProfiles.Private));
+        if (targetProfiles.HasFlag(FirewallProfiles.Public) && baseline.PublicDefaultOutbound != FirewallAction.Block)
+            unenforced.Add(nameof(FirewallProfiles.Public));
+
+        // FirewallProfiles.None would make the loop above vacuously true and report "enforced" for a
+        // session that locks down nothing. Treat it as a failure: it can only come from a corrupt or
+        // truncated journal row, and default-deny is the invariant being verified.
+        if (targetProfiles == FirewallProfiles.None)
+        {
+            _logger.LogError(
+                "{Context}: session {SessionId} has an empty target profile set; refusing to treat it as enforced.",
+                context, sessionId);
+            return false;
+        }
+
+        if (unenforced.Count == 0) return true;
+
+        _logger.LogError(
+            "{Context}: session {SessionId} targets profiles {Targeted} but DefaultOutboundAction is not BLOCK for {Unenforced}.",
+            context, sessionId, targetProfiles, string.Join(", ", unenforced));
+        return false;
     }
 }

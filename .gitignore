@@ -7,11 +7,23 @@
 .env
 .env.local
 .env.*.local
+# .env.txt is an environment file too. It is listed explicitly because none of the patterns
+# above match it, and two copies of it are ALREADY TRACKED in this repository
+# (backend/.env.txt, frontend/.env.txt). Ignoring it stops new copies being added; it does not
+# untrack the existing ones. Those must be removed from the index and every credential they
+# contain rotated - see SPEMCS_TAKEOVER_AUDIT.md.
+.env.txt
 *.pem
 *.key
 *.pfx
 *.p12
 # .env.example is safe to commit (no secrets)
+
+# Policy signing keyring: private keys live in <dir>/private/<key_id>.pem (also caught by the
+# *.pem rule above), and keyring.json is per-deployment runtime state even though it holds only
+# public keys. Named explicitly so the directory cannot be committed wholesale.
+secrets/
+**/secrets/signing_keys/
 
 # ── Python / Backend ─────────────────────────────────────────
 __pycache__/
@@ -115,6 +127,9 @@ logs/
 agent_binaries/
 scratch/
 Endpoint-agent/extracted/
+out
+out*.txt
+
 
 # Database runtime files
 *.db

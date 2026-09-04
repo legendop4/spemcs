@@ -15,8 +15,11 @@ public sealed class AgentStateMachineTests
             store.SaveRegistration(new DeviceRegistration(Guid.NewGuid(), "LAB-01", "10.0.0.1", DateTimeOffset.UtcNow));
             var machine = new AgentStateMachine(store);
 
-            Assert.True(machine.StartExam());
+            // Edge, not Chrome: a Chrome-shaped test would still pass if the family argument were
+            // ignored, which is exactly the defect the parameter was introduced to close.
+            Assert.True(machine.StartExam(ApprovedBrowserFamily.Edge));
             Assert.Equal(AgentState.PreCompliance, machine.State);
+            Assert.Equal(ApprovedBrowserFamily.Edge, machine.Session?.ApprovedBrowser);
 
             Assert.True(machine.ComplianceSatisfied());
             Assert.Equal(AgentState.StudentVerification, machine.State);
@@ -27,6 +30,9 @@ public sealed class AgentStateMachineTests
             var resumed = new AgentStateMachine(new SqliteAgentStore(root));
             Assert.Equal(AgentState.Monitoring, resumed.State);
             Assert.Equal("R-100", resumed.Session?.StudentRollNumber);
+            // The family must survive the snapshot round-trip; a restart that silently reverted to
+            // Chrome would put the classifier at odds with the installed firewall rules.
+            Assert.Equal(ApprovedBrowserFamily.Edge, resumed.Session?.ApprovedBrowser);
 
             Assert.True(resumed.StopExam());
             Assert.Equal(AgentState.Idle, resumed.State);
@@ -44,7 +50,7 @@ public sealed class AgentStateMachineTests
         try
         {
             var machine = new AgentStateMachine(new SqliteAgentStore(root));
-            Assert.False(machine.StartExam());
+            Assert.False(machine.StartExam(ApprovedBrowserFamily.Chrome));
             Assert.Equal(AgentState.Idle, machine.State);
         }
         finally

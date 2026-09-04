@@ -27,6 +27,15 @@ public partial class MainWindow : Window
     private readonly WindowsProcessSource _source;
     private readonly ConfigurableProcessClassifier _classifier;
     private readonly AgentConfig _config;
+
+    /// <summary>
+    /// The UI runs in the interactive desktop session, in a DIFFERENT process from the Windows
+    /// service, so it cannot share the service's DI singleton. It keeps its own context, seeded from
+    /// the shared config.json and then bound to the signed family once the service reports that it
+    /// verified and applied the policy this UI forwarded (see the SIGNED_NETWORK_POLICY branch).
+    /// </summary>
+    private readonly ApprovedBrowserContext _approvedBrowser;
+
     private ProcessMonitor? _monitor;
     private string _deviceName;
     private string _rollNumber = "2301921540174";
@@ -69,7 +78,23 @@ public partial class MainWindow : Window
         var dataDir = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "Spemcs");
         _store = new SqliteAgentStore(dataDir);
         _source = new WindowsProcessSource();
-        _classifier = new ConfigurableProcessClassifier();
+
+        if (ApprovedBrowserFamilies.TryParse(_config.ApprovedBrowser, out var configuredFamily))
+        {
+            _approvedBrowser = new ApprovedBrowserContext(configuredFamily, "config.json 'approvedBrowser'");
+        }
+        else
+        {
+            _approvedBrowser = new ApprovedBrowserContext(
+                ApprovedBrowserFamily.Chrome,
+                string.IsNullOrWhiteSpace(_config.ApprovedBrowser)
+                    ? "built-in fallback (no 'approvedBrowser' in config.json)"
+                    : $"built-in fallback (config.json 'approvedBrowser' = '{_config.ApprovedBrowser}' is not a supported family)");
+        }
+
+        LogUi($"Provisional approved browser: {_approvedBrowser.Current.Family} from {_approvedBrowser.Current.Reason}");
+
+        _classifier = new ConfigurableProcessClassifier(_approvedBrowser);
         _compliance = new PreComplianceEngine(_source, _classifier);
 
         // Start persistent background WebSocket listener
@@ -190,6 +215,11 @@ public partial class MainWindow : Window
                             {
                                 var stopRes = await _enforcementService.RemovePolicyAsync(sessGuid, "Exam stopped", cancellationToken);
                                 LogUi($"[EnforcementService] RemovePolicy: Success={stopRes.Success}, State={stopRes.State}, Reason={stopRes.FailureReason}");
+
+                                if (stopRes.Success && _approvedBrowser.ReleaseSignedPolicy(sessGuid))
+                                {
+                                    LogUi($"Approved-browser binding released for session {sessGuid}; reverting to {_approvedBrowser.Effective}.");
+                                }
                             }
                             catch (Exception ex)
                             {
@@ -222,8 +252,22 @@ public partial class MainWindow : Window
                         if (action.Equals("SIGNED_NETWORK_POLICY", StringComparison.OrdinalIgnoreCase))
                         {
                             LogUi($"Forwarding SIGNED_NETWORK_POLICY to Service over named pipe: Session={sessGuid}, Exam={examId}");
-                            var actResult = await _enforcementService.ApplyPolicyAsync(sessGuid, examId, signedMsgPayload, targetProfiles: 6, cancellationToken: cancellationToken);
+                            // Requirement 6: Domain|Private|Public. Named via the enum rather than
+                            // written as a literal so this call site cannot drift from the IPC
+                            // default the way the old hardcoded 6 did.
+                            var actResult = await _enforcementService.ApplyPolicyAsync(sessGuid, examId, signedMsgPayload, targetProfiles: (int)FirewallProfiles.All, cancellationToken: cancellationToken);
                             LogUi($"[EnforcementService] ApplyPolicy: Success={actResult.Success}, State={actResult.State}, Reason={actResult.FailureReason}, RulesInstalled={actResult.InstalledRuleCount}");
+
+                            // Adopt the approved browser ONLY after the service reports success.
+                            // The UI does not verify signatures itself; success means the service
+                            // verified this exact raw_policy_json, so reading approved_browser out of
+                            // the same bytes carries that verification. Reading it before the apply,
+                            // or after a failure, would let an unsigned WebSocket frame steer the
+                            // monitor's idea of which browser is approved.
+                            if (actResult.Success)
+                            {
+                                AdoptSignedApprovedBrowser(sessGuid, pDoc.RootElement);
+                            }
                         }
                         else
                         {
@@ -246,6 +290,65 @@ public partial class MainWindow : Window
                 // Reconnect with backoff
                 await Task.Delay(3000, cancellationToken);
             }
+        }
+    }
+
+    /// <summary>
+    /// Adopts the <c>approved_browser</c> of a signed policy the SERVICE has already accepted, so the
+    /// UI's process classifier judges browsers the same way the installed firewall rules do.
+    /// <para>
+    /// Only ever called after <c>ApplyPolicyAsync</c> returned success for these exact bytes. The UI
+    /// verifies no signatures of its own; the service's success is the whole basis for trusting this
+    /// field, which is why it is read from <paramref name="policyRoot"/> - the parsed
+    /// <c>raw_policy_json</c> that was verified - and not from the enclosing WebSocket frame, whose
+    /// other fields are unauthenticated.
+    /// </para>
+    /// <para>
+    /// Every outcome is logged. A silent failure here would leave the classifier on its provisional
+    /// family while the firewall enforced a different one - the precise mismatch
+    /// <see cref="IApprovedBrowserContext"/> exists to prevent - and that must be visible in the log
+    /// rather than inferred from later misclassifications.
+    /// </para>
+    /// </summary>
+    private void AdoptSignedApprovedBrowser(Guid sessionId, JsonElement policyRoot)
+    {
+        try
+        {
+            if (!policyRoot.TryGetProperty("approved_browser", out var browserProp)
+                || browserProp.ValueKind != JsonValueKind.String)
+            {
+                // Not fatal for the UI: enforcement already succeeded, and the service validated the
+                // field on its own side. The classifier simply keeps its provisional family.
+                LogUi($"Signed policy for session {sessionId} carries no 'approved_browser' string; " +
+                      $"monitor keeps provisional {_approvedBrowser.Effective}.");
+                return;
+            }
+
+            var rawBrowser = browserProp.GetString();
+
+            if (!ApprovedBrowserFamilies.TryParse(rawBrowser, out var signedFamily))
+            {
+                LogUi($"Signed policy for session {sessionId} names unsupported approved_browser " +
+                      $"'{rawBrowser}'; monitor keeps provisional {_approvedBrowser.Effective}.");
+                return;
+            }
+
+            if (_approvedBrowser.BindSignedPolicy(sessionId, signedFamily, $"signed policy for session {sessionId}"))
+            {
+                LogUi($"Approved browser bound from signed policy: {signedFamily} (session {sessionId}).");
+            }
+            else
+            {
+                // Another session still holds the binding - a stop was missed somewhere. Say so
+                // loudly: the classifier is now judging against a different exam's browser.
+                LogUi($"WARNING: could not bind approved browser {signedFamily} for session {sessionId}; " +
+                      $"binding is still held by session {_approvedBrowser.Current.SessionId}. " +
+                      $"Monitor continues to use {_approvedBrowser.Effective}.");
+            }
+        }
+        catch (Exception ex)
+        {
+            LogUi($"Failed to adopt approved browser from signed policy for session {sessionId}: {ex.Message}");
         }
     }
 
@@ -350,7 +453,11 @@ public partial class MainWindow : Window
             {
                 sessionId = _sessionId,
                 studentRollNumber = _rollNumber,
-                approvedBrowser = "Chrome"
+                // Reported, not chosen: the wire value of whatever family is effective right now
+                // (host configuration at this point - a signed policy has not arrived yet). Sending a
+                // hardcoded "Chrome" here made the server's record of the session disagree with what
+                // this agent was actually monitoring for on an Edge exam.
+                approvedBrowser = ApprovedBrowserFamilies.ToWireValue(_approvedBrowser.Effective)
             };
             await _http.PostAsJsonAsync("api/v1/sessions/start", startReq);
         }

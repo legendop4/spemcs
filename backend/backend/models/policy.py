@@ -40,17 +40,31 @@ class VendorProfile(Base):
 
 
 class NetworkPolicy(Base):
-    """Immutable, versioned policy compiled for an active examination session."""
+    """Immutable, versioned policy compiled for an active examination session.
+
+    Every column below (except created_at) is part of the RSA-PSS signed canonical payload.
+    Distribution re-derives the exact signed bytes from these columns, so any signed field
+    that is NOT persisted here cannot be reproduced and the stored signature would no longer
+    verify. That is why `approved_browser`, `key_id`, and `schema_version` are columns rather
+    than being re-supplied as constants at distribution time.
+    """
     __tablename__ = "network_policies"
 
     policy_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     exam_id = Column(UUID(as_uuid=True), ForeignKey("exams.exam_id", ondelete="CASCADE"), nullable=False)
     version = Column(Integer, default=1, nullable=False)
     vendor_profile_id = Column(UUID(as_uuid=True), ForeignKey("vendor_profiles.vendor_id"), nullable=True)
+    # Signed browser identity: the endpoint scopes vendor/exam firewall allow rules to this
+    # browser family's executable. Must be one of policy_signer.SUPPORTED_APPROVED_BROWSERS.
+    approved_browser = Column(String(20), nullable=False)
     allowed_destinations = Column(JSONB, nullable=False, default=list)   # list of {name, ip_ranges, tcp_ports, udp_ports}
     management_server = Column(JSONB, nullable=False, default=dict)      # {ip_addresses: [...], port: 8000}
     not_before = Column(DateTime, nullable=False)
     expires_at = Column(DateTime, nullable=False)
+    # Identity of the signing key that produced `signature`. Persisted so key rotation does
+    # not invalidate previously issued policies and so distribution never hardcodes a key id.
+    key_id = Column(String(64), nullable=False)
+    schema_version = Column(String(10), nullable=False)
     signature = Column(Text, nullable=True)                              # Base64 RSA-PSS digital signature
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 

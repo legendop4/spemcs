@@ -4,6 +4,7 @@ using System.Linq;
 using System.Security.Cryptography;
 using System.Threading;
 using System.Threading.Tasks;
+using Spemcs.Agent.Core;
 using Spemcs.Agent.Core.Network;
 using Xunit;
 
@@ -31,12 +32,13 @@ public sealed class ManagementFirewallEnforcementTests : IDisposable
         int mgmtPort = 8002)
     {
         return new ValidatedPolicy(
-            SchemaVersion: "1.0",
+            SchemaVersion: "1.1",
             KeyId: "dev-key-1",
             ExamId: examId,
             PolicyId: Guid.NewGuid(),
             Version: 1,
             VendorProfileId: null,
+            ApprovedBrowser: ApprovedBrowserFamily.Chrome,
             AllowedDestinations: new List<PolicyDestination>
             {
                 new PolicyDestination("VendorExam", new List<string> { "vendor.test" }, new List<string> { "192.168.1.50" }, new List<int> { 443 }, new List<int>())
@@ -56,7 +58,8 @@ public sealed class ManagementFirewallEnforcementTests : IDisposable
         var examId = Guid.NewGuid();
         var policy = CreateTestPolicy(sessionId, examId, "127.0.0.1", 8002);
 
-        var rules = EnforcementStateMachine.BuildSessionRules(sessionId, policy, FirewallProfiles.All);
+        var rules = EnforcementStateMachine.BuildSessionRules(
+            sessionId, policy, FirewallProfiles.All, StubBrowserExecutableResolver.DefaultChromePath);
 
         // 1. Loopback IPv4
         var loopbackV4 = rules.FirstOrDefault(r => r.Purpose == "Loopback-IPv4");
@@ -104,6 +107,151 @@ public sealed class ManagementFirewallEnforcementTests : IDisposable
         Assert.Null(mgmtRule.ApplicationPath);
         Assert.Null(mgmtRule.ServiceName);
         Assert.True(mgmtRule.Enabled);
+
+        // 4. Vendor destination rule MUST be scoped to the approved browser (requirements 4 & 5).
+        //    This is the assertion that stops the allowlist from being usable by curl.exe.
+        var vendorRule = rules.FirstOrDefault(r => r.Purpose == "VendorExam");
+        Assert.NotNull(vendorRule);
+        Assert.Equal(StubBrowserExecutableResolver.DefaultChromePath, vendorRule.ApplicationPath);
+        Assert.Equal(FirewallProtocol.TCP, vendorRule.Protocol);
+        Assert.Equal("192.168.1.50", vendorRule.RemoteAddresses);
+        Assert.Equal("443", vendorRule.RemotePorts);
+        Assert.Equal(FirewallAction.Allow, vendorRule.Action);
+
+        // No SPEMCS rule may ever be a BLOCK rule: default-deny comes from DefaultOutboundAction
+        // (requirement 10). A blanket outbound block rule would also override user Allow rules.
+        Assert.All(rules, r => Assert.Equal(FirewallAction.Allow, r.Action));
+        Assert.All(rules, r => Assert.Equal(FirewallDirection.Outbound, r.Direction));
+    }
+
+    [Fact]
+    public void EveryVendorDestinationRule_IsScopedToTheApprovedBrowser_AcrossProtocolsAndAddresses()
+    {
+        var sessionId = Guid.NewGuid();
+        var examId = Guid.NewGuid();
+
+        // Two IP ranges x (TCP + UDP) = four vendor rules, plus a second destination.
+        var policy = CreateTestPolicy(sessionId, examId) with
+        {
+            AllowedDestinations = new List<PolicyDestination>
+            {
+                new PolicyDestination(
+                    "VendorExam",
+                    new List<string> { "vendor.test" },
+                    new List<string> { "192.168.1.50", "203.0.113.0/24" },
+                    new List<int> { 443, 8443 },
+                    new List<int> { 443 }),
+                new PolicyDestination(
+                    "VendorCdn",
+                    new List<string> { "cdn.vendor.test" },
+                    new List<string> { "2001:db8::1" },
+                    new List<int> { 443 },
+                    new List<int>())
+            }
+        };
+
+        var rules = EnforcementStateMachine.BuildSessionRules(
+            sessionId, policy, FirewallProfiles.All, StubBrowserExecutableResolver.DefaultChromePath);
+
+        var vendorRules = rules.Where(r => r.Purpose is "VendorExam" or "VendorCdn").ToList();
+
+        // 2 IPs x 2 protocols for VendorExam + 1 for VendorCdn
+        Assert.Equal(5, vendorRules.Count);
+        Assert.All(vendorRules, r =>
+            Assert.Equal(StubBrowserExecutableResolver.DefaultChromePath, r.ApplicationPath));
+
+        // Rule names are the journal/rollback primary key, so TCP and UDP on the same
+        // address:port must not collide.
+        var names = vendorRules.Select(r => r.Name).ToList();
+        Assert.Equal(names.Count, names.Distinct(StringComparer.OrdinalIgnoreCase).Count());
+        Assert.Equal(rules.Count, rules.Select(r => r.Name).Distinct(StringComparer.OrdinalIgnoreCase).Count());
+    }
+
+    [Fact]
+    public void BuildSessionRules_RefusesToBuildUnscopedVendorRules()
+    {
+        var sessionId = Guid.NewGuid();
+        var policy = CreateTestPolicy(sessionId, Guid.NewGuid());
+
+        // Fail-closed contract: no browser path means no rules at all, never unscoped rules.
+        Assert.Throws<ArgumentException>(() =>
+            EnforcementStateMachine.BuildSessionRules(sessionId, policy, FirewallProfiles.All, ""));
+        Assert.Throws<ArgumentException>(() =>
+            EnforcementStateMachine.BuildSessionRules(sessionId, policy, FirewallProfiles.All, "   "));
+        Assert.Throws<ArgumentException>(() =>
+            EnforcementStateMachine.BuildSessionRules(sessionId, policy, FirewallProfiles.All, null!));
+
+        // A relative path would resolve against an unspecified working directory.
+        Assert.Throws<ArgumentException>(() =>
+            EnforcementStateMachine.BuildSessionRules(sessionId, policy, FirewallProfiles.All, @"chrome.exe"));
+    }
+
+    [Fact]
+    public async Task ActivationFailsClosed_WhenApprovedBrowserCannotBeResolved()
+    {
+        var mockFw = new MockFirewallAdapter();
+        var journal = new SqliteRollbackJournal(_testJournalDir);
+        var keyStore = new TrustedKeyStore();
+        using var rsa = RSA.Create(2048);
+        keyStore.RegisterPublicKey("dev-key-1", rsa);
+
+        var connectivity = new SequenceManagementConnectivityVerifier(new[] { true, true });
+        var receiver = new PolicyReceiver(keyStore, journal, connectivity);
+        var enforcer = new NetworkEnforcer(mockFw, journal);
+        var machine = new EnforcementStateMachine(
+            receiver, enforcer, mockFw, journal, connectivity,
+            browserResolver: StubBrowserExecutableResolver.Failing());
+
+        var sessionId = Guid.NewGuid();
+        var examId = Guid.NewGuid();
+        var signedMsg = CreateSignedTestMessage(rsa, "dev-key-1", examId, 1, 8002);
+
+        var actResult = await machine.ActivateAsync(sessionId, signedMsg, examId, FirewallProfiles.Private);
+
+        Assert.False(actResult.Success);
+        Assert.Equal(EnforcementState.Failed, actResult.State);
+        Assert.Contains("could not be resolved", actResult.FailureReason);
+
+        // The firewall must be completely untouched: resolution happens before any mutation, so
+        // there is nothing to roll back.
+        Assert.Equal(FirewallAction.Allow, mockFw.PrivateDefaultOutbound);
+        Assert.Empty(mockFw.GetRuleNamesByGroup(FirewallRuleModel.SpemcsRuleGroup));
+    }
+
+    [Fact]
+    public async Task Activation_ScopesVendorRulesToTheBrowserNamedInTheSignedPolicy()
+    {
+        var mockFw = new MockFirewallAdapter();
+        var journal = new SqliteRollbackJournal(_testJournalDir);
+        var keyStore = new TrustedKeyStore();
+        using var rsa = RSA.Create(2048);
+        keyStore.RegisterPublicKey("dev-key-1", rsa);
+
+        var connectivity = new SequenceManagementConnectivityVerifier(new[] { true, true });
+        var receiver = new PolicyReceiver(keyStore, journal, connectivity);
+        var enforcer = new NetworkEnforcer(mockFw, journal);
+        var resolver = StubBrowserExecutableResolver.Succeeding();
+        var machine = new EnforcementStateMachine(
+            receiver, enforcer, mockFw, journal, connectivity, browserResolver: resolver);
+
+        var sessionId = Guid.NewGuid();
+        var examId = Guid.NewGuid();
+
+        // The signed payload names "edge"; the agent must scope to Edge, not to a hardcoded default.
+        var signedMsg = CreateSignedTestMessage(rsa, "dev-key-1", examId, 1, 8002, approvedBrowser: "edge");
+
+        var actResult = await machine.ActivateAsync(sessionId, signedMsg, examId, FirewallProfiles.Private);
+
+        Assert.True(actResult.Success, actResult.FailureReason ?? "activation failed");
+        Assert.Equal(ApprovedBrowserFamily.Edge, resolver.LastRequestedFamily);
+
+        var vendorRules = mockFw.GetRulesByGroup(FirewallRuleModel.SpemcsRuleGroup)
+            .Where(r => r.Purpose == "VendorExam")
+            .ToList();
+
+        Assert.NotEmpty(vendorRules);
+        Assert.All(vendorRules, r =>
+            Assert.Equal(StubBrowserExecutableResolver.DefaultEdgePath, r.ApplicationPath));
     }
 
     [Fact]
@@ -117,7 +265,8 @@ public sealed class ManagementFirewallEnforcementTests : IDisposable
         var sessionId = Guid.NewGuid();
         var examId = Guid.NewGuid();
         var policy = CreateTestPolicy(sessionId, examId, "127.0.0.1", 8002);
-        var rules = EnforcementStateMachine.BuildSessionRules(sessionId, policy, FirewallProfiles.All);
+        var rules = EnforcementStateMachine.BuildSessionRules(
+            sessionId, policy, FirewallProfiles.All, StubBrowserExecutableResolver.DefaultChromePath);
 
         var session = new EnforcementSession(
             SessionId: sessionId,
@@ -159,7 +308,9 @@ public sealed class ManagementFirewallEnforcementTests : IDisposable
         var connectivity = new SequenceManagementConnectivityVerifier(new[] { true, true }); // pre and post pass
         var receiver = new PolicyReceiver(keyStore, journal, connectivity);
         var enforcer = new NetworkEnforcer(mockFw, journal);
-        var machine = new EnforcementStateMachine(receiver, enforcer, mockFw, journal, connectivity);
+        var machine = new EnforcementStateMachine(
+            receiver, enforcer, mockFw, journal, connectivity,
+            browserResolver: StubBrowserExecutableResolver.Succeeding());
 
         var sessionId = Guid.NewGuid();
         var examId = Guid.NewGuid();
@@ -189,7 +340,9 @@ public sealed class ManagementFirewallEnforcementTests : IDisposable
         var connectivity = new SequenceManagementConnectivityVerifier(new[] { true, false });
         var receiver = new PolicyReceiver(keyStore, journal, connectivity);
         var enforcer = new NetworkEnforcer(mockFw, journal);
-        var machine = new EnforcementStateMachine(receiver, enforcer, mockFw, journal, connectivity);
+        var machine = new EnforcementStateMachine(
+            receiver, enforcer, mockFw, journal, connectivity,
+            browserResolver: StubBrowserExecutableResolver.Succeeding());
 
         var sessionId = Guid.NewGuid();
         var examId = Guid.NewGuid();
@@ -239,7 +392,8 @@ public sealed class ManagementFirewallEnforcementTests : IDisposable
         var sessionId = Guid.NewGuid();
         var examId = Guid.NewGuid();
         var policy = CreateTestPolicy(sessionId, examId, "127.0.0.1", 8002);
-        var rules = EnforcementStateMachine.BuildSessionRules(sessionId, policy, FirewallProfiles.All);
+        var rules = EnforcementStateMachine.BuildSessionRules(
+            sessionId, policy, FirewallProfiles.All, StubBrowserExecutableResolver.DefaultChromePath);
 
         var session = new EnforcementSession(
             SessionId: sessionId,
@@ -272,9 +426,15 @@ public sealed class ManagementFirewallEnforcementTests : IDisposable
         Assert.Equal(FirewallAction.Allow, baseline.PublicDefaultOutbound);
     }
 
-    private static SignedPolicyMessage CreateSignedTestMessage(RSA rsa, string keyId, Guid examId, int version, int mgmtPort)
+    private static SignedPolicyMessage CreateSignedTestMessage(
+        RSA rsa, string keyId, Guid examId, int version, int mgmtPort, string approvedBrowser = "chrome")
     {
         var policyId = Guid.NewGuid();
+
+        // Keys are emitted in lexicographic order to mirror the backend's RFC 8785 canonical form.
+        // JsonDocument.WriteTo preserves source order, and the signature below is taken over the
+        // re-serialized bytes, so ordering is cosmetic here - but a divergence from the real
+        // canonical form is exactly the kind of drift that hides bugs.
         var rawJson = $@"{{
             ""allowed_destinations"": [
                 {{
@@ -285,6 +445,7 @@ public sealed class ManagementFirewallEnforcementTests : IDisposable
                     ""udp_ports"": []
                 }}
             ],
+            ""approved_browser"": ""{approvedBrowser}"",
             ""exam_id"": ""{examId}"",
             ""expires_at"": ""2035-01-01T00:00:00Z"",
             ""key_id"": ""{keyId}"",
@@ -294,7 +455,7 @@ public sealed class ManagementFirewallEnforcementTests : IDisposable
             }},
             ""not_before"": ""2025-01-01T00:00:00Z"",
             ""policy_id"": ""{policyId}"",
-            ""schema_version"": ""1.0"",
+            ""schema_version"": ""1.1"",
             ""vendor_profile_id"": null,
             ""version"": {version}
         }}";

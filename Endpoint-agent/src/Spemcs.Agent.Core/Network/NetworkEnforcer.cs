@@ -196,7 +196,7 @@ public sealed class NetworkEnforcer : INetworkEnforcer
                 ));
             }
 
-            var baselineResult = RestoreBaselineSafely(sessionId, sessionRecord.Baseline, sessionRecord.Baseline.ActiveProfiles);
+            var baselineResult = RestoreBaselineSafely(sessionId, sessionRecord.Baseline, sessionRecord.TargetProfiles);
             return Task.FromResult(new RollbackResult(
                 Success: baselineResult.Success,
                 SessionId: sessionId,
@@ -262,6 +262,47 @@ public sealed class NetworkEnforcer : INetworkEnforcer
                 _logger.LogWarning("Found incomplete/crashed session: {SessionId} in phase: {Phase}. Reconciling...",
                     incompleteSession.SessionId, incompleteSession.Phase);
 
+                // SECURITY (CRITICAL): A session recorded as Active (or already past the
+                // default-block transition) may represent a LIVE, still-valid exam lockdown.
+                // Never tear it down without proving the firewall is not enforcing it.
+                var blockWasReached = incompleteSession.Phase is EnforcementPhase.EnforcingDefaultBlock
+                    or EnforcementPhase.Active
+                    or EnforcementPhase.RollingBackDefault
+                    or EnforcementPhase.RollingBackRules;
+
+                if (blockWasReached)
+                {
+                    try
+                    {
+                        var currentBaseline = _firewall.GetBaseline();
+                        var enforcingTargets = (!incompleteSession.TargetProfiles.HasFlag(FirewallProfiles.Domain) || currentBaseline.DomainDefaultOutbound == FirewallAction.Block)
+                                              && (!incompleteSession.TargetProfiles.HasFlag(FirewallProfiles.Private) || currentBaseline.PrivateDefaultOutbound == FirewallAction.Block)
+                                              && (!incompleteSession.TargetProfiles.HasFlag(FirewallProfiles.Public) || currentBaseline.PublicDefaultOutbound == FirewallAction.Block);
+
+                        if (enforcingTargets)
+                        {
+                            _logger.LogInformation("Session {SessionId} was recorded as {Phase} and the firewall is still enforcing default BLOCK on its target profiles. Preserving valid enforcement (no rollback).",
+                                incompleteSession.SessionId, incompleteSession.Phase);
+                            return Task.FromResult(new RecoveryResult(
+                                RecoveryRequired: false,
+                                Success: true,
+                                RecoveredSessionId: incompleteSession.SessionId,
+                                OrphanRulesCleaned: 0,
+                                BaselineRestored: false,
+                                ConflictDetected: false,
+                                Details: $"Preserved active enforcement session {incompleteSession.SessionId} (phase {incompleteSession.Phase}) during startup recovery."
+                            ));
+                        }
+
+                        _logger.LogWarning("Session {SessionId} recorded as {Phase} but the firewall is NOT enforcing default BLOCK on its target profiles. Rolling back.",
+                            incompleteSession.SessionId, incompleteSession.Phase);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Failed to read firewall baseline while reconciling session {SessionId}. Proceeding with rollback.", incompleteSession.SessionId);
+                    }
+                }
+
                 var rollbackResult = PerformSafeRollbackInternal(
                     incompleteSession.SessionId,
                     incompleteSession.Baseline,
@@ -280,7 +321,11 @@ public sealed class NetworkEnforcer : INetworkEnforcer
                 ));
             }
 
-            // Case 3: Orphan SPEMCS rules exist in firewall without active session
+            // Case 3: Orphan SPEMCS rules exist in firewall without active session.
+            // The journal has NO active/incomplete session entry, so every rule in the
+            // SPEMCS_EXAM_LOCKDOWN group is a true orphan left by a crashed/deleted session.
+            // Containment is by group membership only — the group is the SPEMCS ownership
+            // boundary, and rules outside it are never touched (no netsh reset).
             _logger.LogWarning("Found {Count} orphan rules in group '{Group}' without an active session. Cleaning up...",
                 spemcsRules.Count, FirewallRuleModel.SpemcsRuleGroup);
 
@@ -345,9 +390,10 @@ public sealed class NetworkEnforcer : INetworkEnforcer
 
         foreach (var ruleName in spemcsRules)
         {
-            // Only remove rules that belong to this session or are SPEMCS-owned
-            if (ruleName.StartsWith(sessionPrefix, StringComparison.OrdinalIgnoreCase) ||
-                ruleName.StartsWith("SPEMCS-", StringComparison.OrdinalIgnoreCase))
+            // SECURITY (CRITICAL): Only remove rules that belong to THIS session.
+            // A bare "SPEMCS-" prefix match would delete another concurrently-active
+            // session's rules during rollback of an unrelated exam.
+            if (ruleName.StartsWith(sessionPrefix, StringComparison.OrdinalIgnoreCase))
             {
                 _logger.LogDebug("Removing rule: {RuleName}", ruleName);
                 if (_firewall.RemoveRule(ruleName))
@@ -427,6 +473,29 @@ public sealed class NetworkEnforcer : INetworkEnforcer
         }
     }
 
+    /// <summary>
+    /// Semantic-equivalence comparison for firewall properties.
+    /// Windows Firewall COM normalizes unset ports/addresses to "*" (and "Any"/"LocalSubnet" for some fields),
+    /// so a raw ordinal comparison is insufficient: "*" on either side means "any"/unset.
+    /// Comparison is case-insensitive and whitespace-trimmed; IPv6 addresses are compared case-insensitively.
+    /// </summary>
+    private static bool PropertyMatches(string? expected, string? actual)
+    {
+        if (string.Equals(expected ?? "*", actual ?? "*", StringComparison.OrdinalIgnoreCase)) return true;
+        var e = (expected ?? "").Trim();
+        var a = (actual ?? "").Trim();
+        return string.Equals(e, a, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool PortPropertyMatches(string? expected, string? actual)
+    {
+        if (PropertyMatches(expected, actual)) return true;
+        // Windows Firewall represents "all ports" as "*"; "Any" appears on some reads.
+        var e = (expected ?? "*").Trim();
+        var a = (actual ?? "*").Trim();
+        return (e is "*" or "Any") && (a is "*" or "Any");
+    }
+
     private void LogAndVerifyRules(
         string phaseDescription,
         IReadOnlyList<FirewallRuleModel> expectedRules,
@@ -469,16 +538,41 @@ public sealed class NetworkEnforcer : INetworkEnforcer
                 matched.ServiceName ?? "none"
             );
 
-            if (!matched.Enabled)
-            {
-                throw new InvalidOperationException($"[{phaseDescription}] Firewall rule '{rule.Name}' is DISABLED.");
-            }
+            var failures = new List<string>();
 
-            if (matched.Direction != rule.Direction ||
-                matched.Action != rule.Action ||
-                matched.Protocol != rule.Protocol)
+            if (!string.Equals(matched.Name, rule.Name, StringComparison.OrdinalIgnoreCase))
+                failures.Add($"Name '{matched.Name}' != '{rule.Name}'");
+            if (!string.Equals(matched.Group, rule.Group, StringComparison.OrdinalIgnoreCase))
+                failures.Add($"Group '{matched.Group}' != '{rule.Group}'");
+            if (!matched.Enabled)
+                failures.Add("Enabled=false");
+            if (matched.Direction != rule.Direction)
+                failures.Add($"Direction {matched.Direction} != {rule.Direction}");
+            if (matched.Action != rule.Action)
+                failures.Add($"Action {matched.Action} != {rule.Action}");
+            if (matched.Protocol != rule.Protocol)
+                failures.Add($"Protocol {matched.Protocol} != {rule.Protocol}");
+            // Windows may report an unset (Any) protocol as 256 on reads; accept that as equivalent to Any.
+            if (!PortPropertyMatches(rule.LocalPorts, matched.LocalPorts))
+                failures.Add($"LocalPorts '{matched.LocalPorts}' != '{rule.LocalPorts}'");
+            if (!PortPropertyMatches(rule.RemotePorts, matched.RemotePorts))
+                failures.Add($"RemotePorts '{matched.RemotePorts}' != '{rule.RemotePorts}'");
+            if (!PropertyMatches(rule.RemoteAddresses, matched.RemoteAddresses))
+                failures.Add($"RemoteAddresses '{matched.RemoteAddresses}' != '{rule.RemoteAddresses}'");
+            if (!PropertyMatches(rule.LocalAddresses, matched.LocalAddresses))
+                failures.Add($"LocalAddresses '{matched.LocalAddresses}' != '{rule.LocalAddresses}'");
+            // ApplicationName: expected rule may be intentionally application-scoped (null = all programs).
+            if (!PropertyMatches(rule.ApplicationPath, matched.ApplicationPath))
+                failures.Add($"ApplicationName '{matched.ApplicationPath ?? "null"}' != '{rule.ApplicationPath ?? "null"}'");
+            // Profiles: matched bitmask MUST contain every profile bit we requested; extra bits are tolerated.
+            if ((rule.Profiles & matched.Profiles) != rule.Profiles)
+                failures.Add($"Profiles {matched.Profiles} does not cover requested {rule.Profiles}");
+            if (rule.ServiceName is not null && !PropertyMatches(rule.ServiceName, matched.ServiceName))
+                failures.Add($"ServiceName '{matched.ServiceName}' != '{rule.ServiceName}'");
+
+            if (failures.Count > 0)
             {
-                throw new InvalidOperationException($"[{phaseDescription}] Firewall rule '{rule.Name}' failed property verification (Direction={matched.Direction} vs {rule.Direction}, Action={matched.Action} vs {rule.Action}, Protocol={matched.Protocol} vs {rule.Protocol}).");
+                throw new InvalidOperationException($"[{phaseDescription}] Firewall rule '{rule.Name}' failed full property verification: {string.Join("; ", failures)}.");
             }
 
             // Requirement 6: Specifically verify that loopback rule survives under each active firewall profile and is enabled

@@ -18,8 +18,33 @@ public enum Classification
     Unauthorized = Suspicious
 }
 
-/// <summary>Explicit browser policy — Chrome is the ONLY approved browser in V1.</summary>
-public enum ApprovedBrowserFamily { Chrome, Edge, Firefox }
+/// <summary>
+/// Browser families an exam may nominate as its approved examination browser.
+/// <para>
+/// EVERY member of this enum MUST be resolvable to a concrete, trusted executable by
+/// <c>BrowserExecutableResolver</c>, because vendor firewall allow rules are scoped to that
+/// executable's path. A member that cannot be resolved would leave activation with no legal
+/// choice but to fail closed, so the enum is deliberately kept to exactly the families the
+/// agent can both (a) locate and Authenticode-verify and (b) approve in the process
+/// classifier.
+/// </para>
+/// <para>
+/// Firefox is intentionally absent: <c>ConfigurableProcessClassifier</c> lists firefox.exe in
+/// KnownUnapprovedBrowserExes and has no Firefox approval branch, so a Firefox exam would be
+/// network-allowed and simultaneously reported as a process violation. The backend refuses to
+/// sign <c>approved_browser = "firefox"</c> for the same reason
+/// (policy_signer.SUPPORTED_APPROVED_BROWSERS).
+/// </para>
+/// <para>
+/// Underlying values are pinned (Chrome = 0, Edge = 1) because <c>AgentSession</c> is persisted
+/// to the durable state store; renumbering would silently re-point existing sessions.
+/// </para>
+/// </summary>
+public enum ApprovedBrowserFamily
+{
+    Chrome = 0,
+    Edge = 1
+}
 
 // ── Event model ───────────────────────────────────────────────────────
 
@@ -35,6 +60,20 @@ public static class EventTypes
     public const string UnclassifiedProcessNetwork = "UNCLASSIFIED_PROCESS_NETWORK";
     public const string AnomalousPortViolation = "ANOMALOUS_PORT_VIOLATION";
     public const string BurstConnectionAnomaly = "BURST_CONNECTION_ANOMALY";
+
+    /// <summary>
+    /// A browser other than the one this exam approved reached the network. Distinct from
+    /// <see cref="UnauthorizedProcessPresent"/> because presence alone is a lesser finding than
+    /// presence plus egress: the firewall scopes the allowlist to the approved browser's image, so
+    /// any other browser with an established connection is either a scoping failure or an attempt
+    /// to work around it.
+    /// <para>
+    /// The literal contains "UNAUTHORIZED" so the backend risk engine scores it in the existing
+    /// "Unauthorized Applications / Unapproved Browsers" band without a server-side change
+    /// (<c>backend/services/risk_service.py</c>).
+    /// </para>
+    /// </summary>
+    public const string UnauthorizedBrowserNetwork = "UNAUTHORIZED_BROWSER_NETWORK";
 }
 
 public enum EventDeliveryStatus { Pending, Uploading, Uploaded, Failed }
@@ -54,6 +93,10 @@ public sealed record AgentSession(
     string SessionId,
     string? StudentRollNumber,
     DateTimeOffset StartedAtUtc,
+    // Retained as a defaulted parameter ONLY for deserialization of snapshots written before the
+    // field existed. Nothing reads it to make a decision - the authority on the approved browser is
+    // IApprovedBrowserContext (populated from the signed policy) - so a stale Chrome here cannot
+    // widen anything. AgentStateMachine.StartExam requires the value explicitly.
     ApprovedBrowserFamily ApprovedBrowser = ApprovedBrowserFamily.Chrome);
 
 public sealed record AgentSnapshot(AgentState State, DeviceRegistration? Registration, AgentSession? Session);
@@ -231,7 +274,15 @@ public sealed class AgentStateMachine
         Session = snapshot.Session;
     }
 
-    public bool StartExam(ApprovedBrowserFamily approvedBrowser = ApprovedBrowserFamily.Chrome)
+    /// <summary>
+    /// Begins a session for <paramref name="approvedBrowser"/>.
+    /// </summary>
+    /// <param name="approvedBrowser">
+    /// The family this session is for. Deliberately has no default: the value is persisted on the
+    /// session, and a silent Chrome default would make a session record that contradicts the
+    /// firewall rules actually installed for an Edge exam.
+    /// </param>
+    public bool StartExam(ApprovedBrowserFamily approvedBrowser)
     {
         if (State != AgentState.Idle)
         {
@@ -327,16 +378,22 @@ public sealed class ExamPipeline
     private readonly IAgentStore _store;
     private readonly ISessionService _sessionService;
     private readonly SemaphoreSlim _gate = new(1, 1);
-    private readonly ApprovedBrowserFamily _approvedBrowser;
+    private readonly IApprovedBrowserContext _approvedBrowser;
 
+    /// <param name="approvedBrowser">
+    /// Shared approved-browser context. Required, not defaulted: a hardcoded Chrome default here is
+    /// what previously let the pipeline record one browser while enforcement scoped rules to
+    /// another. Callers with no policy in play can pass
+    /// <see cref="ApprovedBrowserContext.ForFamily"/>.
+    /// </param>
     public ExamPipeline(
         AgentStateMachine machine,
         PreComplianceEngine compliance,
         ProcessMonitor monitor,
         IExamUiGateway ui,
+        IApprovedBrowserContext approvedBrowser,
         IAgentStore? store = null,
-        ISessionService? sessionService = null,
-        ApprovedBrowserFamily approvedBrowser = ApprovedBrowserFamily.Chrome)
+        ISessionService? sessionService = null)
     {
         _machine = machine;
         _compliance = compliance;
@@ -344,7 +401,7 @@ public sealed class ExamPipeline
         _ui = ui;
         _store = store ?? new NullAgentStore();
         _sessionService = sessionService ?? new LocalMockSessionService();
-        _approvedBrowser = approvedBrowser;
+        _approvedBrowser = approvedBrowser ?? throw new ArgumentNullException(nameof(approvedBrowser));
     }
 
     public AgentState State => _machine.State;
@@ -354,7 +411,11 @@ public sealed class ExamPipeline
         await _gate.WaitAsync(cancellationToken);
         try
         {
-            if (!_machine.StartExam(_approvedBrowser)) return false;
+            // Sampled once, then reused for both the local session record and the backend session,
+            // so the two cannot disagree if a signed policy binds while this method is running.
+            var approvedBrowser = _approvedBrowser.Effective;
+
+            if (!_machine.StartExam(approvedBrowser)) return false;
 
             // 1. Launch/show UI immediately in loading state
             await _ui.ShowPreComplianceLoadingAsync(cancellationToken);
@@ -397,7 +458,7 @@ public sealed class ExamPipeline
             }
 
             // 7. Register session with backend service abstraction
-            await _sessionService.StartExamSessionAsync(_machine.Session!.SessionId, _approvedBrowser, cancellationToken);
+            await _sessionService.StartExamSessionAsync(_machine.Session!.SessionId, approvedBrowser, cancellationToken);
             await _sessionService.RegisterStudentAsync(_machine.Session!.SessionId, rollNumber, cancellationToken);
 
             // 8. Exit UI & start continuous monitoring

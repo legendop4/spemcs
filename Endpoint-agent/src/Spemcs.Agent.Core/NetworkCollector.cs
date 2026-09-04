@@ -234,6 +234,12 @@ public sealed class NetworkCollector
     public int ActiveConnectionCount { get { lock (_activeConnections) return _activeConnections.Count; } }
     public IDnsCorrelationTracker DnsTracker => _dnsTracker;
 
+    /// <param name="approvedBrowser">
+    /// Shared approved-browser context, threaded into the default
+    /// <see cref="NetworkPolicyEvaluator"/> so that network findings are judged against the browser
+    /// the SIGNED policy approved. Ignored when an explicit
+    /// <paramref name="policyEvaluator"/> is supplied - that instance carries its own context.
+    /// </param>
     public NetworkCollector(
         IAgentStore store,
         INetworkTableProvider? tableProvider = null,
@@ -241,12 +247,13 @@ public sealed class NetworkCollector
         IDnsCorrelationTracker? dnsTracker = null,
         Func<AgentSnapshot>? snapshotProvider = null,
         ILogger? log = null,
-        TimeSpan? pollInterval = null)
+        TimeSpan? pollInterval = null,
+        IApprovedBrowserContext? approvedBrowser = null)
     {
         _store = store ?? throw new ArgumentNullException(nameof(store));
         _dnsTracker = dnsTracker ?? new DnsCorrelationTracker();
         _tableProvider = tableProvider ?? new Win32NetworkTableProvider(dnsTracker: _dnsTracker);
-        _policyEvaluator = policyEvaluator ?? new NetworkPolicyEvaluator();
+        _policyEvaluator = policyEvaluator ?? new NetworkPolicyEvaluator(approvedBrowser: approvedBrowser);
         _snapshotProvider = snapshotProvider;
         _log = log;
         _pollInterval = pollInterval ?? TimeSpan.FromSeconds(2);

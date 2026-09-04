@@ -14,7 +14,12 @@ public sealed class PipelineTests
         var classifier = new FakeClassifier(Classification.Allowed);
         var monitor = new ProcessMonitor(source, classifier, store, machine.Snapshot);
         var ui = new FakeUi();
-        var pipeline = new ExamPipeline(machine, new PreComplianceEngine(source, classifier), monitor, ui);
+        var pipeline = new ExamPipeline(
+            machine,
+            new PreComplianceEngine(source, classifier),
+            monitor,
+            ui,
+            ApprovedBrowserContext.ForFamily(ApprovedBrowserFamily.Chrome));
 
         Assert.True(await pipeline.StartAsync(CancellationToken.None));
         Assert.Equal(AgentState.Monitoring, pipeline.State);
