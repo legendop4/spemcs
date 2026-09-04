@@ -37,13 +37,42 @@ public sealed class NetworkPolicyOptions
         "spemcs.agent.service", "spemcs.agent.service.exe"
     };
 
+    /// <summary>
+    /// Browser process names whose ordinary web traffic (ports in <see cref="StandardWebPorts"/>)
+    /// is treated as background noise when NO signed policy has bound a family yet.
+    /// <para>
+    /// Contains only families SPEMCS is actually able to approve. Firefox, Brave and Opera used to
+    /// be listed here, which was a detection hole rather than a convenience: the process classifier
+    /// flags those same binaries as an unapproved browser, yet this set caused every connection
+    /// they made on 80/443 to be suppressed - so an unapproved browser produced LESS telemetry than
+    /// a completely unknown executable. They are now in <see cref="UnapprovedBrowsers"/>.
+    /// </para>
+    /// <para>
+    /// Once a signed policy is bound, this set is bypassed entirely in favour of the signed
+    /// family's process names, so under an Edge exam chrome.exe is no longer suppressed here.
+    /// </para>
+    /// </summary>
     public HashSet<string> ApprovedBrowsers { get; set; } = new(StringComparer.OrdinalIgnoreCase)
     {
         "chrome", "chrome.exe",
-        "msedge", "msedge.exe",
+        "msedge", "msedge.exe"
+    };
+
+    /// <summary>
+    /// Browsers SPEMCS can never approve for an exam. Their network activity is a violation to
+    /// report, not traffic to ignore - mirrors <c>KnownUnapprovedBrowserExes</c> in the process
+    /// classifier so detection and classification agree.
+    /// </summary>
+    public HashSet<string> UnapprovedBrowsers { get; set; } = new(StringComparer.OrdinalIgnoreCase)
+    {
         "firefox", "firefox.exe",
         "brave", "brave.exe",
-        "opera", "opera.exe"
+        "opera", "opera.exe",
+        "vivaldi", "vivaldi.exe",
+        "iexplore", "iexplore.exe",
+        "safari", "safari.exe",
+        "waterfox", "waterfox.exe",
+        "tor", "tor.exe"
     };
 
     public HashSet<string> ProhibitedDomains { get; set; } = new(StringComparer.OrdinalIgnoreCase)
@@ -64,11 +93,21 @@ public sealed class NetworkPolicyOptions
 public sealed class NetworkPolicyEvaluator
 {
     private readonly NetworkPolicyOptions _options;
+    private readonly IApprovedBrowserContext? _approvedBrowser;
     private readonly ConcurrentDictionary<int, List<(string RemoteIp, DateTimeOffset Time)>> _burstTracker = new();
 
-    public NetworkPolicyEvaluator(NetworkPolicyOptions? options = null)
+    /// <param name="approvedBrowser">
+    /// Shared approved-browser context. When supplied and bound to a signed policy, the SIGNED
+    /// family alone decides which browser traffic is background noise, so the evaluator can never
+    /// suppress a browser the firewall has not granted network access to. When omitted (or before a
+    /// policy binds), <see cref="NetworkPolicyOptions.ApprovedBrowsers"/> applies.
+    /// </param>
+    public NetworkPolicyEvaluator(
+        NetworkPolicyOptions? options = null,
+        IApprovedBrowserContext? approvedBrowser = null)
     {
         _options = options ?? new NetworkPolicyOptions();
+        _approvedBrowser = approvedBrowser;
     }
 
     public static bool IsProhibitedDomain(string? domain, IEnumerable<string> prohibitedDomains)
@@ -128,6 +167,19 @@ public sealed class NetworkPolicyEvaluator
                 $"Prohibited process '{procName}' (PID {conn.ProcessId}) established network connection ({socketStr})");
         }
 
+        // Rule A2 — Unapproved browser + network activity -> HIGH.
+        // Placed ahead of Rule B so a per-user install (Firefox in AppData is the common case) is
+        // labelled as the unapproved browser it is, rather than as a generic suspicious path. This
+        // is the counterpart of the firewall's program scoping: only the approved browser gets the
+        // allowlist, so any OTHER browser reaching the network is a finding.
+        if (IsUnapprovedBrowserProcess(procName, procNameLower))
+        {
+            return PolicyEvaluationResult.Promote(
+                EventTypes.UnauthorizedBrowserNetwork,
+                "HIGH",
+                $"Unapproved browser '{procName}' (PID {conn.ProcessId}) established a network connection ({socketStr}); only the approved examination browser may reach the network");
+        }
+
         // Rule B — Suspicious executable path + external connection -> HIGH
         if (!string.IsNullOrWhiteSpace(execPath) && IsUserWritablePath(execPath))
         {
@@ -142,7 +194,7 @@ public sealed class NetworkPolicyEvaluator
 
         // Check if benign process or approved browser
         bool isBenignProc = _options.BenignProcesses.Contains(procName) || _options.BenignProcesses.Contains(procNameLower);
-        bool isApprovedBrowser = _options.ApprovedBrowsers.Contains(procName) || _options.ApprovedBrowsers.Contains(procNameLower);
+        bool isApprovedBrowser = IsApprovedBrowserProcess(procName, procNameLower);
 
         if (isApprovedBrowser && _options.StandardWebPorts.Contains(remotePort))
         {
@@ -183,6 +235,58 @@ public sealed class NetworkPolicyEvaluator
         }
 
         return PolicyEvaluationResult.Suppressed;
+    }
+
+    /// <summary>
+    /// True when this process is the browser the exam actually approved.
+    /// <para>
+    /// Once a signed policy is bound, ONLY that family qualifies - the configurable
+    /// <see cref="NetworkPolicyOptions.ApprovedBrowsers"/> set is bypassed. That closes the case
+    /// where an Edge exam still suppressed chrome.exe traffic even though the firewall had granted
+    /// chrome.exe nothing: telemetry has to agree with enforcement, or the quiet log looks like
+    /// compliance.
+    /// </para>
+    /// </summary>
+    private bool IsApprovedBrowserProcess(string procName, string procNameLower)
+    {
+        if (_approvedBrowser?.SignedFamily is ApprovedBrowserFamily signed)
+        {
+            var signedNames = ApprovedBrowserFamilies.ProcessNames(signed);
+            return signedNames.Contains(procName) || signedNames.Contains(procNameLower);
+        }
+
+        return _options.ApprovedBrowsers.Contains(procName)
+            || _options.ApprovedBrowsers.Contains(procNameLower);
+    }
+
+    /// <summary>
+    /// True when this process is a browser that cannot be the exam browser: either one SPEMCS never
+    /// approves (Firefox, Brave, Opera, ...) or - once a policy is bound - a supported family that
+    /// this particular exam did not approve.
+    /// </summary>
+    private bool IsUnapprovedBrowserProcess(string procName, string procNameLower)
+    {
+        if (_options.UnapprovedBrowsers.Contains(procName)
+            || _options.UnapprovedBrowsers.Contains(procNameLower))
+        {
+            return true;
+        }
+
+        // Before a policy binds there is no basis for calling one supported family unapproved, so
+        // this narrowing only applies to a bound session.
+        if (_approvedBrowser?.SignedFamily is not ApprovedBrowserFamily signed)
+        {
+            return false;
+        }
+
+        var signedNames = ApprovedBrowserFamilies.ProcessNames(signed);
+        if (signedNames.Contains(procName) || signedNames.Contains(procNameLower))
+        {
+            return false;
+        }
+
+        var supported = ApprovedBrowserFamilies.SupportedProcessNames;
+        return supported.Contains(procName) || supported.Contains(procNameLower);
     }
 
     private static bool IsLoopbackOrLocalhost(NetworkConnectionInfo conn)

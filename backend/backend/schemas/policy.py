@@ -123,17 +123,83 @@ class PolicyCompileRequest(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
+    # NOTE: `approved_browser` is deliberately NOT accepted here. It is the executable
+    # identity that endpoint firewall allow rules are scoped to, so it is read from trusted
+    # server-side exam configuration (Exam.approved_browser) rather than from the request
+    # body. Accepting it from a caller would let whoever can reach this endpoint change
+    # which program the exam allowlist applies to without changing the exam itself.
+
 
 class NetworkPolicyRead(BaseModel):
     policy_id: UUID
     exam_id: UUID
     version: int
     vendor_profile_id: Optional[UUID] = None
+    approved_browser: str
     allowed_destinations: List[Dict[str, Any]]
     management_server: Dict[str, Any]
     not_before: datetime
     expires_at: datetime
+    key_id: str
+    schema_version: str
     signature: Optional[str] = None
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+
+# ==============================================================================
+# Signing key lifecycle
+# ==============================================================================
+# Every model here carries PUBLIC key material only. There is deliberately no field that could
+# hold a private key or a passphrase, so no response model in this module is capable of leaking
+# one even if a future handler passes it the wrong object.
+
+
+class SigningKeyRead(BaseModel):
+    """One signing key as published to endpoint agents and operators."""
+
+    key_id: str
+    public_key_pem: str
+    # "active" (signs new policies), "retired" (still verifies older policies), or "revoked"
+    # (must be rejected outright).
+    state: str
+    created_at: Optional[str] = None
+    retired_at: Optional[str] = None
+    revoked_at: Optional[str] = None
+    revocation_reason: Optional[str] = None
+
+
+class SigningKeyringRead(BaseModel):
+    """The full set of keys an agent needs in order to make correct decisions.
+
+    Agents get the whole set rather than just the active key because three different answers
+    have to be distinguishable: a retired key still verifies policies signed before the last
+    rotation, a revoked key must be refused even though its signature is cryptographically
+    valid, and an id absent from this list is merely unknown - which is not the same decision.
+    """
+
+    active_key_id: str
+    keys: List[SigningKeyRead]
+    revoked_key_ids: List[str] = []
+    # True when the active key lives only in the backend's memory and will not survive a
+    # restart. Agents and operators should treat this as a misconfigured deployment.
+    ephemeral: bool = False
+
+
+class SigningKeyRevokeRequest(BaseModel):
+    """A revocation is permanent and is audit evidence, so the reason is mandatory."""
+
+    reason: str
+
+    @field_validator("reason")
+    @classmethod
+    def validate_reason(cls, v: str) -> str:
+        s = (v or "").strip()
+        if not s:
+            raise ValueError("A revocation reason is required")
+        return s
+
+
+class SigningKeyRotateRequest(BaseModel):
+    reason: Optional[str] = None

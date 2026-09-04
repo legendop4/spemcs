@@ -24,7 +24,39 @@ from .canonical_json import canonicalize_to_bytes
 RSA_KEY_SIZE_BITS = 2048
 RSA_PUBLIC_EXPONENT = 65537
 PSS_SALT_LENGTH_BYTES = 32  # Explicit 32 bytes matches SHA-256 digest length (RFC 8017 / .NET 8)
-CURRENT_SCHEMA_VERSION = "1.0"
+
+# Schema 1.1 adds the MANDATORY `approved_browser` field.
+#
+# Why this is a breaking (major-behaviour) change and NOT an optional addition:
+# the endpoint scopes every vendor/exam firewall allow rule to the approved examination
+# browser executable. That executable identity therefore has to be inside the signed
+# bytes - if it were optional, or supplied out-of-band by the client, an attacker who
+# controlled the local agent input could widen the allow rules to any program
+# (curl.exe, python.exe) while the signature still verified.
+#
+# Bumping the version means the failure mode on a version skew is a loud, explicit
+# UnsupportedSchemaVersion rejection at both ends instead of a silent
+# "browser field missing -> unscoped rule" downgrade:
+#   * old agent (accepts only "1.0") + new backend -> agent rejects: UnsupportedSchema
+#   * new agent (accepts only "1.1") + old backend -> agent rejects: UnsupportedSchema
+# Both directions fail closed. No configuration can produce an unscoped allow rule.
+CURRENT_SCHEMA_VERSION = "1.1"
+
+# Browser families the endpoint agent is able to positively identify and scope
+# firewall rules to. Kept in sync with:
+#   * Spemcs.Agent.Core/Domain.cs               :: ApprovedBrowserFamily
+#   * Spemcs.Agent.Core/Network/BrowserExecutableResolver.cs :: known executables
+# A value outside this set MUST be rejected before signing: signing an unresolvable
+# browser would produce a policy the endpoint can only fail closed on.
+#
+# Firefox is DELIBERATELY EXCLUDED even though ApprovedBrowser.FIREFOX still exists in
+# models/exam.py (so historical exam rows keep loading). The endpoint's process classifier
+# lists firefox.exe in KnownUnapprovedBrowserExes and has no Firefox approval branch, so a
+# Firefox exam would firewall-allow the browser while the monitor simultaneously reported it
+# as a violation. Narrowing the signable set is the safe direction: the exam fails to compile
+# with a loud error instead of shipping an internally contradictory policy.
+SUPPORTED_APPROVED_BROWSERS = frozenset({"chrome", "edge"})
+
 MANDATORY_PAYLOAD_FIELDS = {
     "schema_version",
     "key_id",
@@ -32,6 +64,7 @@ MANDATORY_PAYLOAD_FIELDS = {
     "policy_id",
     "version",
     "vendor_profile_id",
+    "approved_browser",
     "allowed_destinations",
     "management_server",
     "not_before",
@@ -80,6 +113,40 @@ class InvalidSignatureError(PolicyVerificationError):
 class KeyMismatchError(PolicyVerificationError):
     """Required public key for key_id is not available or unknown."""
     pass
+
+
+class UnsupportedApprovedBrowserError(PolicyVerificationError):
+    """approved_browser is missing, malformed, or not a browser family the endpoint can scope to."""
+    pass
+
+
+def normalize_approved_browser(value: Any) -> str:
+    """Validates and normalizes an approved browser family identifier.
+
+    Returns the canonical lowercase form (e.g. "chrome").
+
+    Raises:
+        UnsupportedApprovedBrowserError: if the value is not a non-empty string naming a
+            browser family in SUPPORTED_APPROVED_BROWSERS.
+
+    This is deliberately strict rather than defaulting: a silent fallback to "chrome"
+    would mean a misconfigured exam produces firewall rules scoped to a browser the
+    candidate is not actually using, and the operator would see an unexplained network
+    failure instead of a configuration error.
+    """
+    if not isinstance(value, str):
+        raise UnsupportedApprovedBrowserError(
+            f"approved_browser must be a string, got {type(value).__name__}"
+        )
+    normalized = value.strip().lower()
+    if not normalized:
+        raise UnsupportedApprovedBrowserError("approved_browser must not be empty")
+    if normalized not in SUPPORTED_APPROVED_BROWSERS:
+        raise UnsupportedApprovedBrowserError(
+            f"Unsupported approved_browser '{value}'. "
+            f"Supported: {sorted(SUPPORTED_APPROVED_BROWSERS)}"
+        )
+    return normalized
 
 
 # ==============================================================================
@@ -139,13 +206,25 @@ def create_canonical_payload(
     management_server: Dict[str, Any],
     not_before: datetime | str,
     expires_at: datetime | str,
+    approved_browser: str,
     key_id: str = "dev-key-1",
     schema_version: str = CURRENT_SCHEMA_VERSION,
 ) -> Dict[str, Any]:
     """Constructs the canonical signed envelope dictionary.
-    
+
     Ensures all IDs are string representations and timestamps are strict ISO-8601 UTC.
     The 'signature' field is explicitly EXCLUDED from this payload.
+
+    `approved_browser` is required and validated here (not defaulted) because it is the
+    identity the endpoint scopes its firewall allow rules to - see
+    normalize_approved_browser for why a silent default is unsafe.
+
+    `key_id` keeps a placeholder default only so that structural tests can build a payload
+    without a signer. No production path relies on it: policy compilation passes the active
+    signer's own id, distribution passes the id persisted on the policy row, and
+    `PolicySigner.sign_payload` refuses to sign a payload whose key_id is not the signing key's
+    own. An omitted key_id can therefore produce an unsigned test fixture, never a real policy
+    labelled with the wrong key.
     """
     def _format_utc(dt: datetime | str) -> str:
         if isinstance(dt, str):
@@ -164,6 +243,7 @@ def create_canonical_payload(
         "policy_id": str(policy_id),
         "version": int(version),
         "vendor_profile_id": str(vendor_profile_id) if vendor_profile_id else None,
+        "approved_browser": normalize_approved_browser(approved_browser),
         "allowed_destinations": allowed_destinations,
         "management_server": management_server,
         "not_before": nb_str,
@@ -178,9 +258,21 @@ def create_canonical_payload(
 class PolicySigner:
     """Signs NetworkPolicy payloads using RSA-PSS SHA-256 with explicit parameters."""
 
-    def __init__(self, private_key: rsa.RSAPrivateKey, key_id: str = "dev-key-1"):
+    def __init__(self, private_key: rsa.RSAPrivateKey, key_id: str):
+        """
+        Args:
+            private_key: the RSA private key that will produce signatures.
+            key_id: the identity agents resolve this key by. Required, with no default: a
+                default would let a caller sign with one key while labelling the policy with
+                another key's id, and the endpoint would then look up the wrong public key and
+                report a signature failure instead of a key mismatch. Production ids come from
+                :mod:`backend.services.signing_key_manager`, where they are fingerprints of the
+                key material itself.
+        """
         if not isinstance(private_key, rsa.RSAPrivateKey):
             raise TypeError("private_key must be an instance of RSAPrivateKey")
+        if not isinstance(key_id, str) or not key_id.strip():
+            raise ValueError("key_id must be a non-empty string")
         self._private_key = private_key
         self._public_key = private_key.public_key()
         self.key_id = key_id
@@ -194,7 +286,7 @@ class PolicySigner:
 
     def sign_payload(self, payload: Dict[str, Any]) -> str:
         """Signs a policy payload using RFC 8785 canonical bytes and RSA-PSS.
-        
+
         Returns:
             Standard Base64-encoded signature string.
         """
@@ -206,6 +298,18 @@ class PolicySigner:
         missing = MANDATORY_PAYLOAD_FIELDS - set(payload.keys())
         if missing:
             raise MalformedPayloadError(f"Missing mandatory payload fields: {sorted(list(missing))}")
+
+        # The payload announces which key verifies it, and that announcement is inside the signed
+        # bytes. If it names a different key than the one signing, the policy is unverifiable the
+        # moment it leaves here: the endpoint resolves the advertised key_id, gets a public key
+        # that never matches, and reports a signature failure - which reads as tampering rather
+        # than as the configuration error it actually is. Caught here, at the only place both
+        # facts are known.
+        if payload["key_id"] != self.key_id:
+            raise MalformedPayloadError(
+                f"Payload declares key_id '{payload['key_id']}' but is being signed by "
+                f"'{self.key_id}'. A policy must be signed by the key it names."
+            )
 
         # Canonicalize to UTF-8 bytes via RFC 8785 JCS
         canonical_bytes = canonicalize_to_bytes(payload)
@@ -279,12 +383,13 @@ class PolicyVerifier:
         3. Validates timestamp validity window (not_before < expires_at)
         4. Validates current temporal validity (if current_time provided)
         5. Verifies cryptographic RSA-PSS signature
-        
+
         Returns:
             The verified payload dict if completely valid.
         Raises:
             MalformedPayloadError
             UnsupportedSchemaVersionError
+            UnsupportedApprovedBrowserError
             InvalidValidityWindowError
             NotYetValidPolicyError
             ExpiredPolicyError
@@ -311,6 +416,11 @@ class PolicyVerifier:
         # 3. Numeric version
         if not isinstance(clean_payload["version"], int) or clean_payload["version"] < 1:
             raise MalformedPayloadError("Policy version must be a positive integer >= 1")
+
+        # 3b. Approved browser must name a family the endpoint can resolve to an executable.
+        # Validated here as well as at signing time so a payload that was signed by an older
+        # or misconfigured signer cannot pass verification with an unusable browser identity.
+        normalize_approved_browser(clean_payload["approved_browser"])
 
         # 4. Validity Window
         nb = parse_iso_utc(clean_payload["not_before"])

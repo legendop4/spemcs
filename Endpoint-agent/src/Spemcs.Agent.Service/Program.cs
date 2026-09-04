@@ -22,6 +22,14 @@ builder.Services.AddSingleton<INetworkEnforcer, NetworkEnforcer>();
 // Resolve backend URL from config.json, appsettings, or default 8002
 var configPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "Spemcs", "Endpoint Agent", "config.json");
 string backendUrl = "http://127.0.0.1:8002/";
+
+// Provisional approved browser, used only until a signed policy binds one (see
+// IApprovedBrowserContext). The value is NOT security-relevant on its own - the firewall allowlist
+// is scoped from the signed policy - but it decides which browser the monitor treats as approved
+// during pre-compliance, so it is read from configuration instead of hardcoded at each call site.
+var hostApprovedBrowser = ApprovedBrowserFamily.Chrome;
+var approvedBrowserProvenance = "built-in fallback (no 'approvedBrowser' in config.json)";
+
 if (File.Exists(configPath))
 {
     try
@@ -30,6 +38,25 @@ if (File.Exists(configPath))
         if (doc.RootElement.TryGetProperty("serverUrl", out var sProp) && !string.IsNullOrWhiteSpace(sProp.GetString()))
         {
             backendUrl = sProp.GetString()!.TrimEnd('/') + "/";
+        }
+
+        if (doc.RootElement.TryGetProperty("approvedBrowser", out var bProp)
+            && bProp.ValueKind == System.Text.Json.JsonValueKind.String)
+        {
+            var configuredBrowser = bProp.GetString();
+            if (ApprovedBrowserFamilies.TryParse(configuredBrowser, out var parsedBrowser))
+            {
+                hostApprovedBrowser = parsedBrowser;
+                approvedBrowserProvenance = "config.json 'approvedBrowser'";
+            }
+            else
+            {
+                // Deliberately not fatal: an unrecognised value must not stop the agent from
+                // starting, because the signed policy overrides this anyway. It is surfaced at
+                // startup so a typo ("firefox", "Chromium") is visible rather than silently ignored.
+                approvedBrowserProvenance =
+                    $"built-in fallback (config.json 'approvedBrowser' = '{configuredBrowser}' is not a supported family)";
+            }
         }
     }
     catch { }
@@ -58,6 +85,21 @@ builder.Services.AddSingleton<IManagementConnectivityVerifier>(sp =>
 builder.Services.AddSingleton<IPolicyReceiver, PolicyReceiver>();
 
 // Milestone 6 Exam Lifecycle Integration & Enforcement State Machine
+//
+// One shared approved-browser context for the whole process. Registered as a singleton on purpose:
+// the enforcement state machine WRITES the signed family into it at activation, and the process
+// classifier plus the network policy evaluator READ it while monitoring. Two instances would
+// reintroduce exactly the split-brain this type exists to prevent (firewall allows msedge.exe while
+// the monitor keeps approving chrome.exe).
+builder.Services.AddSingleton<IApprovedBrowserContext>(sp =>
+{
+    var context = new ApprovedBrowserContext(hostApprovedBrowser, approvedBrowserProvenance);
+    sp.GetRequiredService<ILogger<ApprovedBrowserContext>>().LogInformation(
+        "Provisional approved browser: {Family} from {Provenance}. A signed exam policy overrides this at activation.",
+        hostApprovedBrowser, approvedBrowserProvenance);
+    return context;
+});
+
 builder.Services.AddSingleton<IEnforcementStateMachine, EnforcementStateMachine>();
 
 builder.Services.AddHttpClient("BackendApi", c => c.BaseAddress = new Uri(backendUrl));

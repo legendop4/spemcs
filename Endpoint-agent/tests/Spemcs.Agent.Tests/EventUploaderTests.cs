@@ -203,7 +203,7 @@ public sealed class EventUploaderTests
         {
             var store = new SqliteAgentStore(root);
             var source = new WindowsProcessSource();
-            var classifier = new ConfigurableProcessClassifier();
+            var classifier = new ConfigurableProcessClassifier(ApprovedBrowserFamily.Chrome);
             var publisher = new MockEventPublisher();
 
             var monitor = new ProcessMonitor(

@@ -7,11 +7,18 @@
 .env
 .env.local
 .env.*.local
+# See the repository-root .gitignore: .env.txt matches none of the patterns above and is
+# already tracked here. Ignoring it prevents new copies; the tracked one still needs removing
+# from the index and its credentials rotating.
+.env.txt
 *.pem
 *.key
 *.pfx
 *.p12
 # .env.example is safe to commit (no secrets)
+
+# Policy signing keyring (SIGNING_KEY_DIR, default backend/secrets/signing_keys).
+secrets/
 
 # ── Python / Backend ─────────────────────────────────────────
 __pycache__/

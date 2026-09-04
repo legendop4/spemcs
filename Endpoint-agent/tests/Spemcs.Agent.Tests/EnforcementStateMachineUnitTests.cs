@@ -1,7 +1,8 @@
 using System;
 using System.IO;
-using System.Security.Cryptography;
+using System.Linq;
 using System.Threading.Tasks;
+using Spemcs.Agent.Core;
 using Spemcs.Agent.Core.Network;
 using Xunit;
 
@@ -16,23 +17,13 @@ public sealed class EnforcementStateMachineUnitTests : IDisposable
     private readonly PolicyReceiver _receiver;
     private readonly MockFirewallAdapter _firewall;
     private readonly NetworkEnforcer _enforcer;
+    private readonly StubBrowserExecutableResolver _browserResolver;
     private readonly EnforcementStateMachine _machine;
 
-    private const string PythonPublicKeyPem = @"-----BEGIN PUBLIC KEY-----
-MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAzJ6JteFg33KWaPABNb3/
-f0jwRyJJL1jcwxMemlyUfMrH1W/rczxVw2dCJ0ou318qPYBtTMumzuGmASlZnpMw
-VgjTIdS6EMyxX2fhFHf8CyCw1DRuKARKEXBA44dCu/umKhYTLCDQQ20Z3G2ApPGL
-1tP5qPhIAFIafu1duWa7BIYT+17TofFjN4Zb1rvwA60mmqIdjMXbZbONrqnMDIK7
-m6GErjzhnJNoxXyuIKJ/A99dJHTLCRr/SG59p/UgKG+VBpwdfrPUFJlEOXbiYi3y
-fqRMwZnP7hsEKQQT42YZ6W1A8ySqrcfPmw+3hQZiCBIP0wL0mF3I7G3XLIYEv5qJ
-NwIDAQAB
------END PUBLIC KEY-----
-";
-
-    private const string PythonRawJson = "{\"allowed_destinations\":[{\"domains\":[\"test.example.com\"],\"ip_ranges\":[\"192.168.1.0/24\"],\"name\":\"TestVendor\",\"tcp_ports\":[443],\"udp_ports\":[]}],\"exam_id\":\"11111111-2222-3333-4444-555555555555\",\"expires_at\":\"2030-01-01T00:00:00Z\",\"key_id\":\"dev-key-1\",\"management_server\":{\"ip_addresses\":[\"127.0.0.1\"],\"port\":8000},\"not_before\":\"2026-01-01T00:00:00Z\",\"policy_id\":\"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee\",\"schema_version\":\"1.0\",\"vendor_profile_id\":null,\"version\":1}";
-    private const string PythonSignatureBase64 = "hSuzYgf7vtIpk8uE7HwtPlP3j/jd+Xi67HHEBVxnxE1t6DJ5qLzWIE92gcCVdyXUhkwpcNa/DjtPYfhU584F3C/MZGB9nxyPCxCEbVAQokhjndaGYhDbsKsmRLPm7d5MIRXcqgvWzYuyGEmJvcc7PIjVRb0OqqtQxMClALOaz4aW/Ht9DWTZr/YgGdOHEVRIpyyhByTs0+xNSKDKTX+8J4QUGj4Di093lzBN8hie7KIPL8WmwXtT1h5KO4ZpyTLekgL/70loJ11maEpd3vCnyAlHjJ0aUKMGj3vwQcq3gQ4WppBNQcLpO0ihQizZ7DfGXxPDO93HBpv0HUBNsfXsIQ==";
-    private static readonly Guid PythonExamId = Guid.Parse("11111111-2222-3333-4444-555555555555");
-    private static readonly DateTimeOffset ValidEvalTime = new(2026, 9, 3, 12, 0, 0, TimeSpan.Zero);
+    // Cross-language interop payloads (Python signer -> C# verifier) live in one place so the
+    // two test classes that consume them cannot drift apart. See PythonInteropFixtures.
+    private static readonly Guid PythonExamId = PythonInteropFixtures.ExamId;
+    private static readonly DateTimeOffset ValidEvalTime = PythonInteropFixtures.ValidEvalTime;
 
     public EnforcementStateMachineUnitTests()
     {
@@ -44,9 +35,13 @@ NwIDAQAB
         _receiver = new PolicyReceiver(_keyStore, _journal, _connectivity);
         _firewall = new MockFirewallAdapter();
         _enforcer = new NetworkEnforcer(_firewall, _journal);
-        _machine = new EnforcementStateMachine(_receiver, _enforcer, _firewall, _journal, _connectivity);
+        _browserResolver = StubBrowserExecutableResolver.Succeeding();
+        _machine = new EnforcementStateMachine(
+            _receiver, _enforcer, _firewall, _journal, _connectivity,
+            browserResolver: _browserResolver);
 
-        _keyStore.RegisterPublicKeyPem("dev-key-1", PythonPublicKeyPem);
+        _keyStore.RegisterPublicKeyPem(
+            PythonInteropFixtures.KeyId, PythonInteropFixtures.PublicKeyPem);
     }
 
     public void Dispose()
@@ -59,12 +54,7 @@ NwIDAQAB
         catch { }
     }
 
-    private SignedPolicyMessage CreateValidMessage() => new(
-        MessageType: "SIGNED_NETWORK_POLICY",
-        ProtocolVersion: 1,
-        RawPolicyJson: PythonRawJson,
-        SignatureBase64: PythonSignatureBase64
-    );
+    private static SignedPolicyMessage CreateValidMessage() => PythonInteropFixtures.ValidMessage();
 
     // =========================================================================
     // 1. Happy Path: Activation -> Enforcement -> Deactivation (Section 5, 14)
@@ -120,8 +110,8 @@ NwIDAQAB
         var tamperedMsg = new SignedPolicyMessage(
             MessageType: "SIGNED_NETWORK_POLICY",
             ProtocolVersion: 1,
-            RawPolicyJson: PythonRawJson.Replace("192.168.1.0/24", "192.168.99.0/24"), // tampered
-            SignatureBase64: PythonSignatureBase64
+            RawPolicyJson: PythonInteropFixtures.ValidRawJson.Replace("192.168.1.0/24", "192.168.99.0/24"), // tampered
+            SignatureBase64: PythonInteropFixtures.ValidSignatureBase64
         );
 
         var result = await _machine.ActivateAsync(sessionId, tamperedMsg, PythonExamId, currentTimeUtc: ValidEvalTime);
@@ -251,7 +241,9 @@ NwIDAQAB
         _journal.SaveEnforcementState(record);
 
         // Simulate crash recovery on new service instance
-        var newMachine = new EnforcementStateMachine(_receiver, _enforcer, _firewall, _journal, _connectivity);
+        var newMachine = new EnforcementStateMachine(
+            _receiver, _enforcer, _firewall, _journal, _connectivity,
+            browserResolver: StubBrowserExecutableResolver.Succeeding());
         var recovery = await newMachine.ReconcileStartupStateAsync();
 
         Assert.True(recovery.Success);
@@ -280,10 +272,127 @@ NwIDAQAB
         );
         _journal.SaveEnforcementState(record);
 
-        var newMachine = new EnforcementStateMachine(_receiver, _enforcer, _firewall, _journal, _connectivity);
+        var newMachine = new EnforcementStateMachine(
+            _receiver, _enforcer, _firewall, _journal, _connectivity,
+            browserResolver: StubBrowserExecutableResolver.Succeeding());
         var recovery = await newMachine.ReconcileStartupStateAsync();
 
         Assert.True(recovery.Success);
         Assert.Equal(EnforcementState.Idle, newMachine.CurrentState);
+    }
+
+    // =========================================================================
+    // 6. Requirements 4 & 5: vendor allow rules are scoped to the approved browser
+    //    named in the SIGNED policy, and nothing else can reach the allowlist.
+    // =========================================================================
+
+    [Fact]
+    public async Task PythonSignedPolicy_ScopesEveryVendorRuleToTheApprovedBrowser()
+    {
+        var sessionId = Guid.NewGuid();
+
+        var actResult = await _machine.ActivateAsync(
+            sessionId, CreateValidMessage(), PythonExamId,
+            FirewallProfiles.Private, ValidEvalTime);
+
+        Assert.True(actResult.Success, actResult.FailureReason ?? "activation failed");
+
+        // The signed payload says "chrome" - the state machine must have asked for exactly that,
+        // rather than falling back to a hardcoded default. Compared with lifted equality so the
+        // nullable "never asked at all" case fails loudly rather than being coerced.
+        Assert.True(
+            _browserResolver.LastRequestedFamily == ApprovedBrowserFamily.Chrome,
+            $"expected the SIGNED browser family Chrome, got {_browserResolver.LastRequestedFamily}");
+        Assert.Equal(1, _browserResolver.ResolveCallCount);
+
+        var vendorRules = _firewall.Rules
+            .Where(r => !r.Purpose.StartsWith("Loopback", StringComparison.OrdinalIgnoreCase)
+                     && !r.Purpose.StartsWith("Mgmt", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        Assert.NotEmpty(vendorRules);
+
+        // Requirement 4: no destination allow rule may be program-unscoped.
+        // Requirement 5: the program must be the approved browser, so curl.exe / python.exe
+        // inherit nothing from the allowlist.
+        Assert.All(vendorRules, r => Assert.Equal(
+            StubBrowserExecutableResolver.DefaultChromePath, r.ApplicationPath));
+
+        // Requirement 10: SPEMCS only ever installs ALLOW rules; default-deny comes from
+        // DefaultOutboundAction, never from a blanket explicit BLOCK rule.
+        Assert.All(_firewall.Rules, r => Assert.Equal(FirewallAction.Allow, r.Action));
+        Assert.Equal(FirewallAction.Block, _firewall.GetBaseline().PrivateDefaultOutbound);
+    }
+
+    [Fact]
+    public async Task LegacySchema10Policy_RejectedFailClosed_DespiteValidSignature()
+    {
+        var sessionId = Guid.NewGuid();
+
+        // This payload is correctly signed by a trusted key. It is refused purely because it
+        // predates the mandatory approved_browser field - accepting it would mean installing a
+        // vendor allow rule with no program scope at all.
+        var legacyMsg = PythonInteropFixtures.LegacySchema10Message();
+
+        var validation = await _receiver.ProcessPolicyMessageAsync(legacyMsg, PythonExamId, ValidEvalTime);
+        Assert.NotEqual(PolicyAcceptanceStatus.Accepted, validation.Status);
+        Assert.True(
+            validation.Status is PolicyAcceptanceStatus.MissingFields
+                              or PolicyAcceptanceStatus.UnsupportedSchema,
+            $"expected a schema/mandatory-field rejection, got {validation.Status}: {validation.Details}");
+
+        // And the state machine must leave the firewall completely untouched.
+        var result = await _machine.ActivateAsync(sessionId, legacyMsg, PythonExamId, currentTimeUtc: ValidEvalTime);
+
+        Assert.False(result.Success);
+        Assert.Equal(EnforcementState.Failed, result.State);
+        Assert.Empty(_firewall.Rules);
+        Assert.Equal(FirewallAction.Allow, _firewall.GetBaseline().PrivateDefaultOutbound);
+    }
+
+    [Fact]
+    public async Task UnscopableApprovedBrowser_RejectedAfterSignatureVerifies_FirewallUntouched()
+    {
+        var sessionId = Guid.NewGuid();
+
+        var msg = PythonInteropFixtures.UnscopableBrowserMessage();
+
+        var validation = await _receiver.ProcessPolicyMessageAsync(msg, PythonExamId, ValidEvalTime);
+
+        // UnsupportedApprovedBrowser - NOT InvalidSignature. The distinction matters: it proves
+        // the signature verified and the policy was then refused on its own terms, so a valid
+        // signature is never sufficient to obtain a firewall rule the agent cannot scope.
+        Assert.Equal(PolicyAcceptanceStatus.UnsupportedApprovedBrowser, validation.Status);
+
+        var result = await _machine.ActivateAsync(sessionId, msg, PythonExamId, currentTimeUtc: ValidEvalTime);
+
+        Assert.False(result.Success);
+        Assert.Equal(EnforcementState.Failed, result.State);
+        Assert.Empty(_firewall.Rules);
+        Assert.Equal(FirewallAction.Allow, _firewall.GetBaseline().PrivateDefaultOutbound);
+    }
+
+    [Fact]
+    public async Task ActivationAbortsWithoutTouchingFirewall_WhenNoTrustedBrowserIsInstalled()
+    {
+        // A machine where the approved browser is absent or fails Authenticode. Resolution
+        // happens before any durable record or firewall mutation, so there is nothing to roll
+        // back - the candidate keeps normal connectivity instead of being stranded.
+        var failingResolver = StubBrowserExecutableResolver.Failing();
+        var machine = new EnforcementStateMachine(
+            _receiver, _enforcer, _firewall, _journal, _connectivity,
+            browserResolver: failingResolver);
+
+        var result = await machine.ActivateAsync(
+            Guid.NewGuid(), CreateValidMessage(), PythonExamId,
+            FirewallProfiles.Private, ValidEvalTime);
+
+        Assert.False(result.Success);
+        Assert.Equal(EnforcementState.Failed, result.State);
+        Assert.Contains("could not be resolved", result.FailureReason);
+        Assert.Empty(_firewall.Rules);
+        Assert.Equal(FirewallAction.Allow, _firewall.GetBaseline().PrivateDefaultOutbound);
+        Assert.Equal(FirewallAction.Allow, _firewall.GetBaseline().PublicDefaultOutbound);
+        Assert.Equal(FirewallAction.Allow, _firewall.GetBaseline().DomainDefaultOutbound);
     }
 }

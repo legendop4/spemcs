@@ -41,6 +41,15 @@ public class AgentConfig
     [JsonPropertyName("registeredAtUtc")]
     public DateTimeOffset? RegisteredAtUtc { get; set; }
 
+    /// <summary>
+    /// Provisional approved examination browser ("chrome" or "edge"), read by both the UI and the
+    /// Windows service from this same file. Provisional because a signed exam policy overrides it:
+    /// it decides only which browser pre-compliance treats as approved before a policy arrives.
+    /// Null or unrecognised values fall back to Chrome, which is logged.
+    /// </summary>
+    [JsonPropertyName("approvedBrowser")]
+    public string? ApprovedBrowser { get; set; }
+
     public bool IsValid()
     {
         return !string.IsNullOrWhiteSpace(ServerUrl) &&

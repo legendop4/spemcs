@@ -12,7 +12,12 @@ public sealed class PreComplianceChoiceTests
         var machine = new AgentStateMachine(store);
         var ui = new ChoiceUi();
         var source = new StaticSource([new ProcessInfo(9, "notepad", "C:\\Users\\student\\notepad.exe", null, true)]);
-        var pipeline = new ExamPipeline(machine, new PreComplianceEngine(source, new DenyClassifier()), new ProcessMonitor(source, new DenyClassifier(), store, machine.Snapshot), ui);
+        var pipeline = new ExamPipeline(
+            machine,
+            new PreComplianceEngine(source, new DenyClassifier()),
+            new ProcessMonitor(source, new DenyClassifier(), store, machine.Snapshot),
+            ui,
+            ApprovedBrowserContext.ForFamily(ApprovedBrowserFamily.Chrome));
 
         Assert.True(await pipeline.StartAsync(CancellationToken.None));
         Assert.Equal(AgentState.Monitoring, pipeline.State);

@@ -14,6 +14,21 @@ namespace Spemcs.Agent.Tests;
 
 public sealed class WindowsTrafficEnforcementIntegrationTests : IDisposable
 {
+    /// <summary>
+    /// The vendor destination address in the signed fixture below. RFC 5737 TEST-NET-2, so it is
+    /// reserved for documentation and never routable.
+    /// <para>
+    /// Deliberately NOT loopback: <c>127.0.0.0/8</c> is a forbidden destination range in both
+    /// <see cref="PolicyDestinationValidator"/> and <c>policy_compiler.py</c>, because a destination
+    /// allow rule exists to let traffic leave the machine and loopback never does. This fixture used
+    /// <c>127.0.0.1</c> only so the harness could bind a real <see cref="TcpListener"/>; nothing
+    /// after activation opens a socket, so the listeners need their ports to match the policy but not
+    /// their address. A single host rather than a CIDR because <see cref="IsTrafficPermitted"/>
+    /// matches <c>RemoteAddresses</c> by substring, not by prefix containment.
+    /// </para>
+    /// </summary>
+    private const string VendorIp = "198.51.100.7";
+
     private readonly TcpListener _managementListener;
     private readonly TcpListener _vendorListener;
     private readonly TcpListener _unauthorizedListener;
@@ -107,7 +122,13 @@ public sealed class WindowsTrafficEnforcementIntegrationTests : IDisposable
 
             IFirewallAdapter firewall = isElevated ? new WindowsFirewallAdapter() : new MockFirewallAdapter();
             var enforcer = new NetworkEnforcer(firewall, journal);
-            var machine = new EnforcementStateMachine(receiver, enforcer, firewall, journal, connectivity);
+
+            // A stub resolver keeps this test about the COM/elevation boundary. Using the real
+            // BrowserExecutableResolver here would make the test depend on whether a trusted
+            // Chrome/Edge happens to be installed on the runner.
+            var machine = new EnforcementStateMachine(
+                receiver, enforcer, firewall, journal, connectivity,
+                browserResolver: StubBrowserExecutableResolver.Succeeding());
 
             // Read baseline
             var initialBaseline = firewall.GetBaseline();
@@ -192,7 +213,9 @@ public sealed class WindowsTrafficEnforcementIntegrationTests : IDisposable
             var connectivity = new MockManagementConnectivityVerifier(shouldSucceed: true);
             var receiver = new PolicyReceiver(keyStore, journal, connectivity);
             var enforcer = new NetworkEnforcer(mockFirewall, journal);
-            var machine = new EnforcementStateMachine(receiver, enforcer, mockFirewall, journal, connectivity);
+            var machine = new EnforcementStateMachine(
+                receiver, enforcer, mockFirewall, journal, connectivity,
+                browserResolver: StubBrowserExecutableResolver.Succeeding());
 
             // Generate an RSA key for signing the test policy
             using var rsa = RSA.Create(2048);
@@ -204,16 +227,19 @@ public sealed class WindowsTrafficEnforcementIntegrationTests : IDisposable
             var policyId = Guid.NewGuid();
 
             // Policy allows _managementPort and _vendorPort. _unauthorizedPort is omitted.
+            // approved_browser is inside the signed bytes: it is what every vendor allow rule
+            // gets scoped to, so it cannot be a client-side default (requirements 4 and 5).
             var rawJson = $@"{{
                 ""allowed_destinations"": [
                     {{
                         ""domains"": [""vendor.local""],
-                        ""ip_ranges"": [""127.0.0.1""],
+                        ""ip_ranges"": [""{VendorIp}""],
                         ""name"": ""ExamVendor"",
                         ""tcp_ports"": [{_vendorPort}],
                         ""udp_ports"": []
                     }}
                 ],
+                ""approved_browser"": ""chrome"",
                 ""exam_id"": ""{examId}"",
                 ""expires_at"": ""2035-01-01T00:00:00Z"",
                 ""key_id"": ""{keyId}"",
@@ -223,7 +249,7 @@ public sealed class WindowsTrafficEnforcementIntegrationTests : IDisposable
                 }},
                 ""not_before"": ""2025-01-01T00:00:00Z"",
                 ""policy_id"": ""{policyId}"",
-                ""schema_version"": ""1.0"",
+                ""schema_version"": ""1.1"",
                 ""vendor_profile_id"": null,
                 ""version"": 1
             }}";
@@ -252,29 +278,51 @@ public sealed class WindowsTrafficEnforcementIntegrationTests : IDisposable
 
             // 3. ACTIVATE ENFORCEMENT
             var actResult = await machine.ActivateAsync(sessionId, msg, examId, FirewallProfiles.Private, DateTimeOffset.UtcNow);
-            Assert.True(actResult.Success);
+            Assert.True(actResult.Success, actResult.FailureReason);
             Assert.Equal(EnforcementState.Active, machine.CurrentState);
 
             // 4. Verify actual firewall state: DefaultOutboundAction == BLOCK
             var baseline = mockFirewall.GetBaseline();
             Assert.Equal(FirewallAction.Block, baseline.PrivateDefaultOutbound);
 
-            // 5. Verify traffic permissions under ACTIVE state:
-            // Management: SUCCESS
-            Assert.True(IsTrafficPermitted(mockFirewall, "127.0.0.1", _managementPort),
+            // 5. Verify traffic permissions under ACTIVE state, per originating program.
+            const string browser = StubBrowserExecutableResolver.DefaultChromePath;
+            const string curl = @"C:\Windows\System32\curl.exe";
+
+            // Management: SUCCESS. This channel belongs to the agent service, not the browser, so
+            // it is deliberately not program-scoped - it stays narrow by being pinned to one IP
+            // and one port.
+            Assert.True(IsTrafficPermitted(mockFirewall, "127.0.0.1", _managementPort, browser),
                 "Authorized management traffic should be permitted under SPEMCS rules.");
 
-            // Vendor: SUCCESS
-            Assert.True(IsTrafficPermitted(mockFirewall, "127.0.0.1", _vendorPort),
+            // Vendor: SUCCESS from the approved browser.
+            Assert.True(IsTrafficPermitted(mockFirewall, VendorIp, _vendorPort, browser),
                 "Authorized vendor traffic should be permitted under SPEMCS rules.");
 
-            // Unauthorized destination: BLOCKED
-            Assert.False(IsTrafficPermitted(mockFirewall, "127.0.0.1", _unauthorizedPort),
+            // Requirement 5, at the traffic level: the SAME authorized destination and port must be
+            // unreachable from anything other than the approved browser. If this ever passes for
+            // curl.exe, the exam's one permitted hole has become a general-purpose exfiltration path.
+            Assert.False(IsTrafficPermitted(mockFirewall, VendorIp, _vendorPort, curl),
+                "Vendor destination must NOT be reachable from a non-approved executable.");
+
+            // Requirement 4: no destination allow rule may be program-unscoped.
+            var vendorRules = mockFirewall.Rules
+                .Where(r => r.Purpose.Equals("ExamVendor", StringComparison.Ordinal))
+                .ToList();
+            Assert.NotEmpty(vendorRules);
+            Assert.All(vendorRules, r => Assert.Equal(browser, r.ApplicationPath));
+
+            // Requirement 10: SPEMCS installs ALLOW rules only; the deny comes from the profile
+            // default action, never from a blanket explicit BLOCK rule.
+            Assert.All(mockFirewall.Rules, r => Assert.Equal(FirewallAction.Allow, r.Action));
+
+            // Unauthorized destination: BLOCKED, even for the approved browser.
+            Assert.False(IsTrafficPermitted(mockFirewall, "127.0.0.1", _unauthorizedPort, browser),
                 "Unauthorized destination must be blocked under DefaultOutboundAction == BLOCK.");
 
             // 6. DEACTIVATE / STOP EXAM
             var deactResult = await machine.DeactivateAsync(sessionId, "Exam finished");
-            Assert.True(deactResult.Success);
+            Assert.True(deactResult.Success, deactResult.FailureReason);
             Assert.Equal(EnforcementState.Idle, machine.CurrentState);
 
             // 7. Verify baseline restored: DefaultOutboundAction == ALLOW
@@ -282,7 +330,7 @@ public sealed class WindowsTrafficEnforcementIntegrationTests : IDisposable
             Assert.Equal(FirewallAction.Allow, restoredBaseline.PrivateDefaultOutbound);
 
             // 8. Verify unauthorized destination is reachable again
-            Assert.True(IsTrafficPermitted(mockFirewall, "127.0.0.1", _unauthorizedPort),
+            Assert.True(IsTrafficPermitted(mockFirewall, "127.0.0.1", _unauthorizedPort, browser),
                 "Unauthorized destination should be permitted again once default block is lifted.");
 
             // 9. Verify SPEMCS rules removed and unrelated rules untouched
@@ -295,7 +343,16 @@ public sealed class WindowsTrafficEnforcementIntegrationTests : IDisposable
         }
     }
 
-    private static bool IsTrafficPermitted(MockFirewallAdapter firewall, string ip, int port)
+    /// <summary>
+    /// Models Windows Firewall evaluation for one (destination, port, originating program) tuple.
+    /// </summary>
+    /// <param name="programPath">
+    /// The image that would open the connection. This is not cosmetic: a rule carrying an
+    /// ApplicationName matches ONLY that image, so passing curl.exe here is how the test proves
+    /// requirement 5 rather than merely asserting on a rule property.
+    /// </param>
+    private static bool IsTrafficPermitted(
+        MockFirewallAdapter firewall, string ip, int port, string programPath)
     {
         // Under Windows Firewall logic:
         // If DefaultOutboundAction == Allow, traffic is permitted unless a Block rule matches.
@@ -312,6 +369,10 @@ public sealed class WindowsTrafficEnforcementIntegrationTests : IDisposable
             r.Direction == FirewallDirection.Outbound &&
             r.Enabled &&
             !r.Purpose.StartsWith("Loopback", StringComparison.OrdinalIgnoreCase) &&
+            // Program scope: null ApplicationName means "any process"; a set ApplicationName
+            // restricts the rule to exactly that executable.
+            (r.ApplicationPath is null ||
+             string.Equals(r.ApplicationPath, programPath, StringComparison.OrdinalIgnoreCase)) &&
             (r.RemoteAddresses == "*" || r.RemoteAddresses.Contains(ip)) &&
             (r.RemotePorts == "*" || r.RemotePorts.Split(',').Select(p => p.Trim()).Contains(port.ToString()))
         );

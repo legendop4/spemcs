@@ -28,6 +28,35 @@ public interface IPolicyReceiver
 
 public sealed class PolicyReceiver : IPolicyReceiver
 {
+    /// <summary>
+    /// The one policy schema version this agent understands.
+    /// <para>
+    /// Schema 1.1 added the MANDATORY <c>approved_browser</c> field. The version was bumped
+    /// rather than treating the field as optional so that a version skew fails loudly in BOTH
+    /// directions: an old agent pinned to "1.0" rejects a 1.1 policy, and this agent rejects a
+    /// 1.0 policy. Accepting both would mean a 1.0 policy silently produced firewall allow rules
+    /// with no browser scoping - exactly the hole requirements 4 and 5 exist to close.
+    /// Kept in sync with backend/backend/services/policy_signer.py :: CURRENT_SCHEMA_VERSION.
+    /// </para>
+    /// </summary>
+    internal const string SupportedSchemaVersion = "1.1";
+
+    /// <summary>
+    /// The exact, complete set of top-level fields a signed policy may contain.
+    /// <para>
+    /// This set is used TWICE below: unknown fields are rejected, and every listed field is
+    /// required. That dual use is deliberate - it makes "the signed payload and the agent's
+    /// expectations are identical" a single, non-bypassable assertion. Adding a field here
+    /// without the backend emitting it (or vice versa) is caught immediately instead of
+    /// degrading silently.
+    /// </para>
+    /// <para>
+    /// <c>approved_browser</c> belongs in the SIGNED payload specifically because firewall allow
+    /// rules are scoped to that browser's executable. If it arrived out-of-band it could be
+    /// swapped for another program while the signature still verified.
+    /// </para>
+    /// Kept in sync with backend/backend/services/policy_signer.py :: MANDATORY_PAYLOAD_FIELDS.
+    /// </summary>
     private static readonly HashSet<string> AllowedTopLevelFields = new(StringComparer.Ordinal)
     {
         "schema_version",
@@ -36,11 +65,120 @@ public sealed class PolicyReceiver : IPolicyReceiver
         "policy_id",
         "version",
         "vendor_profile_id",
+        "approved_browser",
         "allowed_destinations",
         "management_server",
         "not_before",
         "expires_at"
     };
+
+    /// <summary>
+    /// Maps the signed <c>approved_browser</c> string onto <see cref="ApprovedBrowserFamily"/>.
+    /// <para>
+    /// Delegates to <see cref="ApprovedBrowserFamilies.TryParse"/> rather than carrying its own
+    /// whitelist. The same string has to mean the same thing to the firewall (which scopes vendor
+    /// allow rules to that browser's executable), to the process classifier (which grants it
+    /// Allowed), and to the network policy evaluator (which suppresses its ordinary web traffic).
+    /// Two independent copies of this switch is how those three quietly drift apart.
+    /// </para>
+    /// </summary>
+    /// <param name="value">Raw string from the signed payload.</param>
+    /// <param name="family">The mapped family; unspecified when this returns false.</param>
+    /// <returns>False if the value is missing, malformed, or names an unsupported family.</returns>
+    internal static bool TryParseApprovedBrowser(string? value, out ApprovedBrowserFamily family)
+        => ApprovedBrowserFamilies.TryParse(value, out family);
+
+    /// <summary>
+    /// Reads a required array-of-strings property, reporting a reason instead of throwing.
+    /// <para>
+    /// The nested objects of a policy are not covered by the top-level mandatory-field check, so
+    /// every nested read has to tolerate absence. <c>JsonElement.GetProperty</c> throws
+    /// <see cref="KeyNotFoundException"/>, which inside the WebSocket receive loop would surface as
+    /// a crashed connection rather than as a rejected policy - the operator would see the agent
+    /// drop offline with no explanation of which field was wrong.
+    /// </para>
+    /// <para>
+    /// Blank entries are skipped rather than rejected, matching the previous behaviour; a
+    /// non-string entry is rejected, because it means the sender's schema differs from ours and
+    /// guessing which is right is not the agent's job.
+    /// </para>
+    /// </summary>
+    private static bool TryReadStringArray(
+        JsonElement parent,
+        string property,
+        out List<string> values,
+        out string? error)
+    {
+        values = new List<string>();
+
+        if (!parent.TryGetProperty(property, out var element) ||
+            element.ValueKind != JsonValueKind.Array)
+        {
+            error = $"missing or non-array '{property}'";
+            return false;
+        }
+
+        foreach (var item in element.EnumerateArray())
+        {
+            if (item.ValueKind != JsonValueKind.String)
+            {
+                error = $"'{property}' contains a non-string entry";
+                return false;
+            }
+
+            var text = item.GetString();
+            if (!string.IsNullOrWhiteSpace(text))
+            {
+                values.Add(text.Trim());
+            }
+        }
+
+        error = null;
+        return true;
+    }
+
+    /// <summary>
+    /// Reads a required array-of-ports property, validating the 1-65535 range.
+    /// <para>
+    /// Port 0 and negative values are rejected rather than passed through: 0 is not a port, and a
+    /// firewall rule built from one either fails to apply or applies to something unintended.
+    /// </para>
+    /// </summary>
+    private static bool TryReadPortArray(
+        JsonElement parent,
+        string property,
+        out List<int> values,
+        out string? error)
+    {
+        values = new List<int>();
+
+        if (!parent.TryGetProperty(property, out var element) ||
+            element.ValueKind != JsonValueKind.Array)
+        {
+            error = $"missing or non-array '{property}'";
+            return false;
+        }
+
+        foreach (var item in element.EnumerateArray())
+        {
+            if (item.ValueKind != JsonValueKind.Number || !item.TryGetInt32(out var port))
+            {
+                error = $"'{property}' contains an entry that is not a 32-bit integer";
+                return false;
+            }
+
+            if (port < 1 || port > 65535)
+            {
+                error = $"'{property}' contains out-of-range port {port}";
+                return false;
+            }
+
+            values.Add(port);
+        }
+
+        error = null;
+        return true;
+    }
 
     private readonly ITrustedKeyStore _keyStore;
     private readonly IRollbackJournal _journal;
@@ -138,9 +276,14 @@ public sealed class PolicyReceiver : IPolicyReceiver
             // 3. Schema Version & Key ID Resolution
             // -----------------------------------------------------------------
             var schemaVersion = root.GetProperty("schema_version").GetString();
-            if (schemaVersion != "1.0")
+            // The explicit null check is not redundant: string.Equals(string?, string?, ...) is
+            // not annotated for null-state analysis, so without it `schemaVersion` stays
+            // maybe-null and constructing ValidatedPolicy below would warn (warnings are errors).
+            if (schemaVersion is null ||
+                !string.Equals(schemaVersion, SupportedSchemaVersion, StringComparison.Ordinal))
             {
-                return new PolicyValidationResult(PolicyAcceptanceStatus.UnsupportedSchema, $"Unsupported schema_version: '{schemaVersion}'");
+                return new PolicyValidationResult(PolicyAcceptanceStatus.UnsupportedSchema,
+                    $"Unsupported schema_version: '{schemaVersion}' (this agent requires '{SupportedSchemaVersion}')");
             }
 
             var keyId = root.GetProperty("key_id").GetString();
@@ -271,8 +414,23 @@ public sealed class PolicyReceiver : IPolicyReceiver
             }
 
             // -----------------------------------------------------------------
-            // 8. Deserialize Destinations & Management Server
+            // 8. Approved Browser Identity, Destinations & Management Server
             // -----------------------------------------------------------------
+            // Deliberately parsed AFTER signature verification (step 4). The browser identity is
+            // only meaningful once the bytes are known to be authentic, and reporting
+            // UnsupportedApprovedBrowser for an unsigned/forged envelope would mislabel a forgery
+            // as a configuration problem in the operator's logs.
+            var approvedBrowserRaw = root.GetProperty("approved_browser").GetString();
+            if (!TryParseApprovedBrowser(approvedBrowserRaw, out var approvedBrowser))
+            {
+                _logger.LogError(
+                    "Policy {PolicyId} names approved_browser '{ApprovedBrowser}', which this agent cannot scope firewall rules to. Failing closed.",
+                    policyId, approvedBrowserRaw);
+                return new PolicyValidationResult(PolicyAcceptanceStatus.UnsupportedApprovedBrowser,
+                    $"approved_browser '{approvedBrowserRaw}' is not a browser family this agent can resolve to an executable. " +
+                    "Vendor allow rules must be scoped to the approved browser, so enforcement cannot proceed.");
+            }
+
             Guid? vendorProfileId = null;
             var vpProp = root.GetProperty("vendor_profile_id");
             if (vpProp.ValueKind == JsonValueKind.String && vpProp.TryGetGuid(out var parsedVpId))
@@ -287,37 +445,144 @@ public sealed class PolicyReceiver : IPolicyReceiver
                 return new PolicyValidationResult(PolicyAcceptanceStatus.PolicyInvalid, "allowed_destinations must be an array");
             }
 
+            var destIndex = -1;
             foreach (var destEl in allowedArray.EnumerateArray())
             {
-                var name = destEl.GetProperty("name").GetString() ?? "Unnamed";
+                destIndex++;
 
-                var domains = new List<string>();
-                foreach (var d in destEl.GetProperty("domains").EnumerateArray())
-                    if (d.GetString() is { } s) domains.Add(s);
+                if (destEl.ValueKind != JsonValueKind.Object)
+                {
+                    return new PolicyValidationResult(PolicyAcceptanceStatus.PolicyInvalid,
+                        $"allowed_destinations[{destIndex}] must be an object");
+                }
 
-                var ips = new List<string>();
-                foreach (var ip in destEl.GetProperty("ip_ranges").EnumerateArray())
-                    if (ip.GetString() is { } s) ips.Add(s);
+                // Destination-level fields are NOT covered by the mandatory-field check above,
+                // which only walks the top level. They have to be checked explicitly here:
+                // GetProperty on an absent field throws KeyNotFoundException, which would escape
+                // as an unhandled exception in the WebSocket receive loop instead of being
+                // reported as the invalid policy it is.
+                if (!destEl.TryGetProperty("name", out var nameEl) ||
+                    nameEl.ValueKind != JsonValueKind.String)
+                {
+                    return new PolicyValidationResult(PolicyAcceptanceStatus.PolicyInvalid,
+                        $"allowed_destinations[{destIndex}] is missing a string 'name'");
+                }
 
-                var tcp = new List<int>();
-                foreach (var p in destEl.GetProperty("tcp_ports").EnumerateArray())
-                    tcp.Add(p.GetInt32());
+                var name = nameEl.GetString() ?? string.Empty;
 
-                var udp = new List<int>();
-                foreach (var p in destEl.GetProperty("udp_ports").EnumerateArray())
-                    udp.Add(p.GetInt32());
+                if (!TryReadStringArray(destEl, "domains", out var domains, out var domainsError))
+                {
+                    return new PolicyValidationResult(PolicyAcceptanceStatus.PolicyInvalid,
+                        $"allowed_destinations[{destIndex}]: {domainsError}");
+                }
+
+                if (!TryReadStringArray(destEl, "ip_ranges", out var ips, out var ipsError))
+                {
+                    return new PolicyValidationResult(PolicyAcceptanceStatus.PolicyInvalid,
+                        $"allowed_destinations[{destIndex}]: {ipsError}");
+                }
+
+                if (!TryReadPortArray(destEl, "tcp_ports", out var tcp, out var tcpError))
+                {
+                    return new PolicyValidationResult(PolicyAcceptanceStatus.PolicyInvalid,
+                        $"allowed_destinations[{destIndex}]: {tcpError}");
+                }
+
+                if (!TryReadPortArray(destEl, "udp_ports", out var udp, out var udpError))
+                {
+                    return new PolicyValidationResult(PolicyAcceptanceStatus.PolicyInvalid,
+                        $"allowed_destinations[{destIndex}]: {udpError}");
+                }
+
+                // Defense in depth. Every range below becomes an outbound allow rule scoped to the
+                // examination browser, so the agent re-applies the address rules rather than
+                // trusting that the signer applied them. See PolicyDestinationValidator for why a
+                // verified signature is not sufficient authority for an address.
+                if (!PolicyDestinationValidator.TryValidate(destIndex, name, ips, out var rejection))
+                {
+                    _logger.LogError(
+                        "Policy {PolicyId} REJECTED for Exam {ExamId}: {Rejection}. The signature " +
+                        "verified, so the backend and this agent disagree about what may be " +
+                        "allowed; no firewall rules were built",
+                        policyId, expectedExamId, rejection);
+                    return new PolicyValidationResult(PolicyAcceptanceStatus.PolicyInvalid,
+                        rejection ?? "Destination rejected by endpoint address validation");
+                }
 
                 destinations.Add(new PolicyDestination(name, domains, ips, tcp, udp));
             }
 
             var mgmtEl = root.GetProperty("management_server");
-            var mgmtIps = new List<string>();
-            foreach (var ip in mgmtEl.GetProperty("ip_addresses").EnumerateArray())
-                if (ip.GetString() is { } s) mgmtIps.Add(s);
+            if (mgmtEl.ValueKind != JsonValueKind.Object)
+            {
+                return new PolicyValidationResult(PolicyAcceptanceStatus.PolicyInvalid,
+                    "management_server must be an object");
+            }
 
-            var mgmtPort = mgmtEl.GetProperty("port").GetInt32();
-            var expectedHost = mgmtEl.TryGetProperty("hostname", out var hostEl) ? hostEl.GetString() : null;
-            var useTls = mgmtEl.TryGetProperty("use_tls", out var tlsEl) ? tlsEl.GetBoolean() : (mgmtPort == 443);
+            if (!TryReadStringArray(mgmtEl, "ip_addresses", out var mgmtIps, out var mgmtIpsError))
+            {
+                return new PolicyValidationResult(PolicyAcceptanceStatus.PolicyInvalid,
+                    $"management_server: {mgmtIpsError}");
+            }
+
+            if (mgmtIps.Count == 0)
+            {
+                return new PolicyValidationResult(PolicyAcceptanceStatus.PolicyInvalid,
+                    "management_server names no ip_addresses, so the agent would lose its " +
+                    "management channel the moment default-deny engages");
+            }
+
+            // The management allow rule is deliberately NOT scoped to a program - it belongs to the
+            // agent service, not the browser - so it is the one rule in the set that any process
+            // could use. Its narrowness therefore rests entirely on the address being a single
+            // host. A range, a wildcard, or an unspecified address here would become an
+            // any-program outbound allow rule, which is a far wider hole than a bad destination.
+            foreach (var mgmtIp in mgmtIps)
+            {
+                var problem = PolicyDestinationValidator.DescribeUnsafeManagementAddress(mgmtIp);
+                if (problem is not null)
+                {
+                    _logger.LogError(
+                        "Policy {PolicyId} REJECTED for Exam {ExamId}: management_server {Problem}",
+                        policyId, expectedExamId, problem);
+                    return new PolicyValidationResult(PolicyAcceptanceStatus.PolicyInvalid,
+                        $"management_server: {problem}");
+                }
+            }
+
+            if (!mgmtEl.TryGetProperty("port", out var portEl) ||
+                portEl.ValueKind != JsonValueKind.Number ||
+                !portEl.TryGetInt32(out var mgmtPort) ||
+                mgmtPort < 1 || mgmtPort > 65535)
+            {
+                return new PolicyValidationResult(PolicyAcceptanceStatus.PolicyInvalid,
+                    "management_server.port must be an integer between 1 and 65535");
+            }
+
+            var expectedHost = mgmtEl.TryGetProperty("hostname", out var hostEl) &&
+                               hostEl.ValueKind == JsonValueKind.String
+                ? hostEl.GetString()
+                : null;
+
+            // Absent means "infer from the port", which is what plain-HTTP development deployments
+            // rely on. Present-but-not-a-boolean is a schema mismatch rather than something to
+            // guess at, and guessing wrong here decides whether the management channel is
+            // encrypted.
+            bool useTls;
+            if (!mgmtEl.TryGetProperty("use_tls", out var tlsEl))
+            {
+                useTls = mgmtPort == 443;
+            }
+            else if (tlsEl.ValueKind is JsonValueKind.True or JsonValueKind.False)
+            {
+                useTls = tlsEl.GetBoolean();
+            }
+            else
+            {
+                return new PolicyValidationResult(PolicyAcceptanceStatus.PolicyInvalid,
+                    "management_server.use_tls must be a boolean when present");
+            }
+
             var mgmtDest = new ManagementDestination(mgmtIps, mgmtPort, expectedHost, useTls);
 
             // -----------------------------------------------------------------
@@ -346,6 +611,7 @@ public sealed class PolicyReceiver : IPolicyReceiver
                 PolicyId: policyId,
                 Version: version,
                 VendorProfileId: vendorProfileId,
+                ApprovedBrowser: approvedBrowser,
                 AllowedDestinations: destinations,
                 ManagementServer: mgmtDest,
                 NotBefore: notBefore,
@@ -354,8 +620,8 @@ public sealed class PolicyReceiver : IPolicyReceiver
                 SignatureBase64: message.SignatureBase64
             );
 
-            _logger.LogInformation("Policy {PolicyId} (v{Version}) ACCEPTED for Exam {ExamId}",
-                policyId, version, expectedExamId);
+            _logger.LogInformation("Policy {PolicyId} (v{Version}) ACCEPTED for Exam {ExamId}; approved browser {ApprovedBrowser}",
+                policyId, version, expectedExamId, approvedBrowser);
 
             return new PolicyValidationResult(
                 Status: PolicyAcceptanceStatus.Accepted,

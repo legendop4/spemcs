@@ -95,8 +95,9 @@ def valid_payload():
         management_server={"ip_addresses": ["192.168.11.200"], "port": 8000},
         not_before=now - timedelta(minutes=5),
         expires_at=now + timedelta(hours=3),
+        approved_browser="chrome",
         key_id="dev-key-1",
-        schema_version="1.0",
+        schema_version=CURRENT_SCHEMA_VERSION,
     )
 
 
@@ -228,6 +229,7 @@ def test_12_expired_policy_rejected(signer, verifier):
         management_server={"ip_addresses": ["127.0.0.1"], "port": 8000},
         not_before=past - timedelta(hours=2),
         expires_at=past - timedelta(hours=1),
+        approved_browser="chrome",
     )
     sig = signer.sign_payload(payload)
 
@@ -248,6 +250,7 @@ def test_13_not_yet_valid_policy_rejected(signer, verifier):
         management_server={"ip_addresses": ["127.0.0.1"], "port": 8000},
         not_before=future,
         expires_at=future + timedelta(hours=2),
+        approved_browser="chrome",
     )
     sig = signer.sign_payload(payload)
 
@@ -268,6 +271,7 @@ def test_14_invalid_validity_window_rejected(signer, verifier):
         management_server={"ip_addresses": ["127.0.0.1"], "port": 8000},
         not_before=now + timedelta(hours=1),
         expires_at=now,  # expires before it begins!
+        approved_browser="chrome",
     )
     sig = signer.sign_payload(payload)
 
