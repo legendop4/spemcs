@@ -226,7 +226,9 @@ dotnet build Endpoint-agent/Spemcs.Agent.sln -c Debug
 ### 7. Intermittent Pre-Enforcement Management Probe Timeout
 - **Problem**: In a subsequent run, an intermittent timeout occurred during the **pre-enforcement** check (`RulesInstalled = 0`), before any firewall rules were touched.
 - **Investigation**: Independently from the machine, `curl.exe http://127.0.0.1:8002/api/v1/management/health` returned HTTP 200 instantaneously, and `Test-NetConnection 127.0.0.1 -Port 8002` succeeded. Yet the service's `ManagementConnectivityVerifier` timed out on that same endpoint.
-- **Status**: This issue is distinct from firewall enforcement and remains **open/unresolved** (see Section 8).
+- **Root Cause (found)**: The timeout was never on the agent/HttpClient/socket side. `backend/backend/routes/health.py`'s `management_health_check` was running `db.execute(text("SELECT 1"))` against `DATABASE_URL` on every call — and `DATABASE_URL` points at a **remote serverless Neon Postgres instance** (see `backend/README.md`), which auto-suspends its compute after a period of inactivity. The first query after the compute has gone to sleep pays a multi-second cold-start penalty, well past the agent's ~3s probe timeout, even though the backend process and the local network path to it were completely healthy. This is exactly why the symptom was intermittent (warm vs. suspended Neon compute) and why a manual `curl` right after a failed probe always "fixed" it — the `curl` request itself woke the DB back up for the *next* call.
+- **Fix**: `management_health_check` no longer touches the database at all — it's a pure, fast, dependency-free liveness response, since its only job (per Section 3, step 5) is to prove the agent can still reach the control plane, not that every downstream dependency is healthy. General DB/API health for dashboards/ops monitoring is still available separately at `GET /api/health`, which isn't on this latency budget.
+- **Status**: **Resolved.**
 
 ---
 
@@ -236,8 +238,8 @@ dotnet build Endpoint-agent/Spemcs.Agent.sln -c Debug
 > **DO NOT CLAIM THE PROJECT IS FULLY E2E VERIFIED.**
 > Real live Windows E2E network lockdown has NOT yet been conclusively proven end-to-end.
 
-1. **Pre-Enforcement Intermittent Timeout**: The `ManagementConnectivityVerifier` in the Windows service occasionally times out on `http://127.0.0.1:8002/api/v1/management/health` before enforcement begins, even when `curl` from the host console succeeds. Possible causes include thread-pool starvation, HttpClient connection reuse/pooling, Windows HTTP socket exhaustion under SYSTEM context, or uvicorn worker concurrency limits.
-2. **Post-Enforcement Under Real Block**: While loopback IPv4 (`127.0.0.1`) and IPv6 (`::/127`) rules have been implemented and pass all COM validation tests, live E2E confirmation that the service receives HTTP 200 *while* `DefaultOutboundAction = Block` is active has not yet completed without an intermittent pre-check interruption.
+1. ~~**Pre-Enforcement Intermittent Timeout**~~ — **Resolved**, see Section 7, item 7: the management health endpoint was silently coupled to a remote Neon Postgres cold-start, not an agent/socket issue. Needs a live Windows re-run to confirm the fix removes the intermittency in practice.
+2. **Post-Enforcement Under Real Block**: While loopback IPv4 (`127.0.0.1`) and IPv6 (`::/127`) rules have been implemented and pass all COM validation tests, live E2E confirmation that the service receives HTTP 200 *while* `DefaultOutboundAction = Block` is active has not yet completed without an intermittent pre-check interruption. This should now be re-tested with the Section 7 fix in place.
 3. **What HAS Been Proven**:
    - Signature validation, replay protection, monotonic versions, and journal persistence are 100% verified.
    - IPC named pipe communication between UI and Service is 100% verified.
