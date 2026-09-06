@@ -71,7 +71,45 @@ public sealed class AgentWorker : BackgroundService
         // ---------------------------------------------------------------------
         await RunStartupRecoveryAsync(stoppingToken);
 
-        // Enforce browser policies so DNS queries route through Windows OS resolver (ETW monitoring)
+        // ---------------------------------------------------------------------
+        // The SPEMCS DNS model - what is REQUIRED, what is DENIED, and what is
+        // merely watched. Written out here because the absence of any DNS rule in
+        // BuildSessionRules reads like an oversight and is not one.
+        //
+        // REQUIRED. Recursive DNS to the machine's configured resolver has to keep
+        // working. Every allowed destination is a NAME resolved by the backend, and
+        // the endpoint's own management channel is reached by name in production.
+        // Breaking name resolution does not harden the exam, it cancels it.
+        //
+        // The traffic that carries it is UDP/53 and TCP/53 from svchost.exe hosting
+        // the Dnscache service, not from the browser. Under profile-level
+        // DefaultOutboundAction=Block that is permitted by the Windows built-in rule
+        // "Core Networking - DNS (UDP-Out)", which is scoped to that service. SPEMCS
+        // therefore creates NO rule for port 53 and touches no built-in rule: adding
+        // one would either duplicate a narrower existing scope or, worse, open :53
+        // for every process. The dependency is real but it is on Windows' own
+        // baseline, which the requirements take as given.
+        //
+        // DENIED. Everything that would let a process pick its own resolver:
+        //   * DoH from the browser - closed here, by policy, since a browser DoH
+        //     request is indistinguishable from ordinary allowed 443 traffic;
+        //   * the browser's embedded plain-DNS stub resolver - closed here too,
+        //     because DnsOverHttpsMode does not cover it and it skips the ETW
+        //     provider entirely;
+        //   * DoH or DoT from any other process - closed by default-deny plus the
+        //     fact that every allow rule is pinned to the approved browser
+        //     executable, so curl.exe cannot reach 853 or a public DoH endpoint;
+        //   * a resolver that is not the configured one - closed by the same two
+        //     mechanisms, since no allow rule names an off-box resolver address.
+        //
+        // WATCHED, NOT PREVENTED. Data encoded in query labels sent to the permitted
+        // resolver. This is a genuine residual channel; it is low-bandwidth and it is
+        // why DisableSecureDns matters at all - forcing resolution through the OS
+        // stub makes the queries visible to the Microsoft-Windows-DNS-Client ETW
+        // monitor, which is detection and correlation, not enforcement. No claim of
+        // DNS exfiltration prevention should be made anywhere on the basis of this
+        // call.
+        // ---------------------------------------------------------------------
         if (BrowserPolicyEnforcer.DisableSecureDns(out var dnsPolicyStatus))
         {
             _log.LogInformation("Browser Secure DNS policy enforced: {Status}", dnsPolicyStatus);

@@ -1,0 +1,149 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1250 820" width="1250" height="820" style="background:#0d1117; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
+  <defs>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#000" flood-opacity="0.5" />
+    </filter>
+    <marker id="arrowBlue" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 8 5 L 0 9 z" fill="#58a6ff" />
+    </marker>
+    <marker id="arrowGreen" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 8 5 L 0 9 z" fill="#3fb950" />
+    </marker>
+    <marker id="arrowYellow" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 8 5 L 0 9 z" fill="#d29922" />
+    </marker>
+    <marker id="arrowPurple" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 8 5 L 0 9 z" fill="#bc8cff" />
+    </marker>
+  </defs>
+
+  <!-- Title -->
+  <rect x="0" y="0" width="1250" height="60" fill="#161b22" />
+  <text x="30" y="38" fill="#58a6ff" font-size="22" font-weight="700">SPEMCS Trust Boundaries &amp; Credential Crossing Matrix</text>
+  <text x="640" y="38" fill="#8b949e" font-size="14">4 Strict Cryptographic Trust Domains (Zero Credential Reuse)</text>
+  <rect x="1100" y="18" width="120" height="26" rx="13" fill="#238636" />
+  <text x="1115" y="35" fill="#ffffff" font-size="11" font-weight="600">VERIFIED CODE</text>
+
+  <!-- ZONE 1: OPERATOR BROWSER (UNTRUSTED HUMAN CLIENT) -->
+  <g transform="translate(30, 80)">
+    <rect x="0" y="0" width="260" height="250" rx="8" fill="#161b22" stroke="#30363d" stroke-width="2" filter="url(#shadow)" />
+    <rect x="0" y="0" width="260" height="35" rx="8" fill="#21262d" />
+    <text x="15" y="23" fill="#f0f6fc" font-size="13" font-weight="700">Operator Browser (SPA)</text>
+    
+    <text x="15" y="60" fill="#8b949e" font-size="11">Trust Level: <tspan fill="#f85149" font-weight="600">Untrusted Client Surface</tspan></text>
+    <text x="15" y="80" fill="#8b949e" font-size="11">Actor: Human Administrator / Proctor</text>
+    <text x="15" y="100" fill="#8b949e" font-size="11">Runtime: Chrome / Edge Desktop</text>
+
+    <rect x="15" y="120" width="230" height="110" rx="6" fill="#0d1117" stroke="#388bfd" />
+    <text x="25" y="140" fill="#58a6ff" font-size="11" font-weight="700">Credential Held: Operator JWT</text>
+    <text x="25" y="158" fill="#8b949e" font-size="10">• Alg: HS256 (HMAC-SHA256)</text>
+    <text x="25" y="174" fill="#8b949e" font-size="10">• Secret: SECRET_KEY</text>
+    <text x="25" y="190" fill="#8b949e" font-size="10">• Expiration: 480 min (8 hours)</text>
+    <text x="25" y="206" fill="#8b949e" font-size="10">• Scopes: role = admin | proctor</text>
+  </g>
+
+  <!-- ZONE 2: BACKEND CORE (HIGH TRUST SECURITY CONTROL PLANE) -->
+  <g transform="translate(470, 80)">
+    <rect x="0" y="0" width="310" height="690" rx="10" fill="#161b22" stroke="#388bfd" stroke-width="2" filter="url(#shadow)" />
+    <rect x="0" y="0" width="310" height="40" rx="10" fill="#1f6feb" />
+    <text x="20" y="25" fill="#ffffff" font-size="14" font-weight="700">SPEMCS Backend Control Plane</text>
+    
+    <!-- Boundary Enforcers -->
+    <g transform="translate(15, 55)">
+      <rect x="0" y="0" width="280" height="135" rx="6" fill="#0d1117" stroke="#388bfd" />
+      <text x="15" y="22" fill="#58a6ff" font-size="12" font-weight="700">Domain 1: Operator Auth Gate</text>
+      <text x="15" y="40" fill="#8b949e" font-size="10">Source: dependencies.py | auth_service.py</text>
+      <text x="15" y="56" fill="#7ee787" font-size="10">require_admin: checks role == "admin"</text>
+      <text x="15" y="72" fill="#7ee787" font-size="10">require_staff: checks role in ["admin","proctor"]</text>
+      <text x="15" y="88" fill="#7ee787" font-size="10">require_authenticated: checks valid JWT</text>
+      <text x="15" y="104" fill="#f85149" font-size="10">Refuses: Device tokens, expired tokens</text>
+      <text x="15" y="120" fill="#8b949e" font-size="10">Returns: 401 Unauthorized / 403 Forbidden</text>
+
+      <rect x="0" y="150" width="280" height="145" rx="6" fill="#0d1117" stroke="#3fb950" />
+      <text x="15" y="172" fill="#3fb950" font-size="12" font-weight="700">Domain 2: Device Machine Gate</text>
+      <text x="15" y="190" fill="#8b949e" font-size="10">Source: dependencies.py::require_device</text>
+      <text x="15" y="206" fill="#8b949e" font-size="10">Header: X-Device-Token or Authorization: Bearer</text>
+      <text x="15" y="222" fill="#8b949e" font-size="10">Key: DEVICE_TOKEN_SECRET (HMAC-SHA256)</text>
+      <text x="15" y="238" fill="#e3b341" font-size="10">Ownership Assertion (assert_device_owns):</text>
+      <text x="15" y="254" fill="#e3b341" font-size="10">Prevents device A from impersonating B</text>
+      <text x="15" y="270" fill="#f85149" font-size="10">Refuses: Operator JWTs, forged UUIDs (403)</text>
+
+      <rect x="0" y="310" width="280" height="120" rx="6" fill="#0d1117" stroke="#d29922" />
+      <text x="15" y="332" fill="#d29922" font-size="12" font-weight="700">Domain 3: Bootstrap Enrollment Gate</text>
+      <text x="15" y="350" fill="#8b949e" font-size="10">Source: dependencies.py::require_enrollment_key</text>
+      <text x="15" y="366" fill="#8b949e" font-size="10">Header: X-Enrollment-Key</text>
+      <text x="15" y="382" fill="#8b949e" font-size="10">Secret: ENROLLMENT_BOOTSTRAP_KEY</text>
+      <text x="15" y="398" fill="#7ee787" font-size="10">Timing-Safe: hmac.compare_digest()</text>
+      <text x="15" y="414" fill="#8b949e" font-size="10">Scope: Pre-enrollment lab listing only</text>
+
+      <rect x="0" y="445" width="280" height="135" rx="6" fill="#0d1117" stroke="#bc8cff" />
+      <text x="15" y="467" fill="#bc8cff" font-size="12" font-weight="700">Domain 4: RSA Policy Keyring</text>
+      <text x="15" y="485" fill="#8b949e" font-size="10">Source: signing_key_manager.py | policy_signer.py</text>
+      <text x="15" y="501" fill="#8b949e" font-size="10">Algorithm: RSA-2048 with RSA-PSS</text>
+      <text x="15" y="517" fill="#8b949e" font-size="10">Hash: SHA-256 | MGF: MGF1 | Salt: 32 bytes</text>
+      <text x="15" y="533" fill="#8b949e" font-size="10">Payload Serialization: RFC 8785 Canonical JSON</text>
+      <text x="15" y="549" fill="#7ee787" font-size="10">Key ID Fingerprint: SHA-256(Public DER)[0..16]</text>
+      <text x="15" y="565" fill="#8b949e" font-size="10">Supports active rotation &amp; cryptographic revocation</text>
+    </g>
+  </g>
+
+  <!-- ZONE 3: CANDIDATE ENDPOINT WORKSTATION -->
+  <g transform="translate(930, 80)">
+    <rect x="0" y="0" width="290" height="690" rx="10" fill="#161b22" stroke="#30363d" stroke-width="2" filter="url(#shadow)" />
+    <rect x="0" y="0" width="290" height="40" rx="10" fill="#21262d" />
+    <text x="15" y="25" fill="#f0f6fc" font-size="14" font-weight="700">Lab Workstation (Session 0 &amp; 1)</text>
+
+    <!-- Session 0 Privileged -->
+    <rect x="15" y="55" width="260" height="350" rx="8" fill="#0d1117" stroke="#388bfd" />
+    <rect x="25" y="65" width="160" height="22" rx="4" fill="#1f6feb" />
+    <text x="32" y="80" fill="#ffffff" font-size="11" font-weight="700">Session 0 (High Trust)</text>
+
+    <text x="25" y="110" fill="#3fb950" font-size="11" font-weight="700">Spemcs.Agent.Service</text>
+    <text x="25" y="126" fill="#8b949e" font-size="10">• Stores Device Token in Secure Store</text>
+    <text x="25" y="142" fill="#8b949e" font-size="10">• Hardware-bound UUID verification</text>
+    <text x="25" y="158" fill="#8b949e" font-size="10">• Holds Trusted RSA Public Keys</text>
+    <text x="25" y="174" fill="#8b949e" font-size="10">• Verifies RSA-PSS policy signatures</text>
+    <text x="25" y="190" fill="#8b949e" font-size="10">• Executes Windows Firewall COM</text>
+    <text x="25" y="206" fill="#8b949e" font-size="10">• Maintains sqlite_rollback_journal.db</text>
+    <text x="25" y="222" fill="#8b949e" font-size="10">• Controls DoH registry suppression</text>
+
+    <!-- Named Pipe IPC Boundary -->
+    <rect x="25" y="250" width="240" height="85" rx="6" fill="#161b22" stroke="#d29922" stroke-dasharray="4,4" />
+    <text x="35" y="270" fill="#d29922" font-size="11" font-weight="700">Boundary 5: Named Pipe IPC</text>
+    <text x="35" y="288" fill="#8b949e" font-size="10">Pipe: \\.\pipe\spemcs-control-v1</text>
+    <text x="35" y="304" fill="#8b949e" font-size="10">DACL restricted to current student token</text>
+    <text x="35" y="320" fill="#f85149" font-size="10">Rejects untrusted network connections</text>
+
+    <!-- Session 1 Untrusted -->
+    <rect x="15" y="425" width="260" height="245" rx="8" fill="#0d1117" stroke="#f85149" />
+    <rect x="25" y="435" width="160" height="22" rx="4" fill="#b91c1c" />
+    <text x="32" y="450" fill="#ffffff" font-size="11" font-weight="700">Session 1+ (Untrusted)</text>
+
+    <text x="25" y="480" fill="#f85149" font-size="11" font-weight="700">Candidate Student Desktop</text>
+    <text x="25" y="498" fill="#8b949e" font-size="10">• Has local user desktop access</text>
+    <text x="25" y="514" fill="#8b949e" font-size="10">• Might attempt to install cheating tools</text>
+    <text x="25" y="530" fill="#8b949e" font-size="10">• Might launch AnyDesk / Discord</text>
+    <text x="25" y="546" fill="#8b949e" font-size="10">• CANNOT read Session 0 memory</text>
+    <text x="25" y="562" fill="#8b949e" font-size="10">• CANNOT alter Windows Firewall</text>
+    <text x="25" y="578" fill="#8b949e" font-size="10">• CANNOT modify rollback journal</text>
+    <text x="25" y="594" fill="#8b949e" font-size="10">• CANNOT fake RSA-PSS signatures</text>
+    <text x="25" y="610" fill="#7ee787" font-size="10">WPF UI: only displays status &amp; PIN</text>
+  </g>
+
+  <!-- CONNECTING BOUNDARY ARROWS -->
+  <!-- Boundary 1: Operator JWT -->
+  <path d="M 290 180 L 470 180" fill="none" stroke="#58a6ff" stroke-width="2.5" marker-end="url(#arrowBlue)" />
+  <text x="380" y="168" fill="#58a6ff" font-size="10" font-weight="700" text-anchor="middle">Operator JWT (HS256)</text>
+
+  <!-- Boundary 2: Device Token -->
+  <path d="M 930 200 L 780 200" fill="none" stroke="#3fb950" stroke-width="2.5" marker-end="url(#arrowGreen)" />
+  <text x="855" y="190" fill="#3fb950" font-size="10" font-weight="700" text-anchor="middle">Device Token (HMAC)</text>
+
+  <!-- Boundary 3: Bootstrap Key -->
+  <path d="M 930 380 L 780 380" fill="none" stroke="#d29922" stroke-width="2.5" marker-end="url(#arrowYellow)" />
+  <text x="855" y="370" fill="#d29922" font-size="10" font-weight="700" text-anchor="middle">Bootstrap Key (Timing-Safe)</text>
+
+  <!-- Boundary 4: RSA Policy -->
+  <path d="M 780 500 L 930 500" fill="none" stroke="#bc8cff" stroke-width="2.5" marker-end="url(#arrowPurple)" />
+  <text x="855" y="490" fill="#bc8cff" font-size="10" font-weight="700" text-anchor="middle">Signed Policy (RSA-PSS)</text>
+</svg>

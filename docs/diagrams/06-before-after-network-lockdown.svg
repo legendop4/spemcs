@@ -1,0 +1,165 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 750" width="1280" height="750" style="background:#0d1117; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
+  <defs>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#000" flood-opacity="0.5" />
+    </filter>
+    <marker id="arrowGreen" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 8 5 L 0 9 z" fill="#3fb950" />
+    </marker>
+    <marker id="arrowRed" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 8 5 L 0 9 z" fill="#f85149" />
+    </marker>
+  </defs>
+
+  <!-- Title -->
+  <rect x="0" y="0" width="1280" height="60" fill="#161b22" />
+  <text x="30" y="38" fill="#58a6ff" font-size="22" font-weight="700">Security Architecture: Normal Workstation vs SPEMCS Exam Lockdown</text>
+  <rect x="1130" y="18" width="120" height="26" rx="13" fill="#238636" />
+  <text x="1145" y="35" fill="#ffffff" font-size="11" font-weight="600">VERIFIED CODE</text>
+
+  <!-- LEFT PANEL: BEFORE LOCKDOWN (NORMAL WORKSTATION) -->
+  <g transform="translate(30, 80)">
+    <rect x="0" y="0" width="580" height="630" rx="10" fill="#161b22" stroke="#f85149" stroke-width="2" filter="url(#shadow)" />
+    <rect x="0" y="0" width="580" height="40" rx="10" fill="#b91c1c" />
+    <text x="20" y="26" fill="#ffffff" font-size="15" font-weight="700">BEFORE: Normal Workstation (Vulnerable to Exfiltration)</text>
+
+    <!-- OS State -->
+    <rect x="20" y="55" width="540" height="85" rx="6" fill="#0d1117" stroke="#30363d" />
+    <text x="35" y="78" fill="#f85149" font-size="12" font-weight="700">Windows Firewall Policy: Default Outbound ALLOW</text>
+    <text x="35" y="96" fill="#8b949e" font-size="11">• Domain Profile: Outbound Allow | Private: Allow | Public: Allow</text>
+    <text x="35" y="112" fill="#8b949e" font-size="11">• Any application can initiate arbitrary outbound TCP/UDP connections</text>
+    <text x="35" y="128" fill="#8b949e" font-size="11">• DNS over HTTPS (DoH) enabled in Chrome/Edge, bypassing local DNS logging</text>
+
+    <!-- Applications Running -->
+    <rect x="20" y="155" width="540" height="255" rx="6" fill="#0d1117" stroke="#30363d" />
+    <text x="35" y="180" fill="#f0f6fc" font-size="13" font-weight="700">Workstation Processes &amp; Network Traffic (Unrestricted)</text>
+    
+    <g transform="translate(35, 195)">
+      <!-- App 1: Browser -->
+      <rect x="0" y="0" width="220" height="45" rx="4" fill="#21262d" stroke="#30363d" />
+      <text x="10" y="20" fill="#f0f6fc" font-size="11" font-weight="600">chrome.exe / msedge.exe</text>
+      <text x="10" y="36" fill="#8b949e" font-size="10">Candidate browser</text>
+
+      <path d="M 230 22 L 320 22" fill="none" stroke="#3fb950" stroke-width="2" marker-end="url(#arrowGreen)" />
+
+      <rect x="330" y="0" width="180" height="45" rx="4" fill="#161b22" stroke="#238636" />
+      <text x="10" y="20" fill="#3fb950" font-size="11" font-weight="600">ChatGPT / Chegg / Google</text>
+      <text x="10" y="36" fill="#8b949e" font-size="9">Arbitrary answers accessed</text>
+
+      <!-- App 2: Discord -->
+      <rect x="0" y="55" width="220" height="45" rx="4" fill="#21262d" stroke="#30363d" />
+      <text x="10" y="20" fill="#f0f6fc" font-size="11" font-weight="600">Discord.exe / Telegram.exe</text>
+      <text x="10" y="36" fill="#8b949e" font-size="10">Communication apps</text>
+
+      <path d="M 230 77 L 320 77" fill="none" stroke="#3fb950" stroke-width="2" marker-end="url(#arrowGreen)" />
+
+      <rect x="330" y="55" width="180" height="45" rx="4" fill="#161b22" stroke="#238636" />
+      <text x="10" y="20" fill="#3fb950" font-size="11" font-weight="600">External Screen Share</text>
+      <text x="10" y="36" fill="#8b949e" font-size="9">Live exam feed leaked</text>
+
+      <!-- App 3: AnyDesk -->
+      <rect x="0" y="110" width="220" height="45" rx="4" fill="#21262d" stroke="#30363d" />
+      <text x="10" y="20" fill="#f0f6fc" font-size="11" font-weight="600">AnyDesk.exe / TeamViewer</text>
+      <text x="10" y="36" fill="#8b949e" font-size="10">Remote access daemons</text>
+
+      <path d="M 230 132 L 320 132" fill="none" stroke="#3fb950" stroke-width="2" marker-end="url(#arrowGreen)" />
+
+      <rect x="330" y="110" width="180" height="45" rx="4" fill="#161b22" stroke="#238636" />
+      <text x="10" y="20" fill="#3fb950" font-size="11" font-weight="600">Remote Solver Control</text>
+      <text x="10" y="36" fill="#8b949e" font-size="9">Ghost solver takes exam</text>
+
+      <!-- App 4: Tunneling -->
+      <rect x="0" y="165" width="220" height="45" rx="4" fill="#21262d" stroke="#30363d" />
+      <text x="10" y="20" fill="#f0f6fc" font-size="11" font-weight="600">6in4 / Protocol 41 / VPN</text>
+      <text x="10" y="36" fill="#8b949e" font-size="10">Covert network tunnels</text>
+
+      <path d="M 230 187 L 320 187" fill="none" stroke="#3fb950" stroke-width="2" marker-end="url(#arrowGreen)" />
+
+      <rect x="330" y="165" width="180" height="45" rx="4" fill="#161b22" stroke="#238636" />
+      <text x="10" y="20" fill="#3fb950" font-size="11" font-weight="600">Bypasses Campus Firewall</text>
+      <text x="10" y="36" fill="#8b949e" font-size="9">Encapsulated exfiltration</text>
+    </g>
+
+    <!-- Vulnerability Summary -->
+    <rect x="20" y="425" width="540" height="185" rx="6" fill="#0d1117" stroke="#f85149" />
+    <text x="35" y="450" fill="#f85149" font-size="12" font-weight="700">Security Flaws in Standard University Lab Environments:</text>
+    <text x="35" y="472" fill="#8b949e" font-size="11">❌ Campus network perimeter firewalls cannot see encrypted HTTPS / DoH traffic</text>
+    <text x="35" y="492" fill="#8b949e" font-size="11">❌ Students use browser tabs to query AI models or cloud documents</text>
+    <text x="35" y="512" fill="#8b949e" font-size="11">❌ Remote software installed in user session communicates via outbound relays</text>
+    <text x="35" y="532" fill="#8b949e" font-size="11">❌ WebSockets, WebRTC, and Discord easily bypass simple port blocks</text>
+    <text x="35" y="552" fill="#8b949e" font-size="11">❌ Traditional proctoring software only monitors video; network remains open</text>
+  </g>
+
+  <!-- RIGHT PANEL: AFTER LOCKDOWN (SPEMCS ENFORCED) -->
+  <g transform="translate(670, 80)">
+    <rect x="0" y="0" width="580" height="630" rx="10" fill="#161b22" stroke="#238636" stroke-width="2" filter="url(#shadow)" />
+    <rect x="0" y="0" width="580" height="40" rx="10" fill="#238636" />
+    <text x="20" y="26" fill="#ffffff" font-size="15" font-weight="700">AFTER: SPEMCS Exam Lockdown Active (Hardened Enclave)</text>
+
+    <!-- OS State -->
+    <rect x="20" y="55" width="540" height="85" rx="6" fill="#0d1117" stroke="#30363d" />
+    <text x="35" y="78" fill="#3fb950" font-size="12" font-weight="700">Windows Firewall Policy: Default Outbound BLOCK (All Profiles)</text>
+    <text x="35" y="96" fill="#8b949e" font-size="11">• Domain Profile: Outbound BLOCK | Private: BLOCK | Public: BLOCK</text>
+    <text x="35" y="112" fill="#8b949e" font-size="11">• HNetCfg.FwPolicy2 COM adapter configures fail-closed perimeter</text>
+    <text x="35" y="128" fill="#8b949e" font-size="11">• Browser DoH suppressed in HKLM registry; Protocol 41 explicitly blocked</text>
+
+    <!-- Applications Running -->
+    <rect x="20" y="155" width="540" height="255" rx="6" fill="#0d1117" stroke="#30363d" />
+    <text x="35" y="180" fill="#f0f6fc" font-size="13" font-weight="700">Workstation Processes &amp; Network Traffic (Strictly Scoped)</text>
+
+    <g transform="translate(35, 195)">
+      <!-- App 1: Browser Allowed Route -->
+      <rect x="0" y="0" width="220" height="45" rx="4" fill="#21262d" stroke="#238636" />
+      <text x="10" y="20" fill="#3fb950" font-size="11" font-weight="600">Approved Browser (chrome.exe)</text>
+      <text x="10" y="36" fill="#8b949e" font-size="9">Path-scoped allow rule</text>
+
+      <path d="M 230 22 L 320 22" fill="none" stroke="#3fb950" stroke-width="2" marker-end="url(#arrowGreen)" />
+
+      <rect x="330" y="0" width="180" height="45" rx="4" fill="#161b22" stroke="#238636" />
+      <text x="10" y="20" fill="#3fb950" font-size="11" font-weight="600">Exam Portal &amp; Vendor IPs</text>
+      <text x="10" y="36" fill="#7ee787" font-size="9">ALLOWED strictly by CIDR</text>
+
+      <!-- App 2: Browser Cheating Blocked -->
+      <rect x="0" y="55" width="220" height="45" rx="4" fill="#21262d" stroke="#f85149" />
+      <text x="10" y="20" fill="#f85149" font-size="11" font-weight="600">Approved Browser (Other Tabs)</text>
+      <text x="10" y="36" fill="#8b949e" font-size="9">Attempt to reach external IP</text>
+
+      <path d="M 230 77 L 320 77" fill="none" stroke="#f85149" stroke-width="2" marker-end="url(#arrowRed)" />
+
+      <rect x="330" y="55" width="180" height="45" rx="4" fill="#161b22" stroke="#f85149" />
+      <text x="10" y="20" fill="#f85149" font-size="11" font-weight="600">BLOCKED by Firewall</text>
+      <text x="10" y="36" fill="#8b949e" font-size="9">TCP RST / Drop at kernel level</text>
+
+      <!-- App 3: Discord Blocked -->
+      <rect x="0" y="110" width="220" height="45" rx="4" fill="#21262d" stroke="#f85149" />
+      <text x="10" y="20" fill="#f85149" font-size="11" font-weight="600">Discord / Telegram / WhatsApp</text>
+      <text x="10" y="36" fill="#8b949e" font-size="9">Non-whitelisted binaries</text>
+
+      <path d="M 230 132 L 320 132" fill="none" stroke="#f85149" stroke-width="2" marker-end="url(#arrowRed)" />
+
+      <rect x="330" y="110" width="180" height="45" rx="4" fill="#161b22" stroke="#f85149" />
+      <text x="10" y="20" fill="#f85149" font-size="11" font-weight="600">BLOCKED (No Outbound Rule)</text>
+      <text x="10" y="36" fill="#8b949e" font-size="9">Cannot establish TCP handshake</text>
+
+      <!-- App 4: AnyDesk Blocked -->
+      <rect x="0" y="165" width="220" height="45" rx="4" fill="#21262d" stroke="#f85149" />
+      <text x="10" y="20" fill="#f85149" font-size="11" font-weight="600">AnyDesk / TeamViewer</text>
+      <text x="10" y="36" fill="#8b949e" font-size="9">Remote desktop utilities</text>
+
+      <path d="M 230 187 L 320 187" fill="none" stroke="#f85149" stroke-width="2" marker-end="url(#arrowRed)" />
+
+      <rect x="330" y="165" width="180" height="45" rx="4" fill="#161b22" stroke="#f85149" />
+      <text x="10" y="20" fill="#f85149" font-size="11" font-weight="600">BLOCKED + FLAGGED</text>
+      <text x="10" y="36" fill="#8b949e" font-size="9">WMI triggers instant alert</text>
+    </g>
+
+    <!-- Hardened Enclave Summary -->
+    <rect x="20" y="425" width="540" height="185" rx="6" fill="#0d1117" stroke="#238636" />
+    <text x="35" y="450" fill="#3fb950" font-size="12" font-weight="700">Enforcement Guarantees Verified in Source Code:</text>
+    <text x="35" y="472" fill="#8b949e" font-size="11">✅ Default outbound deny applies to all 3 profiles: FirewallProfiles.All = 7</text>
+    <text x="35" y="492" fill="#8b949e" font-size="11">✅ Dynamic rules strictly scoped to approved browser binary path</text>
+    <text x="35" y="512" fill="#8b949e" font-size="11">✅ No UDP 53 firewall rule: relies on Windows Dnscache, eliminates DNS tunneling</text>
+    <text x="35" y="532" fill="#8b949e" font-size="11">✅ HKLM policies kill browser DoH and third-party stub resolvers</text>
+    <text x="35" y="552" fill="#8b949e" font-size="11">✅ Idempotent rollback via sqlite_rollback_journal.db restores baseline on exit</text>
+  </g>
+</svg>

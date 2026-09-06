@@ -196,7 +196,20 @@ public sealed class NetworkEnforcer : INetworkEnforcer
                 ));
             }
 
-            var baselineResult = RestoreBaselineSafely(sessionId, sessionRecord.Baseline, sessionRecord.TargetProfiles);
+            // TargetProfiles, not Baseline.ActiveProfiles: the restoration key is what SPEMCS
+            // MUTATED, which is durable in the journal, and not which profiles Windows happened to
+            // report as active when the baseline was captured. A laptop that moved from a docked
+            // Domain network to Public mid-exam still needs the Domain default put back.
+            //
+            // blockWasVerified is true only in Active, the single phase in which activation read-back
+            // confirmed BLOCK was in force. Anywhere else, a profile that is not BLOCK is explained by
+            // SPEMCS's own incomplete work rather than by a third party, so it must not be reported as
+            // an external conflict.
+            var baselineResult = RestoreBaselineSafely(
+                sessionId,
+                sessionRecord.Baseline,
+                sessionRecord.TargetProfiles,
+                blockWasVerified: sessionRecord.Phase is EnforcementPhase.Active);
             return Task.FromResult(new RollbackResult(
                 Success: baselineResult.Success,
                 SessionId: sessionId,
@@ -262,15 +275,24 @@ public sealed class NetworkEnforcer : INetworkEnforcer
                 _logger.LogWarning("Found incomplete/crashed session: {SessionId} in phase: {Phase}. Reconciling...",
                     incompleteSession.SessionId, incompleteSession.Phase);
 
-                // SECURITY (CRITICAL): A session recorded as Active (or already past the
-                // default-block transition) may represent a LIVE, still-valid exam lockdown.
-                // Never tear it down without proving the firewall is not enforcing it.
-                var blockWasReached = incompleteSession.Phase is EnforcementPhase.EnforcingDefaultBlock
-                    or EnforcementPhase.Active
-                    or EnforcementPhase.RollingBackDefault
-                    or EnforcementPhase.RollingBackRules;
+                // SECURITY (CRITICAL): A session recorded as Active, or one that had written the
+                // default-block and not yet verified it, may represent a LIVE, still-valid exam
+                // lockdown. Never tear it down without proving the firewall is not enforcing it.
+                //
+                // RollingBackDefault and RollingBackRules are deliberately NOT in this set, and they
+                // used to be. A session in either phase has already been DECIDED against - the exam
+                // ended, expired or failed, and teardown had begun - so its lockdown is not "still
+                // valid", it is unfinished cleanup. Treating it as live meant that a crash between the
+                // first SetDefaultOutboundAction of a rollback and the last rule removal left the
+                // profiles on BLOCK, recovery declared the enforcement healthy and preserved it, and
+                // every later restart made the same call: the machine stayed deny-by-default with no
+                // exam to justify it and no code path that would ever restore the baseline. Those two
+                // phases now fall through to PerformSafeRollbackInternal, which is idempotent and
+                // simply finishes the job.
+                var lockdownMayBeLive = incompleteSession.Phase is EnforcementPhase.EnforcingDefaultBlock
+                    or EnforcementPhase.Active;
 
-                if (blockWasReached)
+                if (lockdownMayBeLive)
                 {
                     try
                     {
@@ -283,11 +305,23 @@ public sealed class NetworkEnforcer : INetworkEnforcer
                         {
                             _logger.LogInformation("Session {SessionId} was recorded as {Phase} and the firewall is still enforcing default BLOCK on its target profiles. Preserving valid enforcement (no rollback).",
                                 incompleteSession.SessionId, incompleteSession.Phase);
+
+                            // Still reconcile ownership, because a live session is not a reason to
+                            // leave ANOTHER session's orphans installed. The preserved session is
+                            // added to the live set explicitly rather than relying on its phase
+                            // appearing in LiveSessionIds: the decision to preserve was just made
+                            // HERE, and if the two phase lists ever drift, this sweep would delete the
+                            // allow rules of the very lockdown it is preserving - leaving a machine at
+                            // default BLOCK with nothing permitted through it.
+                            var liveDuringPreserve = LiveSessionIds();
+                            liveDuringPreserve.Add(incompleteSession.SessionId);
+                            var sweptWhilePreserving = CleanUpUnownedGroupRules(liveDuringPreserve);
+
                             return Task.FromResult(new RecoveryResult(
                                 RecoveryRequired: false,
                                 Success: true,
                                 RecoveredSessionId: incompleteSession.SessionId,
-                                OrphanRulesCleaned: 0,
+                                OrphanRulesCleaned: sweptWhilePreserving,
                                 BaselineRestored: false,
                                 ConflictDetected: false,
                                 Details: $"Preserved active enforcement session {incompleteSession.SessionId} (phase {incompleteSession.Phase}) during startup recovery."
@@ -310,36 +344,28 @@ public sealed class NetworkEnforcer : INetworkEnforcer
                     incompleteSession.Phase
                 );
 
+                // Sweep whatever the rolled-back session did not own. GetLatestActiveOrIncompleteSession
+                // returns ONE row, so with two crashed sessions on disk the second one's rules would
+                // otherwise survive until some later startup happened to pick it. The sweep is
+                // session-aware, so any session the journal still considers live keeps its rules.
+                var residual = CleanUpUnownedGroupRules(LiveSessionIds(exceptSessionId: incompleteSession.SessionId));
+
                 return Task.FromResult(new RecoveryResult(
                     RecoveryRequired: true,
                     Success: rollbackResult.Success,
                     RecoveredSessionId: incompleteSession.SessionId,
-                    OrphanRulesCleaned: rollbackResult.RulesRemovedCount,
+                    OrphanRulesCleaned: rollbackResult.RulesRemovedCount + residual,
                     BaselineRestored: rollbackResult.BaselineRestored,
                     ConflictDetected: rollbackResult.ConflictDetected,
                     Details: $"Recovered session {incompleteSession.SessionId} from phase {incompleteSession.Phase}."
                 ));
             }
 
-            // Case 3: Orphan SPEMCS rules exist in firewall without active session.
-            // The journal has NO active/incomplete session entry, so every rule in the
-            // SPEMCS_EXAM_LOCKDOWN group is a true orphan left by a crashed/deleted session.
-            // Containment is by group membership only — the group is the SPEMCS ownership
-            // boundary, and rules outside it are never touched (no netsh reset).
-            _logger.LogWarning("Found {Count} orphan rules in group '{Group}' without an active session. Cleaning up...",
+            // Case 3: Orphan SPEMCS rules exist in firewall without an active session.
+            _logger.LogWarning("Found {Count} rule(s) in group '{Group}' without an active session. Reconciling ownership...",
                 spemcsRules.Count, FirewallRuleModel.SpemcsRuleGroup);
 
-            var cleaned = 0;
-            foreach (var ruleName in spemcsRules)
-            {
-                if (ruleName.StartsWith("SPEMCS-", StringComparison.OrdinalIgnoreCase))
-                {
-                    if (_firewall.RemoveRule(ruleName))
-                    {
-                        cleaned++;
-                    }
-                }
-            }
+            var cleaned = CleanUpUnownedGroupRules(LiveSessionIds());
 
             return Task.FromResult(new RecoveryResult(
                 RecoveryRequired: true,
@@ -353,6 +379,110 @@ public sealed class NetworkEnforcer : INetworkEnforcer
         }
     }
 
+    /// <summary>
+    /// The sessions the journal still considers live, i.e. whose rules must survive a cleanup.
+    /// </summary>
+    /// <param name="exceptSessionId">
+    /// A session that has just been rolled back, so it is no longer live no matter what phase the
+    /// journal row was read at.
+    /// </param>
+    private HashSet<Guid> LiveSessionIds(Guid? exceptSessionId = null)
+    {
+        var live = new HashSet<Guid>();
+        foreach (var record in _journal.GetAllSessions())
+        {
+            var isLive = record.Phase is EnforcementPhase.Prepared
+                or EnforcementPhase.ApplyingRules
+                or EnforcementPhase.EnforcingDefaultBlock
+                or EnforcementPhase.Active;
+
+            if (isLive && record.SessionId != exceptSessionId)
+            {
+                live.Add(record.SessionId);
+            }
+        }
+
+        return live;
+    }
+
+    /// <summary>
+    /// Deletes rules in the SPEMCS group that belong to no live session, and only those.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// WHAT THIS REPLACED. Cleanup used to be
+    /// <c>if (name.StartsWith("SPEMCS-")) RemoveRule(name)</c> over every rule in the group. Its
+    /// correctness rested entirely on the caller having established that no session was live, which
+    /// in turn rested on <c>GetLatestActiveOrIncompleteSession</c> - a query with <c>LIMIT 1</c>.
+    /// One journal row that had not yet reached a terminal phase, one concurrently-starting session,
+    /// or any future change to that query's phase filter, and a startup sweep would delete a live
+    /// exam's allow rules while its profiles sat at default BLOCK: the candidate loses the
+    /// examination browser mid-exam and the agent reports a clean recovery.
+    /// </para>
+    /// <para>
+    /// Ownership now decides, and it is read from the rule name because
+    /// <see cref="IFirewallAdapter.GetRuleNamesByGroup"/> reads back from Windows, which stores no
+    /// session field. Three outcomes:
+    /// </para>
+    /// <list type="bullet">
+    /// <item><description>
+    /// Attributable to a live session - PRESERVED. This is the whole point.
+    /// </description></item>
+    /// <item><description>
+    /// Attributable to a session that is not live - DELETED. A leftover ALLOW rule is a standing hole
+    /// on a host whose own baseline may be deny-by-default, so orphans cannot simply be left alone.
+    /// </description></item>
+    /// <item><description>
+    /// Not attributable at all - DELETED, logged separately at warning level. A rule inside
+    /// <see cref="FirewallRuleModel.SpemcsRuleGroup"/> that SPEMCS did not name is either an older
+    /// SPEMCS naming scheme or something impersonating one; either way it is not part of a live
+    /// session, and it is inside SPEMCS's own namespace. Note the containment: a rule merely NAMED
+    /// like SPEMCS but outside the group is never even a candidate, because the enumeration is by
+    /// group.
+    /// </description></item>
+    /// </list>
+    /// </remarks>
+    private int CleanUpUnownedGroupRules(HashSet<Guid> liveSessionIds)
+    {
+        var cleaned = 0;
+        var preserved = 0;
+        var unattributable = 0;
+
+        foreach (var ruleName in _firewall.GetRuleNamesByGroup(FirewallRuleModel.SpemcsRuleGroup))
+        {
+            if (FirewallRuleModel.TryParseSessionId(ruleName, out var owner))
+            {
+                if (liveSessionIds.Contains(owner))
+                {
+                    preserved++;
+                    _logger.LogInformation("Preserving rule {RuleName}: owned by live session {SessionId}.", ruleName, owner);
+                    continue;
+                }
+            }
+            else
+            {
+                unattributable++;
+                _logger.LogWarning(
+                    "Rule {RuleName} is in group '{Group}' but its name does not identify a SPEMCS session. Treating as an orphan.",
+                    ruleName, FirewallRuleModel.SpemcsRuleGroup);
+            }
+
+            if (_firewall.RemoveRule(ruleName))
+            {
+                cleaned++;
+            }
+        }
+
+        if (cleaned > 0 || preserved > 0 || unattributable > 0)
+        {
+            _logger.LogInformation(
+                "Group ownership reconciliation: {Cleaned} orphan rule(s) removed ({Unattributable} unattributable), {Preserved} rule(s) preserved for live sessions.",
+                cleaned, unattributable, preserved);
+        }
+
+        return cleaned;
+    }
+
     private RollbackResult PerformSafeRollbackInternal(
         Guid sessionId,
         FirewallProfileBaseline baseline,
@@ -361,110 +491,293 @@ public sealed class NetworkEnforcer : INetworkEnforcer
     {
         _logger.LogInformation("Performing safe rollback for Session: {SessionId} from Phase: {Phase}", sessionId, currentPhase);
 
-        // Step 1: Restore profile outbound baseline FIRST if default block was reached or applied
-        var defaultBlockWasAttempted = currentPhase is EnforcementPhase.EnforcingDefaultBlock
-            or EnforcementPhase.Active
-            or EnforcementPhase.RollingBackDefault
-            or EnforcementPhase.RollingBackRules;
+        // ---------------------------------------------------------------------
+        // Step 1: Converge the profile outbound defaults on the CAPTURED baseline.
+        //
+        // The two facts this decision needs are different from each other, and conflating them was
+        // the old defect:
+        //
+        //   blockWasWritten  - could SPEMCS have changed DefaultOutboundAction at all? BLOCK is
+        //                      written only after every allow rule is installed and verified, so in
+        //                      Prepared and ApplyingRules it provably was not written yet and there
+        //                      is nothing to undo. Every other phase - including the terminal ones -
+        //                      must converge. The old whitelist omitted Failed, Conflict and
+        //                      RolledBack, which left a session that died in Failed with its
+        //                      profiles still on BLOCK and no code path that would ever restore them.
+        //
+        //   blockWasVerified - did readback CONFIRM BLOCK was in force? Only Active means that. This
+        //                      is the flag that licenses reporting an external-modification conflict,
+        //                      and restricting it to Active is what stops a partial enforcement, a
+        //                      crash during rollback, or a second rollback of an already-restored
+        //                      session from being reported as somebody tampering with the firewall.
+        // ---------------------------------------------------------------------
+        var blockWasWritten = currentPhase is not (EnforcementPhase.Prepared or EnforcementPhase.ApplyingRules);
+        var blockWasVerified = currentPhase is EnforcementPhase.Active;
 
         (bool Success, bool Restored, bool Conflict, string? Error) baselineRestore;
 
-        if (defaultBlockWasAttempted)
+        if (blockWasWritten)
         {
             _journal.UpdatePhase(sessionId, EnforcementPhase.RollingBackDefault);
-            baselineRestore = RestoreBaselineSafely(sessionId, baseline, targetProfiles);
+            baselineRestore = RestoreBaselineSafely(sessionId, baseline, targetProfiles, blockWasVerified);
         }
         else
         {
-            // Default block was never set (e.g. crash/failure during Prepared or ApplyingRules)
+            _logger.LogInformation(
+                "Session {SessionId} never reached the default-block write (phase {Phase}); profile defaults are untouched and need no restoration.",
+                sessionId, currentPhase);
             baselineRestore = (Success: true, Restored: false, Conflict: false, Error: null);
         }
 
-        // Step 2: Remove SPEMCS-owned rules
+        // Step 2: Remove the rules owned by THIS session.
         _journal.UpdatePhase(sessionId, EnforcementPhase.RollingBackRules);
-        var removedCount = 0;
-
-        // Query rules by group
-        var spemcsRules = _firewall.GetRuleNamesByGroup(FirewallRuleModel.SpemcsRuleGroup);
-        var sessionPrefix = $"SPEMCS-{sessionId:N}-";
-
-        foreach (var ruleName in spemcsRules)
-        {
-            // SECURITY (CRITICAL): Only remove rules that belong to THIS session.
-            // A bare "SPEMCS-" prefix match would delete another concurrently-active
-            // session's rules during rollback of an unrelated exam.
-            if (ruleName.StartsWith(sessionPrefix, StringComparison.OrdinalIgnoreCase))
-            {
-                _logger.LogDebug("Removing rule: {RuleName}", ruleName);
-                if (_firewall.RemoveRule(ruleName))
-                {
-                    removedCount++;
-                }
-            }
-        }
+        var removalOutcome = RemoveSessionOwnedRules(sessionId);
 
         // Step 3: Record final state
         var finalPhase = baselineRestore.Conflict ? EnforcementPhase.Conflict : EnforcementPhase.RolledBack;
         _journal.UpdatePhase(sessionId, finalPhase);
 
         _logger.LogInformation("Rollback complete for Session: {SessionId}. Rules removed: {Count}. Baseline restored: {Restored}. Conflict: {Conflict}",
-            sessionId, removedCount, baselineRestore.Restored, baselineRestore.Conflict);
+            sessionId, removalOutcome.RemovedCount, baselineRestore.Restored, baselineRestore.Conflict);
+
+        var error = removalOutcome.Error is null
+            ? baselineRestore.Error
+            : string.Join(" ", new[] { baselineRestore.Error, removalOutcome.Error }.Where(s => !string.IsNullOrEmpty(s)));
 
         return new RollbackResult(
-            Success: !baselineRestore.Conflict,
+            // Success is a claim about CONVERGENCE, not about whether anything unusual was seen. A
+            // conflict that was nevertheless converged on the baseline is a successful rollback with
+            // an incident attached; callers that must react to the incident read ConflictDetected,
+            // which EnforcementStateMachine.DeactivateAsync already does.
+            Success: baselineRestore.Success && removalOutcome.Error is null,
             SessionId: sessionId,
-            RulesRemovedCount: removedCount,
+            RulesRemovedCount: removalOutcome.RemovedCount,
             BaselineRestored: baselineRestore.Restored,
             ConflictDetected: baselineRestore.Conflict,
-            ErrorMessage: baselineRestore.Error
+            ErrorMessage: error
         );
     }
 
+    /// <summary>
+    /// Deletes exactly the rules belonging to <paramref name="sessionId"/> and nothing else.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Ownership is established from two independent sources and the WEAKER one is used as a filter,
+    /// not as an authority:
+    /// </para>
+    /// <list type="bullet">
+    /// <item><description>
+    /// The journal's applied-rule list is the durable record of what this session actually installed.
+    /// It is authoritative about intent - but it is data on disk, so a name in it is accepted only if
+    /// it also carries this session's name prefix. Without that check a corrupted or tampered journal
+    /// row could name <c>"Codex"</c>, or another product's rule, and rollback would dutifully delete
+    /// it by exact name.
+    /// </description></item>
+    /// <item><description>
+    /// A scan of the SPEMCS group filtered by this session's prefix catches rules that reached the
+    /// firewall but never reached the journal - the crash window between <c>AddRule</c> and
+    /// <c>RecordAppliedRule</c>. Restricting the scan to the group means a rule outside SPEMCS's own
+    /// group is never a candidate no matter what it is called.
+    /// </description></item>
+    /// </list>
+    /// <para>
+    /// Neither source can widen the other: the result is the union, and every member of the union has
+    /// been checked against <see cref="FirewallRuleModel.SessionNamePrefix"/> for this session.
+    /// </para>
+    /// </remarks>
+    private (int RemovedCount, string? Error) RemoveSessionOwnedRules(Guid sessionId)
+    {
+        var sessionPrefix = FirewallRuleModel.SessionNamePrefix(sessionId);
+        var candidates = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var rejected = new List<string>();
+
+        foreach (var journaledName in _journal.GetSession(sessionId)?.AppliedRuleNames ?? Array.Empty<string>())
+        {
+            if (journaledName.StartsWith(sessionPrefix, StringComparison.OrdinalIgnoreCase))
+            {
+                candidates.Add(journaledName);
+            }
+            else
+            {
+                rejected.Add(journaledName);
+            }
+        }
+
+        foreach (var ruleName in _firewall.GetRuleNamesByGroup(FirewallRuleModel.SpemcsRuleGroup))
+        {
+            if (ruleName.StartsWith(sessionPrefix, StringComparison.OrdinalIgnoreCase))
+            {
+                candidates.Add(ruleName);
+            }
+        }
+
+        if (rejected.Count > 0)
+        {
+            // Loud, because the only ways to get here are journal corruption and tampering, and both
+            // are worth an operator's attention. Not fatal: the prefix scan still cleans up the rules
+            // this session really does own.
+            _logger.LogError(
+                "Rollback for session {SessionId} REFUSED to delete {Count} journaled rule name(s) that do not carry this session's prefix '{Prefix}': {Names}. The journal row may be corrupt or tampered with.",
+                sessionId, rejected.Count, sessionPrefix, string.Join(", ", rejected));
+        }
+
+        var removedCount = 0;
+        foreach (var ruleName in candidates)
+        {
+            _logger.LogDebug("Removing rule: {RuleName}", ruleName);
+            if (_firewall.RemoveRule(ruleName))
+            {
+                removedCount++;
+            }
+            else
+            {
+                // Already gone. Expected on a retried rollback and after a crash between the COM
+                // delete and the journal write, so it is not an error.
+                _logger.LogDebug("Rule {RuleName} was already absent; nothing to remove.", ruleName);
+            }
+        }
+
+        return (removedCount, null);
+    }
+
+    /// <summary>
+    /// Restores the captured pre-exam <c>DefaultOutboundAction</c> for every targeted profile, and
+    /// verifies by read-back that it landed.
+    /// </summary>
+    /// <param name="blockWasVerified">
+    /// True only when the session reached <see cref="EnforcementPhase.Active"/>, i.e. read-back
+    /// confirmed BLOCK was in force. This is what licenses an external-modification conflict; see the
+    /// remarks.
+    /// </param>
+    /// <remarks>
+    /// <para>
+    /// WHAT THIS REPLACED, AND WHY. The previous implementation decided per profile with
+    /// <c>if (currentAction == Block) restore; else conflict</c>. Because
+    /// <see cref="FirewallAction"/> has exactly two values, "not Block" meant "Allow", and that one
+    /// branch covered four completely different situations:
+    /// </para>
+    /// <list type="number">
+    /// <item><description>
+    /// A profile that never took BLOCK because enforcement failed part-way. Nothing to undo, yet it
+    /// was reported as an external conflict and the activation-failure path recorded
+    /// <see cref="EnforcementState.Conflict"/> instead of <see cref="EnforcementState.Failed"/> - an
+    /// operator-visible unresolved incident for a rollback that had in fact left the machine perfect.
+    /// </description></item>
+    /// <item><description>
+    /// A second rollback of a session already rolled back. Same false conflict, so stopping an exam
+    /// twice, or an expiry racing an operator stop, poisoned the session record.
+    /// </description></item>
+    /// <item><description>
+    /// A crash midway through a previous rollback. The profiles already restored looked like
+    /// tampering, so recovery could not finish what it had started.
+    /// </description></item>
+    /// <item><description>
+    /// The genuinely dangerous one. If the captured baseline was <see cref="FirewallAction.Block"/> -
+    /// a host that was already deny-by-default before the exam - and something set it to
+    /// <see cref="FirewallAction.Allow"/>, the old code "yielded to external policy" and returned
+    /// without restoring. SPEMCS then finished its session having left the machine STRICTLY MORE OPEN
+    /// than it found it, and reported <c>BaselineRestored=false</c> as if that were a safe outcome.
+    /// </description></item>
+    /// </list>
+    /// <para>
+    /// So the decision now comes from the durable baseline instead of from the live action: write the
+    /// captured value wherever the current value differs, then re-read and confirm. Detecting
+    /// tampering is a SEPARATE question, answered by <paramref name="blockWasVerified"/> - if BLOCK
+    /// was confirmed in force and the profile is no longer BLOCK, something else changed it, and that
+    /// is recorded as a conflict whether or not the convergence succeeded.
+    /// </para>
+    /// <para>
+    /// Converging even in case 4 does mean SPEMCS re-asserts a BLOCK an administrator may have
+    /// cleared mid-exam. That is the correct trade: the baseline is the machine's own pre-exam
+    /// posture, restoring it is exactly what requirement 9 asks for, and the alternative is a
+    /// monitoring product that silently downgrades a host's security because someone touched it while
+    /// it was running. The event is not hidden - it is journaled as a conflict and logged with both
+    /// values.
+    /// </para>
+    /// </remarks>
     private (bool Success, bool Restored, bool Conflict, string? Error) RestoreBaselineSafely(
         Guid sessionId,
         FirewallProfileBaseline baseline,
-        FirewallProfiles targetProfiles)
+        FirewallProfiles targetProfiles,
+        bool blockWasVerified)
     {
         try
         {
             var current = _firewall.GetBaseline();
-            var conflictDetected = false;
+            var externallyModified = new List<string>();
 
-            void RestoreProfile(FirewallProfiles profile, FirewallAction currentAction, FirewallAction baselineAction)
+            void RestoreProfile(FirewallProfiles profile)
             {
-                if (currentAction == FirewallAction.Block)
+                if (!targetProfiles.HasFlag(profile)) return;
+
+                var currentAction = current.ActionFor(profile)!.Value;
+                var baselineAction = baseline.ActionFor(profile)!.Value;
+
+                if (blockWasVerified && currentAction != FirewallAction.Block)
                 {
-                    _firewall.SetDefaultOutboundAction(profile, baselineAction);
+                    // SPEMCS left this profile on BLOCK and verified it. It is not BLOCK now, so a
+                    // third party changed it. Recorded regardless of which way the change went.
+                    externallyModified.Add($"{profile} (found {currentAction}, SPEMCS had enforced Block, pre-exam baseline was {baselineAction})");
                 }
-                else
+
+                if (currentAction == baselineAction)
                 {
-                    _logger.LogWarning("{Profile} profile outbound default modified externally (Current: {Current}, expected SPEMCS Block). Yielding to external policy.", profile, currentAction);
-                    conflictDetected = true;
+                    _logger.LogDebug("{Profile} profile outbound default already matches the captured baseline ({Action}); no write needed.",
+                        profile, baselineAction);
+                    return;
+                }
+
+                _logger.LogInformation("Restoring {Profile} profile outbound default: {Current} -> {Baseline} (captured pre-exam value).",
+                    profile, currentAction, baselineAction);
+                _firewall.SetDefaultOutboundAction(profile, baselineAction);
+            }
+
+            RestoreProfile(FirewallProfiles.Domain);
+            RestoreProfile(FirewallProfiles.Private);
+            RestoreProfile(FirewallProfiles.Public);
+
+            // VERIFY. BaselineRestored must be a measurement, not an intention: SetDefaultOutboundAction
+            // can be silently ignored by a GPO that re-asserts its own default, which is the exact
+            // failure mode readback exists to catch during activation. Claiming "restored" without
+            // reading back would let a machine be left on BLOCK after the exam while the journal says
+            // it was cleaned up.
+            var afterwards = _firewall.GetBaseline();
+            var notConverged = new List<string>();
+
+            void Verify(FirewallProfiles profile)
+            {
+                if (!targetProfiles.HasFlag(profile)) return;
+                var actual = afterwards.ActionFor(profile)!.Value;
+                var expected = baseline.ActionFor(profile)!.Value;
+                if (actual != expected)
+                {
+                    notConverged.Add($"{profile} (expected {expected}, still reports {actual})");
                 }
             }
 
-            if (targetProfiles.HasFlag(FirewallProfiles.Domain))
+            Verify(FirewallProfiles.Domain);
+            Verify(FirewallProfiles.Private);
+            Verify(FirewallProfiles.Public);
+
+            if (externallyModified.Count > 0)
             {
-                RestoreProfile(FirewallProfiles.Domain, current.DomainDefaultOutbound, baseline.DomainDefaultOutbound);
+                var details = $"External administrator, GPO or third party modified DefaultOutboundAction while SPEMCS was enforcing: {string.Join("; ", externallyModified)}.";
+                _logger.LogWarning("{Details}", details);
+                _journal.RecordConflict(sessionId, details);
             }
 
-            if (targetProfiles.HasFlag(FirewallProfiles.Private))
+            if (notConverged.Count > 0)
             {
-                RestoreProfile(FirewallProfiles.Private, current.PrivateDefaultOutbound, baseline.PrivateDefaultOutbound);
+                var error = $"Baseline restoration did not take effect for: {string.Join("; ", notConverged)}.";
+                _logger.LogError("Session {SessionId}: {Error}", sessionId, error);
+                return (false, false, true, error);
             }
 
-            if (targetProfiles.HasFlag(FirewallProfiles.Public))
-            {
-                RestoreProfile(FirewallProfiles.Public, current.PublicDefaultOutbound, baseline.PublicDefaultOutbound);
-            }
-
-            if (conflictDetected)
-            {
-                _journal.RecordConflict(sessionId, "External administrator or GPO modified DefaultOutboundAction while SPEMCS was active.");
-                return (false, false, true, "Conflict detected: External configuration modified outbound action.");
-            }
-
-            return (true, true, false, null);
+            return (true, true, externallyModified.Count > 0,
+                externallyModified.Count > 0
+                    ? $"Pre-exam baseline restored, but an external modification was detected during enforcement: {string.Join("; ", externallyModified)}."
+                    : null);
         }
         catch (Exception ex)
         {
@@ -486,6 +799,18 @@ public sealed class NetworkEnforcer : INetworkEnforcer
         var a = (actual ?? "").Trim();
         return string.Equals(e, a, StringComparison.OrdinalIgnoreCase);
     }
+
+    /// <summary>
+    /// Address-field comparison. Windows Firewall rewrites an address specification on the way in
+    /// (IPv4 CIDR becomes a dotted-decimal mask, a bare IPv4 host gains /255.255.255.255, a bare
+    /// IPv6 host becomes a degenerate range), so the readback of a rule written exactly as intended
+    /// is not textually equal to the rule we asked for. Comparing those two literally rejects every
+    /// IPv4 rule SPEMCS installs - the loopback rule included - and aborts enforcement before the
+    /// default-block is ever applied. Compare the address sets instead; see
+    /// <see cref="FirewallAddressSpec"/>.
+    /// </summary>
+    private static bool AddressPropertyMatches(string? expected, string? actual) =>
+        PropertyMatches(expected, actual) || FirewallAddressSpec.AreEquivalent(expected, actual);
 
     private static bool PortPropertyMatches(string? expected, string? actual)
     {
@@ -557,9 +882,9 @@ public sealed class NetworkEnforcer : INetworkEnforcer
                 failures.Add($"LocalPorts '{matched.LocalPorts}' != '{rule.LocalPorts}'");
             if (!PortPropertyMatches(rule.RemotePorts, matched.RemotePorts))
                 failures.Add($"RemotePorts '{matched.RemotePorts}' != '{rule.RemotePorts}'");
-            if (!PropertyMatches(rule.RemoteAddresses, matched.RemoteAddresses))
+            if (!AddressPropertyMatches(rule.RemoteAddresses, matched.RemoteAddresses))
                 failures.Add($"RemoteAddresses '{matched.RemoteAddresses}' != '{rule.RemoteAddresses}'");
-            if (!PropertyMatches(rule.LocalAddresses, matched.LocalAddresses))
+            if (!AddressPropertyMatches(rule.LocalAddresses, matched.LocalAddresses))
                 failures.Add($"LocalAddresses '{matched.LocalAddresses}' != '{rule.LocalAddresses}'");
             // ApplicationName: expected rule may be intentionally application-scoped (null = all programs).
             if (!PropertyMatches(rule.ApplicationPath, matched.ApplicationPath))

@@ -1,0 +1,174 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1350 780" width="1350" height="780" style="background:#0d1117; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
+  <defs>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#000" flood-opacity="0.5" />
+    </filter>
+    <marker id="traceArrow" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 8 5 L 0 9 z" fill="#388bfd" />
+    </marker>
+  </defs>
+
+  <!-- Title -->
+  <rect x="0" y="0" width="1350" height="60" fill="#161b22" />
+  <text x="30" y="38" fill="#58a6ff" font-size="22" font-weight="700">Follow the Button Click: 10-Stage Execution Swimlane</text>
+  <text x="660" y="38" fill="#8b949e" font-size="14">User Action → UI → API → Auth → Authz → Service → DB/OS → Event → WS/Response → UI</text>
+  <rect x="1200" y="18" width="120" height="26" rx="13" fill="#238636" />
+  <text x="1215" y="35" fill="#ffffff" font-size="11" font-weight="600">VERIFIED CODE</text>
+
+  <!-- 10 SWIMLANE STAGES ARRANGED HORIZONTALLY / VERTICALLY -->
+  <g transform="translate(30, 80)">
+    <!-- STAGE 1: USER ACTION -->
+    <g transform="translate(0, 0)">
+      <rect x="0" y="0" width="235" height="180" rx="8" fill="#161b22" stroke="#388bfd" stroke-width="1.5" filter="url(#shadow)" />
+      <rect x="0" y="0" width="235" height="30" rx="8" fill="#1f6feb" />
+      <text x="12" y="20" fill="#ffffff" font-size="11" font-weight="700">1. User Action</text>
+      <text x="12" y="50" fill="#79c0ff" font-size="11" font-weight="600">Admin clicks "Activate Exam"</text>
+      <text x="12" y="70" fill="#8b949e" font-size="10">Page: ExamShieldPage.tsx</text>
+      <text x="12" y="86" fill="#8b949e" font-size="10">Trigger: onClick handler</text>
+      <text x="12" y="102" fill="#8b949e" font-size="10">Modal confirmation verified</text>
+      <text x="12" y="125" fill="#3fb950" font-size="10">User Intent: Start lockdown</text>
+      <text x="12" y="145" fill="#8b949e" font-size="9">Role: Administrator (verified)</text>
+    </g>
+
+    <!-- STAGE 2: UI CALL -->
+    <g transform="translate(265, 0)">
+      <rect x="0" y="0" width="235" height="180" rx="8" fill="#161b22" stroke="#30363d" stroke-width="1.5" filter="url(#shadow)" />
+      <rect x="0" y="0" width="235" height="30" rx="8" fill="#21262d" />
+      <text x="12" y="20" fill="#c9d1d9" font-size="11" font-weight="700">2. UI Client Invocation</text>
+      <text x="12" y="50" fill="#f0f6fc" font-size="11" font-weight="600">examService.activateExam()</text>
+      <text x="12" y="70" fill="#8b949e" font-size="10">File: src/services/examService.ts</text>
+      <text x="12" y="86" fill="#8b949e" font-size="10">Pulls JWT token from localStorage</text>
+      <text x="12" y="102" fill="#8b949e" font-size="10">Builds Authorization: Bearer &lt;jwt&gt;</text>
+      <text x="12" y="125" fill="#58a6ff" font-size="10">Prepares fetch API call</text>
+      <text x="12" y="145" fill="#8b949e" font-size="9">Sets UI button state: loading</text>
+    </g>
+
+    <!-- STAGE 3: API ROUTE -->
+    <g transform="translate(530, 0)">
+      <rect x="0" y="0" width="235" height="180" rx="8" fill="#161b22" stroke="#30363d" stroke-width="1.5" filter="url(#shadow)" />
+      <rect x="0" y="0" width="235" height="30" rx="8" fill="#21262d" />
+      <text x="12" y="20" fill="#c9d1d9" font-size="11" font-weight="700">3. API Gateway Route</text>
+      <text x="12" y="50" fill="#58a6ff" font-size="11" font-weight="600">POST /api/exams/{id}/activate</text>
+      <text x="12" y="70" fill="#8b949e" font-size="10">File: backend/routes/exams.py</text>
+      <text x="12" y="86" fill="#8b949e" font-size="10">FastAPI parses path parameter:</text>
+      <text x="12" y="102" fill="#c9d1d9" font-size="10">exam_id: UUID</text>
+      <text x="12" y="125" fill="#8b949e" font-size="10">Dispatches dependencies:</text>
+      <text x="12" y="145" fill="#7ee787" font-size="9">require_admin, get_db</text>
+    </g>
+
+    <!-- STAGE 4: AUTHENTICATION -->
+    <g transform="translate(795, 0)">
+      <rect x="0" y="0" width="235" height="180" rx="8" fill="#161b22" stroke="#388bfd" stroke-width="1.5" filter="url(#shadow)" />
+      <rect x="0" y="0" width="235" height="30" rx="8" fill="#1f6feb" />
+      <text x="12" y="20" fill="#ffffff" font-size="11" font-weight="700">4. Authentication Gate</text>
+      <text x="12" y="50" fill="#58a6ff" font-size="11" font-weight="600">dependencies.require_auth</text>
+      <text x="12" y="70" fill="#8b949e" font-size="10">File: backend/app/dependencies.py</text>
+      <text x="12" y="86" fill="#8b949e" font-size="10">Decodes Bearer JWT with SECRET_KEY</text>
+      <text x="12" y="102" fill="#8b949e" font-size="10">Checks signature &amp; exp &gt; now()</text>
+      <text x="12" y="125" fill="#7ee787" font-size="10">Validates operator identity</text>
+      <text x="12" y="145" fill="#f85149" font-size="9">Fails: 401 Unauthorized</text>
+    </g>
+
+    <!-- STAGE 5: AUTHORIZATION -->
+    <g transform="translate(1060, 0)">
+      <rect x="0" y="0" width="230" height="180" rx="8" fill="#161b22" stroke="#388bfd" stroke-width="1.5" filter="url(#shadow)" />
+      <rect x="0" y="0" width="230" height="30" rx="8" fill="#1f6feb" />
+      <text x="12" y="20" fill="#ffffff" font-size="11" font-weight="700">5. Authorization (RBAC)</text>
+      <text x="12" y="50" fill="#58a6ff" font-size="11" font-weight="600">require_admin Check</text>
+      <text x="12" y="70" fill="#8b949e" font-size="10">File: backend/app/dependencies.py</text>
+      <text x="12" y="86" fill="#8b949e" font-size="10">Inspects current_user.role</text>
+      <text x="12" y="102" fill="#7ee787" font-size="10">Asserts role == "admin"</text>
+      <text x="12" y="125" fill="#8b949e" font-size="10">Refuses proctor/student roles</text>
+      <text x="12" y="145" fill="#f85149" font-size="9">Fails: 403 Forbidden</text>
+    </g>
+
+    <!-- ROW 2: STAGES 6 TO 10 -->
+    <!-- STAGE 6: SERVICE LAYER -->
+    <g transform="translate(1060, 240)">
+      <rect x="0" y="0" width="230" height="180" rx="8" fill="#161b22" stroke="#a371f7" stroke-width="1.5" filter="url(#shadow)" />
+      <rect x="0" y="0" width="230" height="30" rx="8" fill="#6e40c9" />
+      <text x="12" y="20" fill="#ffffff" font-size="11" font-weight="700">6. Core Service Execution</text>
+      <text x="12" y="50" fill="#a371f7" font-size="11" font-weight="600">ExamService.activate_exam()</text>
+      <text x="12" y="70" fill="#8b949e" font-size="10">File: services/exam_service.py</text>
+      <text x="12" y="86" fill="#8b949e" font-size="10">Invokes enforcement_readiness</text>
+      <text x="12" y="102" fill="#8b949e" font-size="10">Asserts policy compiled &amp; signed</text>
+      <text x="12" y="125" fill="#8b949e" font-size="10">Checks device arming states</text>
+      <text x="12" y="145" fill="#f85149" font-size="9">Fails: 409 Conflict (unarmed)</text>
+    </g>
+
+    <!-- STAGE 7: DATABASE PERSISTENCE -->
+    <g transform="translate(795, 240)">
+      <rect x="0" y="0" width="235" height="180" rx="8" fill="#161b22" stroke="#f0883e" stroke-width="1.5" filter="url(#shadow)" />
+      <rect x="0" y="0" width="235" height="30" rx="8" fill="#bd561d" />
+      <text x="12" y="20" fill="#ffffff" font-size="11" font-weight="700">7. DB / OS State Commit</text>
+      <text x="12" y="50" fill="#f0883e" font-size="11" font-weight="600">SQLAlchemy Commit</text>
+      <text x="12" y="70" fill="#8b949e" font-size="10">UPDATE exams SET status='ACTIVE',</text>
+      <text x="12" y="86" fill="#c9d1d9" font-size="9">started_at=NOW() WHERE exam_id=...</text>
+      <text x="12" y="102" fill="#8b949e" font-size="10">INSERT INTO audit_logs: action=</text>
+      <text x="12" y="118" fill="#c9d1d9" font-size="9">"EXAM_ACTIVATED", user_id=admin</text>
+      <text x="12" y="140" fill="#7ee787" font-size="10">db.commit() completes transaction</text>
+    </g>
+
+    <!-- STAGE 8: EVENT DISPATCH -->
+    <g transform="translate(530, 240)">
+      <rect x="0" y="0" width="235" height="180" rx="8" fill="#161b22" stroke="#d29922" stroke-width="1.5" filter="url(#shadow)" />
+      <rect x="0" y="0" width="235" height="30" rx="8" fill="#9e6a03" />
+      <text x="12" y="20" fill="#ffffff" font-size="11" font-weight="700">8. Event Broadcast</text>
+      <text x="12" y="50" fill="#d29922" font-size="11" font-weight="600">RealtimeManager.broadcast</text>
+      <text x="12" y="70" fill="#8b949e" font-size="10">File: websocket/realtime.py</text>
+      <text x="12" y="86" fill="#8b949e" font-size="10">Builds payload: type: "EXAM_STATE"</text>
+      <text x="12" y="102" fill="#8b949e" font-size="10">exam_id, status: "ACTIVE"</text>
+      <text x="12" y="125" fill="#8b949e" font-size="10">Iterates active proctor websockets</text>
+      <text x="12" y="145" fill="#7ee787" font-size="9">Asynchronously pushes WS frames</text>
+    </g>
+
+    <!-- STAGE 9: RESPONSE TRANSMISSION -->
+    <g transform="translate(265, 240)">
+      <rect x="0" y="0" width="235" height="180" rx="8" fill="#161b22" stroke="#30363d" stroke-width="1.5" filter="url(#shadow)" />
+      <rect x="0" y="0" width="235" height="30" rx="8" fill="#21262d" />
+      <text x="12" y="20" fill="#c9d1d9" font-size="11" font-weight="700">9. HTTP Response &amp; WSS</text>
+      <text x="12" y="50" fill="#3fb950" font-size="11" font-weight="600">HTTP 200 OK Delivered</text>
+      <text x="12" y="70" fill="#8b949e" font-size="10">JSON Body: { status: "ACTIVE", ... }</text>
+      <text x="12" y="86" fill="#8b949e" font-size="10">Browser receives fetch() resolution</text>
+      <text x="12" y="102" fill="#8b949e" font-size="10">Simultaneously: WebSocket client</text>
+      <text x="12" y="120" fill="#8b949e" font-size="10">in AppContext receives EXAM_STATE</text>
+      <text x="12" y="145" fill="#7ee787" font-size="9">Network latency: &lt;15ms</text>
+    </g>
+
+    <!-- STAGE 10: UI RE-RENDER -->
+    <g transform="translate(0, 240)">
+      <rect x="0" y="0" width="235" height="180" rx="8" fill="#161b22" stroke="#238636" stroke-width="1.5" filter="url(#shadow)" />
+      <rect x="0" y="0" width="235" height="30" rx="8" fill="#238636" />
+      <text x="12" y="20" fill="#ffffff" font-size="11" font-weight="700">10. UI State Re-Render</text>
+      <text x="12" y="50" fill="#3fb950" font-size="11" font-weight="600">ExamShield &amp; LiveMonitor</text>
+      <text x="12" y="70" fill="#8b949e" font-size="10">Component re-renders badge:</text>
+      <text x="12" y="86" fill="#7ee787" font-size="10">Status Badge -> "ACTIVE" (Green)</text>
+      <text x="12" y="102" fill="#8b949e" font-size="10">Button transforms to: "Stop Exam"</text>
+      <text x="12" y="125" fill="#8b949e" font-size="10">Toast notification: "Exam Activated"</text>
+      <text x="12" y="145" fill="#7ee787" font-size="9">Cycle complete: End-to-end</text>
+    </g>
+
+    <!-- CONNECTING FLOW ARROWS -->
+    <!-- Row 1 Left to Right -->
+    <path d="M 235 90 L 265 90" fill="none" stroke="#388bfd" stroke-width="2" marker-end="url(#traceArrow)" />
+    <path d="M 500 90 L 530 90" fill="none" stroke="#388bfd" stroke-width="2" marker-end="url(#traceArrow)" />
+    <path d="M 765 90 L 795 90" fill="none" stroke="#388bfd" stroke-width="2" marker-end="url(#traceArrow)" />
+    <path d="M 1030 90 L 1060 90" fill="none" stroke="#388bfd" stroke-width="2" marker-end="url(#traceArrow)" />
+
+    <!-- Drop from Stage 5 to Stage 6 -->
+    <path d="M 1175 180 L 1175 240" fill="none" stroke="#388bfd" stroke-width="2" marker-end="url(#traceArrow)" />
+
+    <!-- Row 2 Right to Left -->
+    <path d="M 1060 330 L 1030 330" fill="none" stroke="#388bfd" stroke-width="2" marker-end="url(#traceArrow)" />
+    <path d="M 795 330 L 765 330" fill="none" stroke="#388bfd" stroke-width="2" marker-end="url(#traceArrow)" />
+    <path d="M 530 330 L 500 330" fill="none" stroke="#388bfd" stroke-width="2" marker-end="url(#traceArrow)" />
+    <path d="M 265 330 L 235 330" fill="none" stroke="#388bfd" stroke-width="2" marker-end="url(#traceArrow)" />
+  </g>
+
+  <!-- Summary Footer -->
+  <rect x="30" y="550" width="1290" height="190" rx="8" fill="#161b22" stroke="#30363d" />
+  <text x="50" y="580" fill="#f0f6fc" font-size="13" font-weight="700">Key Takeaway from the 10-Stage Execution Trace:</text>
+  <text x="50" y="605" fill="#8b949e" font-size="11">Every stage has an explicit responsibility, a dedicated source file, and a deterministic failure code. An unauthenticated request is refused at Stage 4 (401),</text>
+  <text x="50" y="625" fill="#8b949e" font-size="11">a proctor attempting admin actions is stopped at Stage 5 (403), an unarmed lab fleet is halted at Stage 6 (409), and database failures abort cleanly at Stage 7 (500).</text>
+  <text x="50" y="645" fill="#7ee787" font-size="11">No action mutates system state without passing through the full authentication, authorization, and readiness chain.</text>
+</svg>

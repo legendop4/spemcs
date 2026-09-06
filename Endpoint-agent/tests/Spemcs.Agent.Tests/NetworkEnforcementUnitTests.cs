@@ -200,8 +200,31 @@ public class NetworkEnforcementUnitTests : IDisposable
         Assert.Empty(_firewall.Rules);
     }
 
+    /// <summary>
+    /// An external administrator or GPO changes DefaultOutboundAction mid-exam: the change must be
+    /// REPORTED, and the pre-exam baseline must still be restored.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// WHY THIS TEST CHANGED IN PHASE 18. It used to assert <c>Assert.False(rollback.BaselineRestored)</c>
+    /// alongside the conflict. That assertion stated something false about the world: the captured
+    /// baseline here is <c>Allow</c>, the external change set <c>Allow</c>, so at the end of rollback
+    /// the firewall IS at its pre-exam baseline - the report said otherwise. Worse, it locked in the
+    /// "yield to external policy and return without restoring" behaviour, which is a fail-open when the
+    /// captured baseline is <c>Block</c>: a host that was already deny-by-default before the exam, whose
+    /// default was cleared to <c>Allow</c> while SPEMCS ran, would be LEFT on <c>Allow</c> and the
+    /// session reported as safely rolled back.
+    /// </para>
+    /// <para>
+    /// The two questions are now answered separately, and both are asserted: tamper detection
+    /// (<see cref="RollbackResult.ConflictDetected"/>, plus the journal record) and convergence on the
+    /// captured value (<see cref="RollbackResult.BaselineRestored"/>, cross-checked against the mock's
+    /// actual profile action rather than taken from the result object). That is strictly more than the
+    /// old test asserted, not less.
+    /// </para>
+    /// </remarks>
     [Fact]
-    public async Task ConflictDetection_ExternalAdminChangedDefault_YieldsToAdmin()
+    public async Task ConflictDetection_ExternalAdminChangedDefault_IsReportedAndStillRestoresBaseline()
     {
         var sessionId = Guid.NewGuid();
         var rule = FirewallRuleModel.CreateOutboundAllow(sessionId, "Mgmt", FirewallProtocol.TCP, "10.0.0.1", "8000");
@@ -214,19 +237,30 @@ public class NetworkEnforcementUnitTests : IDisposable
             CreatedUtc: DateTimeOffset.UtcNow
         );
 
+        var capturedBaseline = _firewall.PrivateDefaultOutbound;
         await _enforcer.ApplyEnforcementAsync(session);
+        Assert.Equal(FirewallAction.Block, _firewall.PrivateDefaultOutbound);
 
-        // Simulate external administrator or GPO setting Private default back to Allow or changing it
+        // External administrator or GPO clears the outbound default while SPEMCS is enforcing.
         _firewall.PrivateDefaultOutbound = FirewallAction.Allow;
 
-        // When SPEMCS attempts to rollback/restore baseline:
         var rollback = await _enforcer.RemoveEnforcementAsync(sessionId);
 
-        // Must detect conflict and NOT overwrite external admin configuration
+        // 1. The external modification is reported, not swallowed.
         Assert.True(rollback.ConflictDetected);
-        Assert.False(rollback.BaselineRestored);
-        Assert.Equal(1, rollback.RulesRemovedCount); // Rules still cleaned up safely
+        Assert.NotNull(rollback.ErrorMessage);
+        Assert.Contains("Private", rollback.ErrorMessage, StringComparison.Ordinal);
 
+        // 2. The pre-exam baseline is restored anyway - measured on the firewall, not read off the
+        //    result object, because the result object is the thing under test.
+        Assert.Equal(capturedBaseline, _firewall.PrivateDefaultOutbound);
+        Assert.True(rollback.BaselineRestored);
+
+        // 3. Rules are cleaned up regardless.
+        Assert.Equal(1, rollback.RulesRemovedCount);
+        Assert.Empty(_firewall.Rules);
+
+        // 4. The incident is durable, so an operator sees it after a restart.
         var journalRecord = _journal.GetSession(sessionId);
         Assert.NotNull(journalRecord);
         Assert.Equal(EnforcementPhase.Conflict, journalRecord.Phase);

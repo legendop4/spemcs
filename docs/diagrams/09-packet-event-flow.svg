@@ -1,0 +1,164 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1350 850" width="1350" height="850" style="background:#0d1117; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
+  <defs>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#000" flood-opacity="0.5" />
+    </filter>
+    <marker id="arrow" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 8 5 L 0 9 z" fill="#58a6ff" />
+    </marker>
+  </defs>
+
+  <!-- Title -->
+  <rect x="0" y="0" width="1350" height="60" fill="#161b22" />
+  <text x="30" y="38" fill="#58a6ff" font-size="22" font-weight="700">Follow the Packet &amp; Event: 3-Level Data Flow Architecture</text>
+  <text x="730" y="38" fill="#8b949e" font-size="14">Level 1 (Conceptual) → Level 2 (Subsystem) → Level 3 (Implementation)</text>
+  <rect x="1200" y="18" width="120" height="26" rx="13" fill="#238636" />
+  <text x="1215" y="35" fill="#ffffff" font-size="11" font-weight="600">VERIFIED CODE</text>
+
+  <!-- FLOW 1: LEVEL 1 CONCEPTUAL VIEW -->
+  <g transform="translate(30, 80)">
+    <rect x="0" y="0" width="1290" height="190" rx="10" fill="#161b22" stroke="#388bfd" stroke-width="1.5" filter="url(#shadow)" />
+    <rect x="0" y="0" width="1290" height="35" rx="10" fill="#1f6feb" />
+    <text x="20" y="23" fill="#ffffff" font-size="13" font-weight="700">Level 1: Conceptual Flow — What Happens from a 10,000-Foot Perspective</text>
+
+    <g transform="translate(40, 55)">
+      <!-- Box 1 -->
+      <rect x="0" y="10" width="220" height="85" rx="8" fill="#0d1117" stroke="#30363d" />
+      <text x="15" y="35" fill="#f0f6fc" font-size="13" font-weight="700">1. Student Activity</text>
+      <text x="15" y="55" fill="#8b949e" font-size="11">Candidate types PIN or</text>
+      <text x="15" y="70" fill="#8b949e" font-size="11">launches a program</text>
+
+      <path d="M 230 52 L 310 52" fill="none" stroke="#58a6ff" stroke-width="2.5" marker-end="url(#arrow)" />
+
+      <!-- Box 2 -->
+      <rect x="320" y="10" width="220" height="85" rx="8" fill="#0d1117" stroke="#388bfd" />
+      <text x="15" y="35" fill="#58a6ff" font-size="13" font-weight="700">2. Agent Observation</text>
+      <text x="15" y="55" fill="#8b949e" font-size="11">Agent captures event and</text>
+      <text x="15" y="70" fill="#8b949e" font-size="11">checks against rules</text>
+
+      <path d="M 550 52 L 630 52" fill="none" stroke="#58a6ff" stroke-width="2.5" marker-end="url(#arrow)" />
+
+      <!-- Box 3 -->
+      <rect x="640" y="10" width="220" height="85" rx="8" fill="#0d1117" stroke="#a371f7" />
+      <text x="15" y="35" fill="#a371f7" font-size="13" font-weight="700">3. Server Processing</text>
+      <text x="15" y="55" fill="#8b949e" font-size="11">Server authenticates token,</text>
+      <text x="15" y="70" fill="#8b949e" font-size="11">logs event, triggers alert</text>
+
+      <path d="M 870 52 L 950 52" fill="none" stroke="#58a6ff" stroke-width="2.5" marker-end="url(#arrow)" />
+
+      <!-- Box 4 -->
+      <rect x="960" y="10" width="220" height="85" rx="8" fill="#0d1117" stroke="#238636" />
+      <text x="15" y="35" fill="#3fb950" font-size="13" font-weight="700">4. Proctor Live Alert</text>
+      <text x="15" y="55" fill="#8b949e" font-size="11">Web dashboard updates</text>
+      <text x="15" y="70" fill="#8b949e" font-size="11">instantly with alert tile</text>
+    </g>
+    <text x="25" y="170" fill="#8b949e" font-size="11">Analogy: Like a security guard noticing an unauthorized badge at a door, radioing control, and sounding an alarm at the desk.</text>
+  </g>
+
+  <!-- FLOW 2: LEVEL 2 SUBSYSTEM VIEW -->
+  <g transform="translate(30, 290)">
+    <rect x="0" y="0" width="1290" height="210" rx="10" fill="#161b22" stroke="#a371f7" stroke-width="1.5" filter="url(#shadow)" />
+    <rect x="0" y="0" width="1290" height="35" rx="10" fill="#6e40c9" />
+    <text x="20" y="23" fill="#ffffff" font-size="13" font-weight="700">Level 2: Subsystem View — Component Interconnections and Protocols</text>
+
+    <g transform="translate(30, 50)">
+      <rect x="0" y="0" width="220" height="135" rx="6" fill="#0d1117" stroke="#30363d" />
+      <text x="12" y="22" fill="#58a6ff" font-size="11" font-weight="700">Desktop Session 1+</text>
+      <text x="12" y="42" fill="#8b949e" font-size="10">• Spemcs.Agent.UI</text>
+      <text x="12" y="58" fill="#8b949e" font-size="10">• Browser (chrome.exe)</text>
+      <text x="12" y="74" fill="#8b949e" font-size="10">• Prohibited Processes</text>
+      <text x="12" y="94" fill="#d29922" font-size="9">Named Pipe Client</text>
+
+      <path d="M 230 65 L 290 65" fill="none" stroke="#d29922" stroke-width="2" stroke-dasharray="4,4" marker-end="url(#arrow)" />
+      <text x="260" y="55" fill="#d29922" font-size="8" text-anchor="middle">IPC</text>
+
+      <rect x="300" y="0" width="240" height="135" rx="6" fill="#0d1117" stroke="#388bfd" />
+      <text x="12" y="22" fill="#388bfd" font-size="11" font-weight="700">Session 0 Service Core</text>
+      <text x="12" y="42" fill="#8b949e" font-size="10">• ControlPipeWorker (Server)</text>
+      <text x="12" y="58" fill="#8b949e" font-size="10">• ConfigurableProcessClassifier</text>
+      <text x="12" y="74" fill="#8b949e" font-size="10">• EventUploaderWorker</text>
+      <text x="12" y="90" fill="#8b949e" font-size="10">• WindowsFirewallAdapter</text>
+      <text x="12" y="110" fill="#7ee787" font-size="9">Attaches HMAC Device Token</text>
+
+      <path d="M 550 65 L 630 65" fill="none" stroke="#58a6ff" stroke-width="2" marker-end="url(#arrow)" />
+      <text x="590" y="55" fill="#58a6ff" font-size="8" text-anchor="middle">HTTPS POST</text>
+
+      <rect x="640" y="0" width="290" height="135" rx="6" fill="#0d1117" stroke="#f0883e" />
+      <text x="12" y="22" fill="#f0883e" font-size="11" font-weight="700">FastAPI Backend &amp; DB</text>
+      <text x="12" y="42" fill="#8b949e" font-size="10">• dependencies.py::require_device</text>
+      <text x="12" y="58" fill="#8b949e" font-size="10">• routes/events.py | routes/agent_api.py</text>
+      <text x="12" y="74" fill="#8b949e" font-size="10">• EventService.py -> alerts table</text>
+      <text x="12" y="90" fill="#8b949e" font-size="10">• RealtimeManager.broadcast_alert()</text>
+      <text x="12" y="110" fill="#7ee787" font-size="9">Writes PostgreSQL events &amp; alerts</text>
+
+      <path d="M 940 65 L 1020 65" fill="none" stroke="#3fb950" stroke-width="2" marker-end="url(#arrow)" />
+      <text x="980" y="55" fill="#3fb950" font-size="8" text-anchor="middle">WSS Broadcast</text>
+
+      <rect x="1030" y="0" width="220" height="135" rx="6" fill="#0d1117" stroke="#238636" />
+      <text x="12" y="22" fill="#238636" font-size="11" font-weight="700">React Dashboard SPA</text>
+      <text x="12" y="42" fill="#8b949e" font-size="10">• AppContext.tsx (WebSocket)</text>
+      <text x="12" y="58" fill="#8b949e" font-size="10">• LiveMonitorPage.tsx</text>
+      <text x="12" y="74" fill="#8b949e" font-size="10">• AlertsPage.tsx</text>
+      <text x="12" y="94" fill="#7ee787" font-size="9">Renders Red Alert Banner</text>
+    </g>
+  </g>
+
+  <!-- FLOW 3: LEVEL 3 IMPLEMENTATION CODE TRACE -->
+  <g transform="translate(30, 520)">
+    <rect x="0" y="0" width="1290" height="300" rx="10" fill="#161b22" stroke="#238636" stroke-width="1.5" filter="url(#shadow)" />
+    <rect x="0" y="0" width="1290" height="35" rx="10" fill="#238636" />
+    <text x="20" y="23" fill="#ffffff" font-size="13" font-weight="700">Level 3: Implementation View — Exact Code Call Stacks, Headers, Payloads &amp; Queries</text>
+
+    <g transform="translate(20, 50)">
+      <!-- Col 1 -->
+      <rect x="0" y="0" width="395" height="230" rx="6" fill="#0d1117" stroke="#30363d" />
+      <text x="12" y="20" fill="#58a6ff" font-size="11" font-weight="700">Agent Side Execution Stack</text>
+      <text x="12" y="38" fill="#8b949e" font-size="10">1. Kernel event fires ETW/WMI handler:</text>
+      <text x="20" y="52" fill="#c9d1d9" font-size="9">ConfigurableProcessClassifier.OnProcessCreated()</text>
+      <text x="12" y="70" fill="#8b949e" font-size="10">2. Match against prohibited rule definition:</text>
+      <text x="20" y="84" fill="#c9d1d9" font-size="9">process_name: "AnyDesk.exe", pid: 4812</text>
+      <text x="12" y="102" fill="#8b949e" font-size="10">3. Queue for secure upload:</text>
+      <text x="20" y="116" fill="#c9d1d9" font-size="9">EventUploaderWorker.Enqueue(eventPayload)</text>
+      <text x="12" y="134" fill="#8b949e" font-size="10">4. Fetch stored device HMAC token:</text>
+      <text x="20" y="148" fill="#c9d1d9" font-size="9">DeviceCredentialStore.GetToken()</text>
+      <text x="12" y="166" fill="#8b949e" font-size="10">5. Serialize and transmit HTTP POST:</text>
+      <text x="20" y="180" fill="#c9d1d9" font-size="9">HttpClient.PostAsJsonAsync("/api/v1/events")</text>
+      <text x="20" y="196" fill="#d29922" font-size="9">Header: X-Device-Token: &lt;hmac-token&gt;</text>
+    </g>
+
+    <g transform="translate(430, 50)">
+      <!-- Col 2 -->
+      <rect x="0" y="0" width="415" height="230" rx="6" fill="#0d1117" stroke="#30363d" />
+      <text x="12" y="20" fill="#f0883e" font-size="11" font-weight="700">Backend Server Execution Stack</text>
+      <text x="12" y="38" fill="#8b949e" font-size="10">1. Authenticate request via dependency:</text>
+      <text x="20" y="52" fill="#c9d1d9" font-size="9">dependencies.py::require_device(x_device_token)</text>
+      <text x="20" y="66" fill="#7ee787" font-size="9">auth_service.py::verify_device_token() [HMAC-SHA256]</text>
+      <text x="12" y="84" fill="#8b949e" font-size="10">2. Route handler receives payload:</text>
+      <text x="20" y="98" fill="#c9d1d9" font-size="9">routes/agent_api.py::receive_event()</text>
+      <text x="12" y="116" fill="#8b949e" font-size="10">3. Ingest and create database records:</text>
+      <text x="20" y="130" fill="#c9d1d9" font-size="9">EventService.ingest_event(db, payload)</text>
+      <text x="20" y="144" fill="#c9d1d9" font-size="9">SQL INSERT INTO events ... RETURNING event_id</text>
+      <text x="20" y="158" fill="#c9d1d9" font-size="9">SQL INSERT INTO alerts (alert_id, exam_id, ...) VALUES (...)</text>
+      <text x="12" y="176" fill="#8b949e" font-size="10">4. Real-time broadcast to dashboard clients:</text>
+      <text x="20" y="190" fill="#c9d1d9" font-size="9">realtime.py::broadcast_dashboard_event("ALERT_CREATED")</text>
+      <text x="20" y="206" fill="#7ee787" font-size="9">Status: 200 OK returned to agent</text>
+    </g>
+
+    <g transform="translate(860, 50)">
+      <!-- Col 3 -->
+      <rect x="0" y="0" width="410" height="230" rx="6" fill="#0d1117" stroke="#30363d" />
+      <text x="12" y="20" fill="#3fb950" font-size="11" font-weight="700">Frontend SPA Execution Stack</text>
+      <text x="12" y="38" fill="#8b949e" font-size="10">1. WebSocket receives frame:</text>
+      <text x="20" y="52" fill="#c9d1d9" font-size="9">AppContext.tsx::ws.onmessage = (event) => ...</text>
+      <text x="12" y="70" fill="#8b949e" font-size="10">2. Parse message type and payload:</text>
+      <text x="20" y="84" fill="#c9d1d9" font-size="9">type: "ALERT_CREATED", payload: { severity: "CRITICAL" }</text>
+      <text x="12" y="102" fill="#8b949e" font-size="10">3. Update global React state:</text>
+      <text x="20" y="116" fill="#c9d1d9" font-size="9">setAlerts(prev => [newAlert, ...prev])</text>
+      <text x="12" y="134" fill="#8b949e" font-size="10">4. Re-render UI components:</text>
+      <text x="20" y="148" fill="#c9d1d9" font-size="9">LiveMonitorPage.tsx -> Workstation tile flashes red</text>
+      <text x="20" y="162" fill="#c9d1d9" font-size="9">ToastContainer -> Audio chime + critical notification</text>
+      <text x="12" y="180" fill="#8b949e" font-size="10">5. Proctor clicks "Acknowledge":</text>
+      <text x="20" y="194" fill="#c9d1d9" font-size="9">PATCH /api/alerts/{id} -> status = "RESOLVED"</text>
+    </g>
+  </g>
+</svg>

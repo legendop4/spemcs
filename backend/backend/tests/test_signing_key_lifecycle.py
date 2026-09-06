@@ -26,6 +26,7 @@ import json
 import os
 import sys
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -45,10 +46,12 @@ from backend.services.signing_key_manager import (
     KEY_STATE_RETIRED,
     KEY_STATE_REVOKED,
     KEYRING_FILENAME,
+    LOCK_FILENAME,
     PRIVATE_KEY_SUBDIR,
     SigningKeyManager,
     SigningKeyStateError,
     SigningKeyUnavailableError,
+    _KeyringLock,
     compute_key_id,
     default_key_dir,
     get_signing_key_manager,
@@ -636,6 +639,174 @@ def test_concurrent_rotation_leaves_a_consistent_keyring(tmp_path):
     assert sum(1 for e in document["keys"] if e["state"] == KEY_STATE_ACTIVE) == 1
     # A reader must still be able to load it.
     assert make_manager(key_dir).active_key_id() == document["active_key_id"]
+
+
+# ==============================================================================
+# The keyring lock's PermissionError branch (the Windows delete-pending defect)
+# ==============================================================================
+# `_KeyringLock.__enter__` used to route PermissionError into its `except OSError` fail-fast branch
+# and raise immediately. On Windows that is wrong: DeleteFile only marks a file delete-pending, so
+# until the last handle closes the name still exists but cannot be opened, and
+# `O_CREAT | O_EXCL` against it raises EACCES where POSIX raises EEXIST. The ordinary case of one
+# holder releasing the lock exactly as another takes it therefore surfaced as a permission error,
+# and every contended keyring mutation became a coin flip - measured at roughly 1 in 25 attempts
+# under six threads, which is how `test_concurrent_rotation_leaves_a_consistent_keyring` came to
+# fail intermittently on this box.
+#
+# These tests drive the lock directly through a monkeypatched `os.open` rather than by racing
+# threads, because the real race is a timing artefact of one operating system and a test that waits
+# for it would be both slow and flaky. What matters is the control flow: EACCES retries, and a
+# permanent EACCES still fails - at the deadline, not on the first attempt.
+
+
+def _permission_error() -> PermissionError:
+    """The error Windows raises for an O_EXCL create against a delete-pending name."""
+    return PermissionError(13, "Permission denied")
+
+
+def test_the_lock_retries_a_permission_error_and_then_acquires(tmp_path, monkeypatch):
+    """The fix. Transient EACCES must not abort the mutation.
+
+    Three refusals then a success, so the assertion is that the lock was actually taken *and* that
+    the retry loop ran - `attempts == 4` is what distinguishes a retry from an `except PermissionError:
+    pass` that silently reports success without holding anything.
+    """
+    lock_path = tmp_path / LOCK_FILENAME
+    real_open = os.open
+    attempts = {"count": 0}
+
+    def flaky_open(path, flags, *args, **kwargs):
+        if str(path) == str(lock_path):
+            attempts["count"] += 1
+            if attempts["count"] <= 3:
+                raise _permission_error()
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", flaky_open)
+
+    with _KeyringLock(lock_path, timeout=5.0) as lock:
+        assert lock_path.exists(), "the lock file must really exist while the lock is held"
+        assert lock._acquired is True
+
+    assert attempts["count"] == 4
+    assert not lock_path.exists(), "the lock must be released on exit"
+
+
+def test_a_permanent_permission_error_still_fails_at_the_deadline(tmp_path, monkeypatch):
+    """The other half. Retrying must not become an infinite loop or a silent success.
+
+    A directory this process genuinely cannot write is indistinguishable from delete-pending
+    contention at the point of failure, so the lock retries it too - and must give up. The timeout
+    is deliberately short and the elapsed time is asserted from both sides: below it would mean the
+    retry branch is not running at all, far above it would mean the deadline is not being honoured.
+    """
+    lock_path = tmp_path / LOCK_FILENAME
+    real_open = os.open
+
+    def always_denied(path, flags, *args, **kwargs):
+        if str(path) == str(lock_path):
+            raise _permission_error()
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", always_denied)
+
+    started = time.monotonic()
+    with pytest.raises(SigningKeyUnavailableError) as err:
+        with _KeyringLock(lock_path, timeout=0.3):
+            pytest.fail("the lock must not be acquired when every attempt is refused")
+    elapsed = time.monotonic() - started
+
+    assert 0.3 <= elapsed < 5.0, f"gave up after {elapsed:.2f}s"
+    assert isinstance(err.value.__cause__, PermissionError)
+    assert not lock_path.exists()
+
+
+def test_the_permission_error_message_names_both_possible_causes(tmp_path, monkeypatch):
+    """An operator reading this line has two very different fixes available.
+
+    "another process is releasing it continuously" points at load; "cannot write to the key
+    directory" points at ownership and ACLs. The old message said only "Cannot create the signing
+    key lock", which named neither.
+    """
+    lock_path = tmp_path / LOCK_FILENAME
+    real_open = os.open
+
+    def always_denied(path, flags, *args, **kwargs):
+        if str(path) == str(lock_path):
+            raise _permission_error()
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", always_denied)
+
+    with pytest.raises(SigningKeyUnavailableError) as err:
+        with _KeyringLock(lock_path, timeout=0.1):
+            pass
+
+    text = str(err.value)
+    assert str(lock_path) in text
+    assert "permissions" in text
+    assert "releasing" in text
+
+
+def test_a_non_permission_oserror_is_not_retried(tmp_path, monkeypatch):
+    """The falsifier for the fix's scope.
+
+    The retry branch was added for EACCES specifically. Widening it to every ``OSError`` would make
+    a structurally broken key directory - a missing parent, a name that is not a directory - spend
+    the whole 15-second timeout before reporting a fault that will never resolve. ``attempts == 1``
+    is the assertion that keeps the branch narrow; the distinct message is what an operator sees.
+    """
+    lock_path = tmp_path / LOCK_FILENAME
+    real_open = os.open
+    attempts = {"count": 0}
+
+    def broken_open(path, flags, *args, **kwargs):
+        if str(path) == str(lock_path):
+            attempts["count"] += 1
+            raise NotADirectoryError(20, "Not a directory")
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", broken_open)
+
+    with pytest.raises(SigningKeyUnavailableError) as err:
+        with _KeyringLock(lock_path, timeout=5.0):
+            pass
+
+    assert attempts["count"] == 1, "a non-EACCES OSError must fail on the first attempt"
+    assert "Cannot create the signing key lock" in str(err.value)
+
+
+def test_a_permission_error_during_a_real_rotation_does_not_lose_the_keyring(tmp_path, monkeypatch):
+    """The defect as it actually presented: a rotation refused by transient EACCES.
+
+    Driven through ``SigningKeyManager.rotate`` rather than the lock alone, because the lock is not
+    the deliverable - a keyring that survives contention is. Before the fix this raised
+    ``SigningKeyUnavailableError`` and the rotation was simply lost.
+    """
+    key_dir = tmp_path / "keys"
+    manager = make_manager(key_dir)
+    original_key_id = manager.active_key_id()
+    lock_path = key_dir / LOCK_FILENAME
+
+    real_open = os.open
+    refusals = {"left": 2}
+
+    def flaky_open(path, flags, *args, **kwargs):
+        if str(path) == str(lock_path) and refusals["left"] > 0:
+            refusals["left"] -= 1
+            raise _permission_error()
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", flaky_open)
+
+    rotated_key_id = make_manager(key_dir).rotate(reason="permission error retry test").key_id
+
+    assert refusals["left"] == 0, "the refusals must actually have been delivered"
+    assert rotated_key_id != original_key_id
+    document = read_keyring(key_dir)
+    assert document["active_key_id"] == rotated_key_id
+    assert sum(1 for e in document["keys"] if e["state"] == KEY_STATE_ACTIVE) == 1
+    assert original_key_id in [e["key_id"] for e in document["keys"]]
 
 
 # ==============================================================================

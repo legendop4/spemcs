@@ -1,0 +1,159 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 800" width="1280" height="800" style="background:#0d1117; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
+  <defs>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#000" flood-opacity="0.5" />
+    </filter>
+    <marker id="netArrow" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 8 5 L 0 9 z" fill="#58a6ff" />
+    </marker>
+  </defs>
+
+  <!-- Title -->
+  <rect x="0" y="0" width="1280" height="60" fill="#161b22" />
+  <text x="30" y="38" fill="#58a6ff" font-size="22" font-weight="700">SPEMCS Network Topology &amp; Port Matrix</text>
+  <text x="520" y="38" fill="#8b949e" font-size="14">VLANs, DMZ, Boundary Firewalls, and Protocol Transport</text>
+  <rect x="1130" y="18" width="120" height="26" rx="13" fill="#238636" />
+  <text x="1145" y="35" fill="#ffffff" font-size="11" font-weight="600">VERIFIED CODE</text>
+
+  <!-- NETWORK ZONES -->
+  <!-- ZONE A: PUBLIC INTERNET / VENDOR CDNs -->
+  <g transform="translate(30, 80)">
+    <rect x="0" y="0" width="280" height="420" rx="10" fill="#161b22" stroke="#30363d" stroke-width="2" filter="url(#shadow)" />
+    <rect x="0" y="0" width="280" height="35" rx="10" fill="#21262d" />
+    <text x="15" y="23" fill="#f0f6fc" font-size="13" font-weight="700">Internet &amp; Vendor Enclave</text>
+    
+    <rect x="15" y="50" width="250" height="85" rx="6" fill="#0d1117" stroke="#238636" />
+    <text x="25" y="72" fill="#3fb950" font-size="11" font-weight="700">Exam Platform CDNs / Hosts</text>
+    <text x="25" y="90" fill="#8b949e" font-size="10">• Moodle / Canvas / Vendor</text>
+    <text x="25" y="106" fill="#8b949e" font-size="10">• Port 443 (HTTPS Only)</text>
+    <text x="25" y="122" fill="#7ee787" font-size="9">Whitelisted CIDRs in NetworkPolicy</text>
+
+    <rect x="15" y="150" width="250" height="115" rx="6" fill="#0d1117" stroke="#f85149" />
+    <text x="25" y="172" fill="#f85149" font-size="11" font-weight="700">Untrusted Public Internet</text>
+    <text x="25" y="190" fill="#8b949e" font-size="10">• ChatGPT / Chegg / Discord</text>
+    <text x="25" y="206" fill="#8b949e" font-size="10">• Relay proxies &amp; VPN endpoints</text>
+    <text x="25" y="222" fill="#8b949e" font-size="10">• Protocol 41 (6in4 tunnels)</text>
+    <text x="25" y="238" fill="#f85149" font-size="10">Blocked by Agent Outbound Deny</text>
+
+    <rect x="15" y="280" width="250" height="120" rx="6" fill="#0d1117" stroke="#388bfd" />
+    <text x="25" y="302" fill="#58a6ff" font-size="11" font-weight="700">DNS Resolution Tier</text>
+    <text x="25" y="320" fill="#8b949e" font-size="10">• Campus Recursive DNS: Port 53</text>
+    <text x="25" y="336" fill="#8b949e" font-size="10">• Windows Dnscache Service</text>
+    <text x="25" y="352" fill="#8b949e" font-size="10">• NO Port 53 agent firewall rule</text>
+    <text x="25" y="368" fill="#7ee787" font-size="9">DoH blocked via HKLM registry</text>
+  </g>
+
+  <!-- ZONE B: MANAGEMENT VLAN & BACKEND -->
+  <g transform="translate(350, 80)">
+    <rect x="0" y="0" width="460" height="420" rx="10" fill="#161b22" stroke="#388bfd" stroke-width="2" filter="url(#shadow)" />
+    <rect x="0" y="0" width="460" height="35" rx="10" fill="#1f6feb" />
+    <text x="20" y="23" fill="#ffffff" font-size="13" font-weight="700">Management VLAN / Server DMZ (10.100.0.0/24)</text>
+
+    <rect x="15" y="50" width="430" height="150" rx="6" fill="#0d1117" stroke="#388bfd" />
+    <text x="25" y="72" fill="#58a6ff" font-size="13" font-weight="700">SPEMCS Backend Server (FastAPI)</text>
+    <text x="25" y="92" fill="#8b949e" font-size="11">Listening Interface: 0.0.0.0:8002 (or Nginx 443 Reverse Proxy)</text>
+    <text x="25" y="112" fill="#7ee787" font-size="11">• HTTP REST API: /api/* and /api/v1/*</text>
+    <text x="25" y="130" fill="#d29922" font-size="11">• WebSocket Agent Hub: /api/v1/ws/agent</text>
+    <text x="25" y="148" fill="#d29922" font-size="11">• WebSocket Dashboard Hub: /api/v1/ws/dashboard</text>
+    <text x="25" y="168" fill="#8b949e" font-size="10">Keyring: /backend/secrets/keyring.json (RSA-PSS)</text>
+
+    <rect x="15" y="220" width="430" height="180" rx="6" fill="#0d1117" stroke="#f0883e" />
+    <text x="25" y="242" fill="#f0883e" font-size="13" font-weight="700">Persistence Tier: PostgreSQL Database</text>
+    <text x="25" y="262" fill="#8b949e" font-size="11">Internal Host / Neon Cloud: Port 5432 (TLS)</text>
+    <text x="25" y="282" fill="#8b949e" font-size="10">• 14 Tables (exams, devices, events, alerts, policies...)</text>
+    <text x="25" y="300" fill="#8b949e" font-size="10">• Connection pool: pool_size=50, max_overflow=20</text>
+    <text x="25" y="318" fill="#8b949e" font-size="10">• Alembic schema revisions verified on boot</text>
+    <text x="25" y="338" fill="#e3b341" font-size="10">Isolated from student lab workstations</text>
+  </g>
+
+  <!-- ZONE C: LAB WORKSTATIONS VLAN -->
+  <g transform="translate(850, 80)">
+    <rect x="0" y="0" width="400" height="420" rx="10" fill="#161b22" stroke="#238636" stroke-width="2" filter="url(#shadow)" />
+    <rect x="0" y="0" width="400" height="35" rx="10" fill="#238636" />
+    <text x="20" y="23" fill="#ffffff" font-size="13" font-weight="700">Lab Workstations VLAN (192.168.1.0/24)</text>
+
+    <rect x="15" y="50" width="370" height="165" rx="6" fill="#0d1117" stroke="#388bfd" />
+    <text x="25" y="72" fill="#58a6ff" font-size="12" font-weight="700">Candidate Lab PC (Session 0)</text>
+    <text x="25" y="90" fill="#8b949e" font-size="10">• Service: Spemcs.Agent.Service.exe</text>
+    <text x="25" y="106" fill="#8b949e" font-size="10">• Windows Firewall: HNetCfg.FwPolicy2 COM</text>
+    <text x="25" y="122" fill="#8b949e" font-size="10">• SQLite Journal: %ProgramData%\Spemcs</text>
+    <text x="25" y="138" fill="#7ee787" font-size="10">• Outbound default = BLOCK across 3 profiles</text>
+    <text x="25" y="154" fill="#d29922" font-size="10">• Named Pipe Server: \\.\pipe\spemcs-control-v1</text>
+    <text x="25" y="170" fill="#8b949e" font-size="10">• Named Pipe Agent: \\.\pipe\spemcs-agent-v1</text>
+
+    <rect x="15" y="230" width="370" height="170" rx="6" fill="#0d1117" stroke="#238636" />
+    <text x="25" y="252" fill="#3fb950" font-size="12" font-weight="700">Candidate Desktop (Session 1+)</text>
+    <text x="25" y="270" fill="#8b949e" font-size="10">• Spemcs.Agent.UI (WPF client)</text>
+    <text x="25" y="286" fill="#8b949e" font-size="10">• Connects to named pipe server via IPC</text>
+    <text x="25" y="302" fill="#8b949e" font-size="10">• Exam Browser (chrome.exe / msedge.exe)</text>
+    <text x="25" y="318" fill="#8b949e" font-size="10">• Connects OUTBOUND to vendor platform (443)</text>
+    <text x="25" y="334" fill="#f85149" font-size="10">• INBOUND connections explicitly blocked / unrouted</text>
+  </g>
+
+  <!-- BOTTOM PORT & TRANSPORT MATRIX -->
+  <g transform="translate(30, 520)">
+    <rect x="0" y="0" width="1220" height="250" rx="10" fill="#161b22" stroke="#30363d" stroke-width="2" />
+    <rect x="0" y="0" width="1220" height="35" rx="10" fill="#21262d" />
+    <text x="20" y="23" fill="#f0f6fc" font-size="14" font-weight="700">Comprehensive SPEMCS Port, Protocol &amp; Socket Matrix</text>
+
+    <g transform="translate(20, 50)" font-size="11">
+      <!-- Headers -->
+      <text x="0" y="0" fill="#58a6ff" font-weight="700">Port / Channel</text>
+      <text x="160" y="0" fill="#58a6ff" font-weight="700">Protocol</text>
+      <text x="270" y="0" fill="#58a6ff" font-weight="700">Source</text>
+      <text x="430" y="0" fill="#58a6ff" font-weight="700">Destination</text>
+      <text x="610" y="0" fill="#58a6ff" font-weight="700">Authentication</text>
+      <text x="820" y="0" fill="#58a6ff" font-weight="700">Purpose</text>
+
+      <line x1="0" y1="12" x2="1180" y2="12" stroke="#30363d" stroke-width="1" />
+
+      <!-- Row 1 -->
+      <text x="0" y="32" fill="#f0f6fc">TCP 8002 / 443</text>
+      <text x="160" y="32" fill="#8b949e">HTTPS</text>
+      <text x="270" y="32" fill="#8b949e">Lab Workstations</text>
+      <text x="430" y="32" fill="#8b949e">Backend Server</text>
+      <text x="610" y="32" fill="#7ee787">X-Device-Token (HMAC)</text>
+      <text x="820" y="32" fill="#8b949e">Heartbeats, event telemetry, policy distribution</text>
+
+      <!-- Row 2 -->
+      <text x="0" y="57" fill="#f0f6fc">TCP 8002 / 443</text>
+      <text x="160" y="57" fill="#8b949e">WSS (WebSocket)</text>
+      <text x="270" y="57" fill="#8b949e">Lab Workstations</text>
+      <text x="430" y="57" fill="#8b949e">Backend Server</text>
+      <text x="610" y="57" fill="#7ee787">Device Token / Bearer</text>
+      <text x="820" y="57" fill="#8b949e">Bidirectional /api/v1/ws/agent channel</text>
+
+      <!-- Row 3 -->
+      <text x="0" y="82" fill="#f0f6fc">TCP 8002 / 443</text>
+      <text x="160" y="82" fill="#8b949e">HTTPS &amp; WSS</text>
+      <text x="270" y="82" fill="#8b949e">Operator Browser</text>
+      <text x="430" y="82" fill="#8b949e">Backend Server</text>
+      <text x="610" y="32" fill="#58a6ff" y="82">Bearer JWT (HS256)</text>
+      <text x="820" y="82" fill="#8b949e">Dashboard management &amp; live proctoring stream</text>
+
+      <!-- Row 4 -->
+      <text x="0" y="107" fill="#f0f6fc">TCP 5432</text>
+      <text x="160" y="107" fill="#8b949e">PostgreSQL / TLS</text>
+      <text x="270" y="107" fill="#8b949e">Backend Server</text>
+      <text x="430" y="107" fill="#8b949e">PostgreSQL Host</text>
+      <text x="610" y="107" fill="#8b949e">DB Credentials</text>
+      <text x="820" y="107" fill="#8b949e">Database queries &amp; migrations (Alembic)</text>
+
+      <!-- Row 5 -->
+      <text x="0" y="132" fill="#f0f6fc">spemcs-control-v1</text>
+      <text x="160" y="132" fill="#8b949e">Named Pipe IPC</text>
+      <text x="270" y="132" fill="#8b949e">Spemcs.Agent.UI</text>
+      <text x="430" y="132" fill="#8b949e">Spemcs.Agent.Service</text>
+      <text x="610" y="132" fill="#d29922">Windows DACL Security</text>
+      <text x="820" y="132" fill="#8b949e">Inter-session control messages and PIN verification</text>
+
+      <!-- Row 6 -->
+      <text x="0" y="157" fill="#f0f6fc">UDP 53</text>
+      <text x="160" y="157" fill="#8b949e">Standard DNS</text>
+      <text x="270" y="157" fill="#8b949e">Lab Workstations</text>
+      <text x="430" y="157" fill="#8b949e">Campus DNS Resolver</text>
+      <text x="610" y="157" fill="#8b949e">None (System Dnscache)</text>
+      <text x="820" y="157" fill="#8b949e">Handled by Windows OS Dnscache; no open port 53 rule</text>
+    </g>
+  </g>
+</svg>

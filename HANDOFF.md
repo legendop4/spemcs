@@ -34,12 +34,22 @@ Spemcs.Agent.Service (Background Windows Service — NT AUTHORITY\SYSTEM)
        │           └─ WindowsFirewallAdapter (Direct COM interop with HNetCfg.FwPolicy2)
        ▼
 Windows Defender Firewall (WFP)
-  - DefaultOutboundAction: Block
-  - Management Allow Rule: TCP out to Backend (127.0.0.1:8002)
-  - Loopback IPv4 Rule: TCP/UDP out to 127.0.0.1 (Local: 127.0.0.1)
-  - Loopback IPv6 Rule: TCP/UDP out to ::/127 (Local: ::/127)
-  - Exam Whitelist Rules: DNS (53), WebRTC/STUN, Exam Server HTTPS (443)
+  - DefaultOutboundAction: Block  (profile-level, on every TARGETED profile — never a blanket outbound BLOCK rule)
+  - Management Allow Rule: Outbound TCP to each management IP:port (dev: 127.0.0.1:8002) — NOT program-scoped
+  - Loopback IPv4 Rule: Outbound protocol Any, Local 127.0.0.1 <-> Remote 127.0.0.1
+  - Loopback IPv6 Rule: Outbound protocol Any, Local ::/127 <-> Remote ::/127
+  - Exam Whitelist Rules: one per (destination, IP range) from the signed policy, TCP and/or UDP on the
+    policy's ports, EVERY one scoped to the approved examination browser executable
 ```
+
+> **There is no SPEMCS DNS rule and no fixed WebRTC/STUN or ":443" rule.** An earlier revision of
+> this document listed `DNS (53), WebRTC/STUN, Exam Server HTTPS (443)` as the whitelist; that is not
+> what `EnforcementStateMachine.BuildSessionRules` emits and has not been for some time. Ports come
+> from the signed policy, not from a hardcoded list, and port 53 is deliberately absent — recursive
+> DNS is *required* but is already carried by the Windows built-in "Core Networking - DNS (UDP-Out)"
+> rule scoped to the Dnscache service, so a SPEMCS `:53` rule would at best duplicate a narrower
+> scope and at worst hand every process on the box a resolver. The long-form reasoning is in the
+> `BuildSessionRules` remarks.
 
 ---
 
@@ -49,13 +59,25 @@ Windows Defender Firewall (WFP)
 > **CRITICAL DISTINCTION: Automated Tests Passing != Live Windows E2E Proven**  
 > All 170 automated unit and integration tests are passing. However, **Live Windows E2E Network Enforcement is NOT YET PROVEN / OPEN ISSUE**.  
 > The network enforcement subsystem must NOT be described as "complete", "production-ready", "fully working", or "E2E verified".
+>
+> *(Count superseded: the C# suite is **393 / 393** as of 2026-09-05. The caution itself still stands
+> — a green suite is not a live E2E proof.)*
 
 1. **Service-Delegated Enforcement Architecture:**
    - Dedicated Windows Service (`Spemcs.Agent.Service`) registered and running as `NT AUTHORITY\SYSTEM`.
    - IPC over secure named pipe `spemcs-control-v1`.
    - UI forwards `SIGNED_NETWORK_POLICY` packets directly to the service over named pipe via [EnforcementServiceClient.cs](file:///c:/Users/shrma/Desktop/spemcsnew/Endpoint-agent/src/Spemcs.Agent.UI/Network/EnforcementServiceClient.cs).
 2. **Cryptographic Security & Policy Validation:**
-   - Ed25519 signature verification against public keys (`dev-key-1`).
+   - **RSA-2048 / RSA-PSS / SHA-256 / MGF1-SHA-256 / salt length 32** signature verification over
+     RFC 8785 canonical JSON, on both sides (`backend/backend/services/policy_signer.py`,
+     `PolicyReceiver.cs`). **This is not Ed25519** — an earlier revision of this line said it was,
+     and so did the frontend compile toast; both were wrong and both are corrected. No Ed25519 code
+     has ever existed in this repository.
+   - Signing key ids are **derived from the key material**, not assigned: a SHA-256 fingerprint of
+     the SPKI DER, truncated to 32 hex characters, prefixed `spemcs-` (persistent) or `ephemeral-`
+     (see `signing_key_manager.py::compute_key_id`). The fixed literal `dev-key-1` is **historical**
+     — it was a per-process development keypair that silently invalidated every previously issued
+     policy signature on each backend restart. It survives only inside test fixtures.
    - Monotonic version replay protection (`EnforcementStateMachine` rejects older or equal version numbers).
    - Expiration and validity time window validation.
 3. **Firewall Rule Engine & COM Adapter:**
@@ -65,13 +87,21 @@ Windows Defender Firewall (WFP)
    - Grouping: All created rules tagged with `SPEMCS_EXAM_LOCKDOWN`.
    - Readback verification: Rules verified immediately after insertion via `INetFwRules` collection enumeration.
 4. **Baseline Capture & Rollback Journal:**
-   - Captures pre-enforcement baseline (`DefaultOutboundAction`, `DefaultInboundAction`) across all active profiles (Domain, Private, Public).
+   - Captures the pre-enforcement `DefaultOutboundAction` for **all three profiles** (Domain, Private,
+     Public) plus which of them were active at capture time. **Outbound only — inbound is out of
+     scope by design.** An earlier revision of this line claimed `DefaultInboundAction` was captured
+     too; it never was, and `IFirewallAdapter` has no member that can mutate inbound state at all.
+     Three reflection/direction tests in `RollbackScopeTests` fail if that stops being true.
+   - Restoration is keyed off the session's `TargetProfiles`, not off the profiles observed active at
+     capture time, so a laptop that moves from Private to Public mid-exam still has its mutated
+     profile restored.
    - Tracks rules in `RollbackJournal`.
    - `failurePhase` tracking prevents false conflict detection when failures occur during `ApplyingRules` prior to switching the profile outbound action to `Block`.
 5. **Clean Automation & Reinstallation Scripts:**
    - [install_service.ps1](file:///c:/Users/shrma/Desktop/spemcsnew/Endpoint-agent/scripts/install_service.ps1) automates stopping the service, killing stale locks, building the solution, installing via `sc.exe`, and starting the service cleanly.
 6. **Comprehensive Automated Test Suite:**
-   - 170 unit and integration tests passing with 0 errors and 0 warnings.
+   - 393 unit and integration tests passing with 0 errors and 0 warnings (2026-09-05, Release,
+     non-elevated shell). The figure "170" appears earlier in this document as it stood on 2026-09-04.
 
 ---
 

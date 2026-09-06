@@ -2,7 +2,7 @@
 import { X, Play, Loader, CheckCircle, XCircle } from 'lucide-react';
 import { deploymentApi } from '@/services/api';
 import { DeploymentResult } from '@/types';
-import Button from './Button';
+import { Button } from './Button';
 
 interface DeploymentModalProps {
   isOpen: boolean;
@@ -105,9 +105,9 @@ const DeploymentModal: React.FC<DeploymentModalProps> = ({ isOpen, onClose }) =>
         )}
 
         <div className="flex justify-end gap-3">
-          <Button variant="outline" onClick={onClose} disabled={isDeploying}>Cancel</Button>
-          <Button onClick={handleDeploy} disabled={isDeploying || !ipsInput || !username || !password} icon={isDeploying ? undefined : <Play className="w-4 h-4" />}>
-            {isDeploying ? 'Deploying...' : 'Start Deployment'}
+          <Button variant="secondary" onClick={onClose} disabled={isDeploying}>Cancel</Button>
+          <Button onClick={handleDeploy} disabled={isDeploying || !ipsInput || !username || !password}>
+            {isDeploying ? 'Deploying...' : <><Play className="w-4 h-4" /> Start Deployment</>}
           </Button>
         </div>
       </div>

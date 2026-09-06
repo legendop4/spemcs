@@ -84,6 +84,10 @@ public static class PolicyDestinationValidator
     /// The last two entries carry requirement 7 (IPv6 containment): 6to4 and Teredo are address
     /// transition mechanisms, so allowing either range would let IPv6 traffic leave the machine
     /// inside an IPv4 tunnel that the IPv4 rules never inspect.
+    /// <para>
+    /// ISATAP is the third such mechanism and is NOT in this table, because it has no assigned
+    /// prefix - see <see cref="IsIsatapRange"/>.
+    /// </para>
     /// </summary>
     private static readonly ForbiddenRange[] ForbiddenV6 =
     {
@@ -95,6 +99,20 @@ public static class PolicyDestinationValidator
         new("2002::/16", "the 6to4 tunnel range (requirement 7 contains transition mechanisms)"),
         new("2001::/32", "the Teredo tunnel range (requirement 7 contains transition mechanisms)")
     };
+
+    /// <summary>
+    /// Offset of the ISATAP marker: it lives in the interface identifier (bytes 8-11), not in a
+    /// leading prefix.
+    /// </summary>
+    private const int IsatapMarkerOffset = 8;
+
+    /// <summary>
+    /// The ISATAP marker occupies bits 64-95, so it is only DETERMINED once the prefix pins all of
+    /// them. See <see cref="IsIsatapRange"/> for why an overlap test would be wrong.
+    /// </summary>
+    private const int IsatapPinnedPrefix = 96;
+
+    private const string IsatapReason = "an ISATAP address, whose interface identifier tunnels IPv6 over IPv4 to a router the IPv4 rules never inspect (requirement 7 contains transition mechanisms)";
 
     /// <summary>
     /// Validates one entry of <c>allowed_destinations</c>. True when it is safe to build rules from.
@@ -180,7 +198,54 @@ public static class PolicyDestinationValidator
             }
         }
 
+        // After the table, deliberately: the link-local ISATAP form (fe80::5efe:w.x.y.z) is already
+        // caught by fe80::/10, and reporting the more specific enclosing range keeps the
+        // operator-facing reason for those addresses unchanged.
+        if (IsIsatapRange(candidate))
+        {
+            return $"address range '{trimmed}' is {IsatapReason}";
+        }
+
         return null;
+    }
+
+    /// <summary>
+    /// True when EVERY address in <paramref name="candidate"/> carries the ISATAP interface
+    /// identifier - the modified EUI-64 form <c>0000:5EFE:w.x.y.z</c> (embedded IPv4 that is not
+    /// globally unique) or <c>0200:5EFE:w.x.y.z</c> (globally unique).
+    /// <para>
+    /// Deliberately not an overlap test, unlike <see cref="ForbiddenV6"/>. ISATAP has no assigned
+    /// prefix, so its addresses live inside ordinary global prefixes: every IPv6 /64 contains
+    /// ISATAP-form addresses, and an overlap test would therefore reject every ordinary IPv6
+    /// subnet - <c>2001:db8::/48</c> and <c>2606:4700::/32</c> included. A false positive here
+    /// cancels an exam for no reason, so the test is made exact instead: requiring the prefix to
+    /// pin bits 64-95 means it fires only on a range that is ENTIRELY ISATAP, which is the only
+    /// case where the policy is naming tunnel space rather than a subnet that happens to contain
+    /// some.
+    /// </para>
+    /// <para>
+    /// This check is hygiene and defense in depth - it keeps a transition-mechanism address out of
+    /// the trusted allowlist and out of the audit log's "approved destinations". It is NOT what
+    /// stops an ISATAP tunnel, and must not be mistaken for it: ISATAP encapsulates IPv6 in IPv4
+    /// protocol 41, so what denies the tunnel is that under profile-level outbound default-deny no
+    /// SPEMCS allow rule names a protocol other than TCP or UDP, leaving the encapsulated packet
+    /// with no rule to match. That property is asserted directly against rule generation.
+    /// </para>
+    /// </summary>
+    private static bool IsIsatapRange(CidrRange candidate)
+    {
+        // IsV4 is checked first so the byte indexing below can never run against a 4-byte array;
+        // PrefixLength >= 96 already implies IPv6, but the guard does not depend on that reasoning.
+        if (candidate.IsV4 || candidate.PrefixLength < IsatapPinnedPrefix)
+        {
+            return false;
+        }
+
+        var bytes = candidate.Bytes;
+        return (bytes[IsatapMarkerOffset] == 0x00 || bytes[IsatapMarkerOffset] == 0x02) &&
+               bytes[IsatapMarkerOffset + 1] == 0x00 &&
+               bytes[IsatapMarkerOffset + 2] == 0x5E &&
+               bytes[IsatapMarkerOffset + 3] == 0xFE;
     }
 
     /// <summary>

@@ -452,47 +452,296 @@ public sealed class PreComplianceEngine
 }
 
 // ── 5. Browser Policy & DNS Configuration ──────────────────────────────
-public static class BrowserPolicyEnforcer
+
+/// <summary>Which registry hive a browser DNS policy value actually landed in.</summary>
+public enum BrowserDnsPolicyHive
 {
-    public static bool DisableSecureDns(out string? statusMessage)
+    /// <summary>Nothing was written, so the policy is not in effect at all.</summary>
+    None = 0,
+
+    /// <summary>
+    /// Written machine-wide. This is the only authoritative location for an enterprise policy and
+    /// the only outcome that counts as success.
+    /// </summary>
+    LocalMachine = 1,
+
+    /// <summary>
+    /// Written for the current user only, because the machine-wide write was refused. The browser
+    /// does honour it for the candidate's own session, but it is strictly weaker: it does not cover
+    /// other users on the box, and it sits in a hive the candidate can rewrite without elevation.
+    /// Treated as a failure by <see cref="BrowserDnsPolicy.Summarize"/> so it surfaces as a warning
+    /// rather than passing as a clean apply.
+    /// </summary>
+    CurrentUser = 2
+}
+
+/// <summary>
+/// One registry value that has to be set to keep a browser off its own DNS stack. Pure data - it
+/// names a write without performing one, which is what makes the required policy set assertable in
+/// a unit test on a machine whose browser policy must not be touched.
+/// </summary>
+public sealed record BrowserDnsPolicyEntry(
+    string BrowserLabel,
+    string PolicyKeyPath,
+    string ValueName,
+    object Value,
+    Microsoft.Win32.RegistryValueKind Kind,
+    string Rationale);
+
+/// <summary>The result of attempting one <see cref="BrowserDnsPolicyEntry"/>.</summary>
+public sealed record BrowserDnsPolicyWriteOutcome(
+    BrowserDnsPolicyEntry Entry,
+    BrowserDnsPolicyHive Hive,
+    string? Error = null);
+
+/// <summary>
+/// The set of browser DNS policy values SPEMCS requires, and the pure decision procedure that turns
+/// per-value write outcomes into a single success verdict.
+/// </summary>
+/// <remarks>
+/// <para>
+/// Two values per browser, and both are needed - setting only one leaves a usable bypass:
+/// </para>
+/// <list type="bullet">
+/// <item><description>
+/// <c>DnsOverHttpsMode=off</c> stops the browser resolving names over HTTPS to a resolver of its own
+/// choosing. Without it the browser can carry queries - and arbitrary data in query names - inside a
+/// TLS session to whatever host the allowlist happens to permit on 443.
+/// </description></item>
+/// <item><description>
+/// <c>BuiltInDnsClientEnabled=0</c> stops the browser using its OWN embedded stub resolver, which
+/// speaks plain DNS directly from the browser process instead of going through the Windows DNS Client
+/// service. That path is not DoH, so <c>DnsOverHttpsMode</c> does not cover it, and because it
+/// originates in the approved browser executable it is inside the program scope every allow rule is
+/// pinned to. Forcing resolution back through the OS resolver is what makes the ETW
+/// <c>Microsoft-Windows-DNS-Client</c> monitor see the queries at all.
+/// </description></item>
+/// </list>
+/// <para>
+/// Neither value is what PREVENTS DNS-based exfiltration, and nothing here should be read as
+/// claiming that. Recursive DNS to the configured resolver stays permitted, by design - see the DNS
+/// model documented at the <c>DisableSecureDns</c> call site in <c>AgentWorker</c> - so a candidate
+/// who encodes data in query labels still has a low-bandwidth channel. These two values remove the
+/// browser's ability to choose an unmonitored resolver; detection of tunnelling over the permitted
+/// one is the ETW monitor's job.
+/// </para>
+/// </remarks>
+public static class BrowserDnsPolicy
+{
+    /// <summary>
+    /// Every required write lives under this prefix. Asserted by test so a future entry cannot
+    /// quietly reach outside the enterprise-policy subtree into general machine configuration.
+    /// </summary>
+    public const string PolicyKeyPrefix = @"SOFTWARE\Policies\";
+
+    public const string EdgePolicyKeyPath = @"SOFTWARE\Policies\Microsoft\Edge";
+    public const string ChromePolicyKeyPath = @"SOFTWARE\Policies\Google\Chrome";
+
+    public const string DnsOverHttpsModeValueName = "DnsOverHttpsMode";
+    public const string DnsOverHttpsModeOff = "off";
+    public const string BuiltInDnsClientEnabledValueName = "BuiltInDnsClientEnabled";
+
+    /// <summary>The complete set of values <see cref="BrowserPolicyEnforcer.DisableSecureDns"/> writes.</summary>
+    public static IReadOnlyList<BrowserDnsPolicyEntry> RequiredEntries { get; } = BuildRequiredEntries();
+
+    private static IReadOnlyList<BrowserDnsPolicyEntry> BuildRequiredEntries()
     {
-        var messages = new List<string>();
-        bool success = true;
+        (string Label, string KeyPath)[] browsers =
+        [
+            ("Microsoft Edge", EdgePolicyKeyPath),
+            ("Google Chrome", ChromePolicyKeyPath)
+        ];
 
-        string[] browserKeys = [@"Microsoft\Edge", @"Google\Chrome"];
-
-        // 1. Configure Enterprise Policies in Registry
-        foreach (var browser in browserKeys)
+        var entries = new List<BrowserDnsPolicyEntry>(browsers.Length * 2);
+        foreach (var (label, keyPath) in browsers)
         {
-            try
+            entries.Add(new BrowserDnsPolicyEntry(
+                label,
+                keyPath,
+                DnsOverHttpsModeValueName,
+                DnsOverHttpsModeOff,
+                Microsoft.Win32.RegistryValueKind.String,
+                "Denies the browser its own DoH resolver, which would tunnel name lookups - and any data encoded in them - inside TLS to a host the firewall sees only as port 443."));
+
+            entries.Add(new BrowserDnsPolicyEntry(
+                label,
+                keyPath,
+                BuiltInDnsClientEnabledValueName,
+                0,
+                Microsoft.Win32.RegistryValueKind.DWord,
+                "Denies the browser its own embedded plain-DNS stub resolver, which bypasses the Windows DNS Client service and therefore the ETW monitor, and is not covered by DnsOverHttpsMode."));
+        }
+
+        return entries;
+    }
+
+    /// <summary>
+    /// Decides whether the browser DNS policy was applied, from the outcome of each required write.
+    /// </summary>
+    /// <remarks>
+    /// Pure, and separated from the registry on purpose: the honest-failure logic is the part worth
+    /// testing, and it cannot be tested through <see cref="BrowserPolicyEnforcer.DisableSecureDns"/>
+    /// without mutating machine-wide browser policy on the test host. Success requires that EVERY
+    /// required entry landed in HKLM. A missing outcome counts as a failure rather than being
+    /// ignored, so a caller that silently stops attempting an entry is caught instead of reporting
+    /// a clean apply.
+    /// </remarks>
+    public static bool Summarize(IReadOnlyList<BrowserDnsPolicyWriteOutcome> outcomes, out string statusMessage)
+    {
+        ArgumentNullException.ThrowIfNull(outcomes);
+
+        var applied = new List<string>();
+        var degraded = new List<string>();
+        var failed = new List<string>();
+
+        foreach (var required in RequiredEntries)
+        {
+            var outcome = FindOutcome(outcomes, required);
+            var label = $"{required.BrowserLabel}/{required.ValueName}";
+
+            if (outcome is null)
             {
-                using var hklmKey = Microsoft.Win32.Registry.LocalMachine.CreateSubKey($@"SOFTWARE\Policies\{browser}", true);
-                if (hklmKey != null)
-                {
-                    hklmKey.SetValue("DnsOverHttpsMode", "off", Microsoft.Win32.RegistryValueKind.String);
-                    messages.Add($"Configured HKLM policy for {browser} (DnsOverHttpsMode=off)");
-                }
+                failed.Add($"{label}: never attempted");
+                continue;
             }
-            catch (Exception ex)
+
+            switch (outcome.Hive)
             {
-                // HKLM might require elevation, fallback to HKCU
-                try
-                {
-                    using var hkcuKey = Microsoft.Win32.Registry.CurrentUser.CreateSubKey($@"SOFTWARE\Policies\{browser}", true);
-                    if (hkcuKey != null)
-                    {
-                        hkcuKey.SetValue("DnsOverHttpsMode", "off", Microsoft.Win32.RegistryValueKind.String);
-                        messages.Add($"Configured HKCU policy for {browser} (DnsOverHttpsMode=off)");
-                    }
-                }
-                catch (Exception cuEx)
-                {
-                    messages.Add($"Registry policy for {browser}: {ex.Message}; {cuEx.Message}");
-                }
+                case BrowserDnsPolicyHive.LocalMachine:
+                    applied.Add(label);
+                    break;
+                case BrowserDnsPolicyHive.CurrentUser:
+                    degraded.Add($"{label}: current-user hive only ({outcome.Error ?? "machine-wide write refused"})");
+                    break;
+                default:
+                    failed.Add($"{label}: {outcome.Error ?? "no registry write succeeded"}");
+                    break;
             }
         }
 
-        // 2. Configure Local Profile Preferences JSON files
+        var parts = new List<string>();
+        if (applied.Count > 0)
+        {
+            parts.Add($"Applied machine-wide: {string.Join(", ", applied)}");
+        }
+
+        if (degraded.Count > 0)
+        {
+            parts.Add($"DEGRADED - {string.Join("; ", degraded)}");
+        }
+
+        if (failed.Count > 0)
+        {
+            parts.Add($"NOT APPLIED - {string.Join("; ", failed)}");
+        }
+
+        statusMessage = parts.Count > 0
+            ? string.Join(". ", parts)
+            : "No browser DNS policy entries are defined";
+
+        return degraded.Count == 0 && failed.Count == 0 && applied.Count == RequiredEntries.Count;
+    }
+
+    private static BrowserDnsPolicyWriteOutcome? FindOutcome(
+        IReadOnlyList<BrowserDnsPolicyWriteOutcome> outcomes,
+        BrowserDnsPolicyEntry required)
+    {
+        foreach (var candidate in outcomes)
+        {
+            if (string.Equals(candidate.Entry.PolicyKeyPath, required.PolicyKeyPath, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(candidate.Entry.ValueName, required.ValueName, StringComparison.OrdinalIgnoreCase))
+            {
+                return candidate;
+            }
+        }
+
+        return null;
+    }
+}
+
+public static class BrowserPolicyEnforcer
+{
+    /// <summary>
+    /// Applies every <see cref="BrowserDnsPolicy.RequiredEntries"/> value, then best-effort updates
+    /// the browsers' own preference files.
+    /// </summary>
+    /// <returns>
+    /// <c>true</c> only when every required policy value landed machine-wide. An HKCU fallback
+    /// returns <c>false</c>: the resulting posture really is weaker, and the caller's warning branch
+    /// is the only place that says so. This used to be a hardcoded <c>true</c>, which made the
+    /// warning branch in <c>AgentWorker</c> unreachable and meant a total failure to disable DoH was
+    /// logged as a success.
+    /// </returns>
+    public static bool DisableSecureDns(out string? statusMessage)
+    {
+        var outcomes = new List<BrowserDnsPolicyWriteOutcome>(BrowserDnsPolicy.RequiredEntries.Count);
+        foreach (var entry in BrowserDnsPolicy.RequiredEntries)
+        {
+            outcomes.Add(ApplyEntry(entry));
+        }
+
+        var success = BrowserDnsPolicy.Summarize(outcomes, out var policyStatus);
+
+        var messages = new List<string> { policyStatus };
+        // The preference-file pass is deliberately NOT part of `success`. It touches a per-profile
+        // file that only exists once a browser has been launched, so its absence is normal and says
+        // nothing about whether the policy is in force - the registry policy overrides it anyway.
+        messages.AddRange(UpdateBrowserPreferenceFiles());
+
+        statusMessage = string.Join("; ", messages);
+        return success;
+    }
+
+    /// <summary>
+    /// Writes one policy value, preferring HKLM and falling back to HKCU, and reports which hive won.
+    /// </summary>
+    private static BrowserDnsPolicyWriteOutcome ApplyEntry(BrowserDnsPolicyEntry entry)
+    {
+        string machineError;
+        try
+        {
+            using var machineKey = Microsoft.Win32.Registry.LocalMachine.CreateSubKey(entry.PolicyKeyPath, true);
+            if (machineKey != null)
+            {
+                machineKey.SetValue(entry.ValueName, entry.Value, entry.Kind);
+                return new BrowserDnsPolicyWriteOutcome(entry, BrowserDnsPolicyHive.LocalMachine);
+            }
+
+            machineError = "HKLM subkey could not be created";
+        }
+        catch (Exception ex)
+        {
+            // Typically UnauthorizedAccessException when the agent is not running elevated.
+            machineError = ex.Message;
+        }
+
+        try
+        {
+            using var userKey = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(entry.PolicyKeyPath, true);
+            if (userKey != null)
+            {
+                userKey.SetValue(entry.ValueName, entry.Value, entry.Kind);
+                return new BrowserDnsPolicyWriteOutcome(entry, BrowserDnsPolicyHive.CurrentUser, machineError);
+            }
+
+            return new BrowserDnsPolicyWriteOutcome(
+                entry,
+                BrowserDnsPolicyHive.None,
+                $"HKLM: {machineError}; HKCU subkey could not be created");
+        }
+        catch (Exception userEx)
+        {
+            return new BrowserDnsPolicyWriteOutcome(
+                entry,
+                BrowserDnsPolicyHive.None,
+                $"HKLM: {machineError}; HKCU: {userEx.Message}");
+        }
+    }
+
+    private static List<string> UpdateBrowserPreferenceFiles()
+    {
+        var messages = new List<string>();
+
         string localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
         string[] prefPaths =
         [
@@ -524,7 +773,6 @@ public static class BrowserPolicyEnforcer
             }
         }
 
-        statusMessage = string.Join("; ", messages);
-        return success;
+        return messages;
     }
 }

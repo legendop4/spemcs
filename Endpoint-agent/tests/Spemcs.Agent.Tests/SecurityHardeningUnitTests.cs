@@ -268,8 +268,22 @@ public sealed class SecurityHardeningUnitTests : IDisposable
                             using (var sslStream = new SslStream(tcpClient.GetStream(), false))
                             {
                                 await sslStream.AuthenticateAsServerAsync(serverCert);
-                                var buf = new byte[1024];
-                                await sslStream.ReadAsync(buf, 0, buf.Length, cts.Token);
+
+                                // The verifier under test issues a bodyless GET
+                                // (IManagementConnectivityVerifier.cs:92), so the only thing this
+                                // server needs off the wire is the request header block. A single
+                                // ReadAsync is not guaranteed to deliver it: TLS records split
+                                // wherever the client's stack chose to, so the headers can arrive
+                                // across several reads. Read until the CRLFCRLF terminator instead,
+                                // using each read's return value.
+                                if (await ReadRequestHeadersAsync(sslStream, cts.Token) is null)
+                                {
+                                    // Peer closed early, or sent more than the header cap without
+                                    // terminating. Answering a request that was never framed would
+                                    // make this server a worse stand-in for the real backend than
+                                    // silence, so it gets no response.
+                                    return;
+                                }
 
                                 var bodyBytes = System.Text.Encoding.UTF8.GetBytes(responseBody);
                                 var headerStr = $"HTTP/1.1 {statusCode} OK\r\nContent-Type: application/json\r\nContent-Length: {bodyBytes.Length}\r\nConnection: close\r\n\r\n";
@@ -288,6 +302,153 @@ public sealed class SecurityHardeningUnitTests : IDisposable
         });
 
         return (port, cts);
+    }
+
+    /// <summary>
+    /// Largest request header block this test server will buffer. A health-probe GET is a couple of
+    /// hundred bytes; the cap exists so that a peer which never sends CRLFCRLF cannot make the read
+    /// loop grow without bound, and it is deliberately a refusal rather than a truncation - a
+    /// truncated header block looks like a well-formed request and would be answered as one.
+    /// </summary>
+    internal const int MaxRequestHeaderBytes = 8 * 1024;
+
+    /// <summary>
+    /// Reads an HTTP request header block from <paramref name="stream"/>, returning the decoded text
+    /// including its terminating CRLFCRLF, or <c>null</c> when the peer closed the connection before
+    /// terminating the headers or exceeded <see cref="MaxRequestHeaderBytes"/>.
+    /// </summary>
+    /// <remarks>
+    /// Exposed to the test class (not private) so <see
+    /// cref="RequestHeaderReader_StopsAtTerminator_AcrossFragmentedReads"/> and its siblings can
+    /// exercise the loop over streams that fragment deliberately. There is no
+    /// <c>InternalsVisibleTo</c> in this solution, but this member and its caller live in the same
+    /// class, so <c>internal</c> suffices.
+    ///
+    /// This is not a general-purpose HTTP parser: it stops at the first CRLFCRLF and does not read a
+    /// request body, which is correct precisely because the verifier under test sends a bodyless GET.
+    /// </remarks>
+    internal static async Task<string?> ReadRequestHeadersAsync(Stream stream, CancellationToken cancellationToken)
+    {
+        var buffer = new byte[1024];
+        using var accumulated = new MemoryStream();
+
+        while (true)
+        {
+            // The return value is the contract: ReadAsync may deliver anywhere from 1 byte to
+            // buffer.Length, and 0 means the peer half-closed. Ignoring it is the CA2022 defect.
+            var read = await stream.ReadAsync(buffer.AsMemory(), cancellationToken).ConfigureAwait(false);
+            if (read == 0)
+            {
+                return null; // Closed before the header block was terminated.
+            }
+
+            if (accumulated.Length + read > MaxRequestHeaderBytes)
+            {
+                return null; // Bounded: refuse rather than keep buffering.
+            }
+
+            accumulated.Write(buffer, 0, read);
+
+            // Scanning the whole accumulation each pass keeps a terminator that straddles two reads
+            // detectable. At the 8 KiB cap the rescan cost is irrelevant next to a TLS handshake.
+            var text = System.Text.Encoding.UTF8.GetString(accumulated.GetBuffer(), 0, (int)accumulated.Length);
+            var end = text.IndexOf("\r\n\r\n", StringComparison.Ordinal);
+            if (end >= 0)
+            {
+                return text[..(end + 4)];
+            }
+        }
+    }
+
+    /// <summary>
+    /// A read-only stream that hands out at most <paramref name="chunkSize"/> bytes per ReadAsync,
+    /// reproducing the short-read behaviour of a real TLS stream. A test built on
+    /// <see cref="MemoryStream"/> alone would pass even against the single-ReadAsync code this
+    /// replaced, because MemoryStream always fills the buffer.
+    /// </summary>
+    private sealed class ChunkedReadStream(byte[] payload, int chunkSize) : Stream
+    {
+        private int _position;
+
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => payload.Length;
+        public override long Position { get => _position; set => throw new NotSupportedException(); }
+        public override void Flush() { }
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+        public override int Read(byte[] buffer, int offset, int count)
+            => Read(buffer.AsSpan(offset, count));
+
+        public override int Read(Span<byte> buffer)
+        {
+            var remaining = payload.Length - _position;
+            if (remaining <= 0)
+            {
+                return 0;
+            }
+            var take = Math.Min(Math.Min(chunkSize, buffer.Length), remaining);
+            payload.AsSpan(_position, take).CopyTo(buffer);
+            _position += take;
+            return take;
+        }
+
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+            => ValueTask.FromResult(Read(buffer.Span));
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(7)]
+    [InlineData(4096)]
+    public async Task RequestHeaderReader_StopsAtTerminator_AcrossFragmentedReads(int chunkSize)
+    {
+        const string request = "GET /api/v1/management/health HTTP/1.1\r\nHost: localhost\r\nAccept: */*\r\n\r\n";
+        using var stream = new ChunkedReadStream(System.Text.Encoding.UTF8.GetBytes(request), chunkSize);
+
+        var headers = await ReadRequestHeadersAsync(stream, CancellationToken.None);
+
+        // Reassembled in full even when every ReadAsync returns a single byte - the property the
+        // replaced single-read code did not have.
+        Assert.Equal(request, headers);
+    }
+
+    [Fact]
+    public async Task RequestHeaderReader_DoesNotConsumePastTerminator()
+    {
+        // A pipelined second request must be left on the stream rather than swallowed, which is what
+        // proves the loop terminates on CRLFCRLF and not merely on end-of-stream.
+        const string first = "GET /api/v1/management/health HTTP/1.1\r\nHost: localhost\r\n\r\n";
+        const string second = "GET /second HTTP/1.1\r\nHost: localhost\r\n\r\n";
+        using var stream = new ChunkedReadStream(System.Text.Encoding.UTF8.GetBytes(first + second), chunkSize: 3);
+
+        var headers = await ReadRequestHeadersAsync(stream, CancellationToken.None);
+
+        Assert.Equal(first, headers);
+    }
+
+    [Fact]
+    public async Task RequestHeaderReader_ReturnsNull_WhenPeerClosesBeforeTerminator()
+    {
+        using var stream = new ChunkedReadStream(
+            System.Text.Encoding.UTF8.GetBytes("GET / HTTP/1.1\r\nHost: localho"), chunkSize: 5);
+
+        Assert.Null(await ReadRequestHeadersAsync(stream, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task RequestHeaderReader_IsBounded_AndRefusesRatherThanTruncates()
+    {
+        // A peer that never terminates its headers must not be able to drive an unbounded read. The
+        // payload here would terminate eventually, but only past the cap.
+        var flood = new string('x', MaxRequestHeaderBytes * 2) + "\r\n\r\n";
+        using var stream = new ChunkedReadStream(System.Text.Encoding.UTF8.GetBytes(flood), chunkSize: 512);
+
+        // Null, not a truncated prefix: a truncated header block reads as a well-formed request.
+        Assert.Null(await ReadRequestHeadersAsync(stream, CancellationToken.None));
     }
 
     private static HttpClient CreateStrictTlsClient(X509Certificate2 trustedRootCa, string targetHost)

@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
-from backend.app.config import settings
+from backend.app.config import settings, validate_production_secrets
 from backend.app.database import engine
 
 # Configure file + console logging
@@ -29,6 +29,15 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup and shutdown lifecycle events."""
+    # Secret validation runs FIRST, before the database is touched and before any router can
+    # serve a request. A placeholder SECRET_KEY or DEVICE_TOKEN_SECRET is a full authentication
+    # bypass, so booting far enough to answer requests on one is worse than not booting.
+    # In a non-production environment the same problems are logged and startup continues.
+    secret_problems = validate_production_secrets()
+    for problem in secret_problems:
+        logger.warning("Insecure secret configuration (SPEMCS_ENV=%s): %s",
+                       settings.SPEMCS_ENV, problem)
+
     # Startup: verify database connectivity
     try:
         with engine.connect() as conn:
@@ -38,20 +47,14 @@ async def lifespan(app: FastAPI):
         logger.exception("Failed to connect to PostgreSQL database")
         raise
 
-    # Create tables if they don't exist (until Alembic is primary)
-    from backend.models.base import Base
-    Base.metadata.create_all(bind=engine)
-    
-    # Safe non-destructive column sync for pre-existing tables
-    try:
-        with engine.connect() as conn:
-            conn.execute(text("ALTER TABLE exams ADD COLUMN IF NOT EXISTS network_enforcement BOOLEAN NOT NULL DEFAULT FALSE;"))
-            conn.execute(text("ALTER TABLE exams ADD COLUMN IF NOT EXISTS vendor_profile_id UUID REFERENCES vendor_profiles(vendor_id);"))
-            conn.commit()
-    except Exception as exc:
-        logger.warning(f"Non-fatal warning during schema sync: {exc}")
-        
-    logger.info("Database tables verified/created")
+    # Schema is owned by Alembic (backend/migrations), not by the application. This reports
+    # drift and never repairs it; see backend/app/schema_check.py for why it warns instead of
+    # refusing to boot, and for what the removed `create_all` + ad-hoc `ALTER TABLE ... IF NOT
+    # EXISTS` block was actually doing (creating tables, never altering them - which is how the
+    # deployed `network_policies` table ended up missing three columns the model declares).
+    from backend.app.schema_check import verify_schema_revision
+
+    verify_schema_revision(engine)
 
     # The login page advertises this account; create it once in the configured
     # PostgreSQL database using the normal bcrypt password hashing mechanism.

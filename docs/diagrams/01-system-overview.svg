@@ -1,0 +1,235 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 800" width="1200" height="800" style="background:#0d1117; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
+  <defs>
+    <linearGradient id="headerGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1f6feb" />
+      <stop offset="100%" stop-color="#388bfd" />
+    </linearGradient>
+    <linearGradient id="agentGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#161b22" />
+      <stop offset="100%" stop-color="#21262d" />
+    </linearGradient>
+    <linearGradient id="backendGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1c1917" />
+      <stop offset="100%" stop-color="#292524" />
+    </linearGradient>
+    <linearGradient id="uiGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#064e3b" />
+      <stop offset="100%" stop-color="#065f46" />
+    </linearGradient>
+    <filter id="dropShadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#000" flood-opacity="0.5" />
+    </filter>
+    <marker id="arrow" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 8 5 L 0 9 z" fill="#58a6ff" />
+    </marker>
+    <marker id="arrowGreen" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 8 5 L 0 9 z" fill="#3fb950" />
+    </marker>
+    <marker id="arrowOrange" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 8 5 L 0 9 z" fill="#d29922" />
+    </marker>
+  </defs>
+
+  <!-- Title & Header -->
+  <rect x="0" y="0" width="1200" height="70" fill="#161b22" border-bottom="1px solid #30363d"/>
+  <text x="30" y="42" fill="#58a6ff" font-size="24" font-weight="700">SPEMCS Master System Overview</text>
+  <text x="430" y="42" fill="#8b949e" font-size="14">3-Tier Secure Proctoring &amp; Endpoint Monitoring Architecture</text>
+  <rect x="1060" y="24" width="110" height="26" rx="13" fill="#238636" />
+  <text x="1082" y="41" fill="#ffffff" font-size="11" font-weight="600">VERIFIED CODE</text>
+
+  <!-- TIER 1: CANDIDATE ENDPOINT WORKSTATION -->
+  <g transform="translate(30, 90)">
+    <rect x="0" y="0" width="400" height="680" rx="10" fill="#161b22" stroke="#30363d" stroke-width="2" filter="url(#dropShadow)" />
+    <rect x="0" y="0" width="400" height="40" rx="10" fill="#21262d" />
+    <text x="15" y="25" fill="#f0f6fc" font-size="14" font-weight="600">Tier 1: Candidate Lab Workstation</text>
+    <text x="325" y="25" fill="#8b949e" font-size="11">Windows 10/11</text>
+
+    <!-- Session 0: Service -->
+    <rect x="15" y="55" width="370" height="340" rx="8" fill="#0d1117" stroke="#388bfd" stroke-width="1.5" />
+    <rect x="25" y="65" width="190" height="22" rx="4" fill="#1f6feb" />
+    <text x="32" y="80" fill="#ffffff" font-size="11" font-weight="700">Session 0 (SYSTEM Service)</text>
+    
+    <rect x="25" y="98" width="350" height="50" rx="6" fill="#161b22" stroke="#30363d" />
+    <text x="35" y="118" fill="#58a6ff" font-size="12" font-weight="600">Spemcs.Agent.Service</text>
+    <text x="35" y="136" fill="#8b949e" font-size="10">Program.cs | AgentWorker.cs | ControlPipeWorker.cs</text>
+
+    <rect x="25" y="158" width="350" height="65" rx="6" fill="#161b22" stroke="#30363d" />
+    <text x="35" y="178" fill="#3fb950" font-size="12" font-weight="600">WindowsFirewallAdapter (COM)</text>
+    <text x="35" y="196" fill="#8b949e" font-size="10">HNetCfg.FwPolicy2 | Outbound Deny Default (Profiles: All)</text>
+    <text x="35" y="212" fill="#7ee787" font-size="9">Named Rules: SPEMCS-{sessionId}-{ruleSuffix}</text>
+
+    <rect x="25" y="233" width="165" height="65" rx="6" fill="#161b22" stroke="#30363d" />
+    <text x="35" y="253" fill="#d29922" font-size="11" font-weight="600">Process Classifier</text>
+    <text x="35" y="271" fill="#8b949e" font-size="9">WMI / ETW Hooking</text>
+    <text x="35" y="287" fill="#8b949e" font-size="9">&lt;50ms detection</text>
+
+    <rect x="200" y="233" width="175" height="65" rx="6" fill="#161b22" stroke="#30363d" />
+    <text x="210" y="253" fill="#f85149" font-size="11" font-weight="600">SQLite Rollback</text>
+    <text x="210" y="271" fill="#8b949e" font-size="9">sqlite_rollback_journal.db</text>
+    <text x="210" y="287" fill="#8b949e" font-size="9">Crash Recovery Baseline</text>
+
+    <rect x="25" y="308" width="350" height="75" rx="6" fill="#161b22" stroke="#30363d" />
+    <text x="35" y="326" fill="#a371f7" font-size="11" font-weight="600">PolicyReceiver &amp; Crypto Engine</text>
+    <text x="35" y="344" fill="#8b949e" font-size="10">RSA-PSS Signature Verification (SHA-256 / MGF1 / salt 32)</text>
+    <text x="35" y="360" fill="#8b949e" font-size="9">RFC 8785 Canonical JSON Serialization</text>
+    <text x="35" y="374" fill="#8b949e" font-size="9">DNS DoH Registry Suppression (HKLM Policies)</text>
+
+    <!-- Named Pipe IPC Boundary -->
+    <rect x="15" y="408" width="370" height="40" rx="6" fill="#21262d" stroke="#d29922" stroke-dasharray="4,4" />
+    <text x="75" y="432" fill="#d29922" font-size="11" font-weight="700">IPC: \\.\pipe\spemcs-control-v1 (Named Pipes)</text>
+
+    <!-- Session 1+: Candidate Interactive UI -->
+    <rect x="15" y="460" width="370" height="205" rx="8" fill="#0d1117" stroke="#238636" stroke-width="1.5" />
+    <rect x="25" y="470" width="205" height="22" rx="4" fill="#238636" />
+    <text x="32" y="485" fill="#ffffff" font-size="11" font-weight="700">Session 1+ (Candidate Desktop)</text>
+
+    <rect x="25" y="503" width="350" height="55" rx="6" fill="#161b22" stroke="#30363d" />
+    <text x="35" y="523" fill="#7ee787" font-size="12" font-weight="600">Spemcs.Agent.UI (WPF .NET 8)</text>
+    <text x="35" y="541" fill="#8b949e" font-size="10">App.xaml.cs | MainWindow.xaml | NamedPipeUiGateway</text>
+
+    <rect x="25" y="568" width="350" height="85" rx="6" fill="#161b22" stroke="#30363d" />
+    <text x="35" y="588" fill="#58a6ff" font-size="11" font-weight="600">Approved Exam Browser (Isolated Path)</text>
+    <text x="35" y="606" fill="#8b949e" font-size="10">chrome.exe / msedge.exe | Scoped Firewall Rule</text>
+    <text x="35" y="622" fill="#8b949e" font-size="9">Allowed Outbound: Exam Server IP + Vendor CIDRs Only</text>
+    <text x="35" y="638" fill="#f85149" font-size="9">All other outbound blocked by Session 0 Firewall</text>
+  </g>
+
+  <!-- TIER 2: MANAGEMENT BACKEND SERVER -->
+  <g transform="translate(460, 90)">
+    <rect x="0" y="0" width="410" height="680" rx="10" fill="#161b22" stroke="#30363d" stroke-width="2" filter="url(#dropShadow)" />
+    <rect x="0" y="0" width="410" height="40" rx="10" fill="#21262d" />
+    <text x="15" y="25" fill="#f0f6fc" font-size="14" font-weight="600">Tier 2: Backend Management Server</text>
+    <text x="300" y="25" fill="#8b949e" font-size="11">FastAPI Python 3.11</text>
+
+    <!-- Routing Layer -->
+    <rect x="15" y="55" width="380" height="90" rx="8" fill="#0d1117" stroke="#388bfd" />
+    <text x="25" y="75" fill="#58a6ff" font-size="12" font-weight="700">API Gateway &amp; Router Matrix (86 Endpoints)</text>
+    <text x="25" y="93" fill="#8b949e" font-size="10">84 HTTP Routes (OpenAPI) | 2 WebSockets (/ws/agent, /ws/dashboard)</text>
+    <text x="25" y="109" fill="#8b949e" font-size="10">Dependencies: require_admin, require_staff, require_device</text>
+    <text x="25" y="125" fill="#8b949e" font-size="10">Pre-Device Gate: require_enrollment_key (timing-safe hmac)</text>
+    <text x="25" y="139" fill="#7ee787" font-size="9">Ownership Assertion: assert_device_owns(claimed_uuid)</text>
+
+    <!-- Services Layer -->
+    <rect x="15" y="155" width="380" height="150" rx="8" fill="#0d1117" stroke="#a371f7" />
+    <text x="25" y="175" fill="#a371f7" font-size="12" font-weight="700">Core Services Layer</text>
+    
+    <rect x="25" y="185" width="170" height="50" rx="4" fill="#161b22" stroke="#30363d" />
+    <text x="32" y="202" fill="#f0f6fc" font-size="10" font-weight="600">PolicyCompiler</text>
+    <text x="32" y="218" fill="#8b949e" font-size="9">Vendors + CIDRs + Port</text>
+    <text x="32" y="230" fill="#8b949e" font-size="8">exam_service.py</text>
+
+    <rect x="210" y="185" width="175" height="50" rx="4" fill="#161b22" stroke="#30363d" />
+    <text x="217" y="202" fill="#f0f6fc" font-size="10" font-weight="600">PolicySigner (RSA-PSS)</text>
+    <text x="217" y="218" fill="#8b949e" font-size="9">RSA-2048 | Keyring Rotation</text>
+    <text x="217" y="230" fill="#8b949e" font-size="8">signing_key_manager.py</text>
+
+    <rect x="25" y="245" width="170" height="50" rx="4" fill="#161b22" stroke="#30363d" />
+    <text x="32" y="262" fill="#f0f6fc" font-size="10" font-weight="600">EnforcementReadiness</text>
+    <text x="32" y="278" fill="#8b949e" font-size="9">Server-side Pre-arming Gate</text>
+    <text x="32" y="290" fill="#8b949e" font-size="8">enforcement_readiness.py</text>
+
+    <rect x="210" y="245" width="175" height="50" rx="4" fill="#161b22" stroke="#30363d" />
+    <text x="217" y="262" fill="#f0f6fc" font-size="10" font-weight="600">RealtimeManager</text>
+    <text x="217" y="278" fill="#8b949e" font-size="9">WebSocket Agent/Dash Hubs</text>
+    <text x="217" y="290" fill="#8b949e" font-size="8">realtime.py</text>
+
+    <!-- Data Persistence Layer -->
+    <rect x="15" y="315" width="380" height="225" rx="8" fill="#0d1117" stroke="#f0883e" />
+    <text x="25" y="335" fill="#f0883e" font-size="12" font-weight="700">Database Layer (14 PostgreSQL Tables)</text>
+    <text x="25" y="352" fill="#8b949e" font-size="10">Alembic Migrations: 0001_baseline, 0002_add_network_enforcement</text>
+    
+    <g transform="translate(25, 365)" font-size="10" fill="#8b949e">
+      <rect x="0" y="0" width="85" height="24" rx="4" fill="#21262d" /><text x="8" y="16" fill="#c9d1d9">users (10)</text>
+      <rect x="92" y="0" width="85" height="24" rx="4" fill="#21262d" /><text x="100" y="16" fill="#c9d1d9">devices (10)</text>
+      <rect x="184" y="0" width="85" height="24" rx="4" fill="#21262d" /><text x="192" y="16" fill="#c9d1d9">exams (11)</text>
+      <rect x="276" y="0" width="90" height="24" rx="4" fill="#21262d" /><text x="282" y="16" fill="#c9d1d9">exam_dev (4)</text>
+
+      <rect x="0" y="30" width="85" height="24" rx="4" fill="#21262d" /><text x="8" y="46" fill="#c9d1d9">sessions (7)</text>
+      <rect x="92" y="30" width="85" height="24" rx="4" fill="#21262d" /><text x="100" y="46" fill="#c9d1d9">events (14)</text>
+      <rect x="184" y="30" width="85" height="24" rx="4" fill="#21262d" /><text x="192" y="46" fill="#ffa657">alerts (9)*</text>
+      <rect x="276" y="30" width="90" height="24" rx="4" fill="#21262d" /><text x="282" y="46" fill="#c9d1d9">reports (7)</text>
+
+      <rect x="0" y="60" width="85" height="24" rx="4" fill="#21262d" /><text x="8" y="76" fill="#c9d1d9">audit_logs (8)</text>
+      <rect x="92" y="60" width="85" height="24" rx="4" fill="#21262d" /><text x="100" y="76" fill="#c9d1d9">labs (8)</text>
+      <rect x="184" y="60" width="85" height="24" rx="4" fill="#21262d" /><text x="192" y="76" fill="#c9d1d9">lab_dev (3)</text>
+      <rect x="276" y="60" width="90" height="24" rx="4" fill="#21262d" /><text x="282" y="76" fill="#c9d1d9">vendors (8)</text>
+
+      <rect x="0" y="90" width="177" height="24" rx="4" fill="#21262d" /><text x="8" y="106" fill="#c9d1d9">network_policies (13 cols)</text>
+      <rect x="184" y="90" width="182" height="24" rx="4" fill="#21262d" /><text x="190" y="106" fill="#c9d1d9">device_policy_states (9 cols)</text>
+    </g>
+    <text x="25" y="495" fill="#e3b341" font-size="9">* Ground Truth Rationale: alerts.exam_id is NULLABLE to prevent drop of</text>
+    <text x="25" y="509" fill="#e3b341" font-size="9">prohibited process events reported outside active examination context.</text>
+
+    <!-- Test Suite Evidence Box -->
+    <rect x="15" y="550" width="380" height="115" rx="8" fill="#0d1117" stroke="#238636" />
+    <text x="25" y="570" fill="#3fb950" font-size="11" font-weight="700">Hermetic Test Suite Verification</text>
+    <text x="25" y="588" fill="#8b949e" font-size="10">Python Backend Tests: 903 Tests Collected</text>
+    <text x="25" y="604" fill="#8b949e" font-size="10">902 Passing | 1 Skipped | 0 Failures (Hermetic Mock Environment)</text>
+    <text x="25" y="620" fill="#8b949e" font-size="10">Agent Tests: 289 Unit/Integration Tests in Spemcs.Agent.Tests</text>
+    <text x="25" y="636" fill="#8b949e" font-size="10">Cross-Language Parity Suite: 4,534 Differential Test Vectors</text>
+    <text x="25" y="652" fill="#d29922" font-size="9">Pending Validation: Live Bare-Metal Windows E2E Network Enforcement</text>
+  </g>
+
+  <!-- TIER 3: OPERATOR PROCTOR/ADMIN SPA -->
+  <g transform="translate(900, 90)">
+    <rect x="0" y="0" width="270" height="680" rx="10" fill="#161b22" stroke="#30363d" stroke-width="2" filter="url(#dropShadow)" />
+    <rect x="0" y="0" width="270" height="40" rx="10" fill="#21262d" />
+    <text x="15" y="25" fill="#f0f6fc" font-size="14" font-weight="600">Tier 3: Operator Dashboard</text>
+    <text x="200" y="25" fill="#8b949e" font-size="11">React 18</text>
+
+    <rect x="15" y="55" width="240" height="140" rx="8" fill="#0d1117" stroke="#388bfd" />
+    <text x="25" y="75" fill="#58a6ff" font-size="12" font-weight="700">Operator Authentication</text>
+    <text x="25" y="93" fill="#8b949e" font-size="10">Bearer JWT (HS256, 8-hr expiry)</text>
+    <text x="25" y="109" fill="#8b949e" font-size="10">Signed with backend SECRET_KEY</text>
+    <text x="25" y="125" fill="#8b949e" font-size="10">Roles: admin, proctor (RBAC)</text>
+    <text x="25" y="141" fill="#7ee787" font-size="9">AppContext Global State Store</text>
+    <text x="25" y="157" fill="#8b949e" font-size="9">Auto-reconnect WebSocket Link</text>
+    <text x="25" y="173" fill="#8b949e" font-size="9">First-Frame AUTH Handshake</text>
+
+    <!-- Frontend Pages Breakdown -->
+    <rect x="15" y="205" width="240" height="340" rx="8" fill="#0d1117" stroke="#238636" />
+    <text x="25" y="225" fill="#3fb950" font-size="12" font-weight="700">9 Primary UI Views</text>
+
+    <g transform="translate(25, 240)" font-size="11" fill="#c9d1d9">
+      <text x="0" y="15" font-weight="600">• /login <tspan fill="#8b949e" font-weight="400">(LoginPage)</tspan></text>
+      <text x="0" y="40" font-weight="600">• /dashboard <tspan fill="#8b949e" font-weight="400">(DashboardPage)</tspan></text>
+      <text x="0" y="65" font-weight="600">• /exam-shield <tspan fill="#8b949e" font-weight="400">(ExamShieldPage)</tspan></text>
+      <text x="0" y="90" font-weight="600">• /exam-shield/monitor/:id</text>
+      <text x="12" y="105" fill="#8b949e" font-size="10">(LiveMonitorPage)</text>
+      <text x="0" y="130" font-weight="600">• /devices <tspan fill="#8b949e" font-weight="400">(DeviceStatusPage)</tspan></text>
+      <text x="0" y="155" font-weight="600">• /alerts <tspan fill="#8b949e" font-weight="400">(AlertsPage)</tspan></text>
+      <text x="0" y="180" font-weight="600">• /reports <tspan fill="#8b949e" font-weight="400">(ReportsPage)</tspan></text>
+      <text x="0" y="205" font-weight="600">• /audit-logs <tspan fill="#8b949e" font-weight="400">(AuditLogsPage)</tspan></text>
+      <text x="0" y="230" font-weight="600">• /settings <tspan fill="#8b949e" font-weight="400">(SettingsPage)</tspan></text>
+    </g>
+    
+    <rect x="15" y="555" width="240" height="110" rx="8" fill="#0d1117" stroke="#d29922" />
+    <text x="25" y="575" fill="#d29922" font-size="11" font-weight="700">Real-Time Event Stream</text>
+    <text x="25" y="593" fill="#8b949e" font-size="10">WSS: /api/v1/ws/dashboard</text>
+    <text x="25" y="609" fill="#8b949e" font-size="9">Frames: DEVICE_UPDATE,</text>
+    <text x="25" y="623" fill="#8b949e" font-size="9">ALERT_CREATED, EXAM_STATE,</text>
+    <text x="25" y="637" fill="#8b949e" font-size="9">POLICY_SYNCED</text>
+    <text x="25" y="653" fill="#8b949e" font-size="9">Auto-reconnection + exponential backoff</text>
+  </g>
+
+  <!-- INTER-TIER DATA PIPELINES (ARROWS) -->
+  <!-- Agent to Backend REST -->
+  <path d="M 430 200 L 460 200" fill="none" stroke="#58a6ff" stroke-width="2" marker-end="url(#arrow)" />
+  <text x="390" y="188" fill="#58a6ff" font-size="9" text-anchor="middle">REST / Heartbeat</text>
+
+  <!-- Backend to Agent Policy Delivery -->
+  <path d="M 460 270 L 430 270" fill="none" stroke="#3fb950" stroke-width="2" marker-end="url(#arrowGreen)" />
+  <text x="445" y="260" fill="#3fb950" font-size="9" text-anchor="middle">Signed Policy (RSA-PSS)</text>
+
+  <!-- Agent to Backend WebSocket -->
+  <path d="M 430 350 L 460 350" fill="none" stroke="#d29922" stroke-width="2" marker-end="url(#arrowOrange)" />
+  <text x="445" y="340" fill="#d29922" font-size="9" text-anchor="middle">WSS /ws/agent</text>
+
+  <!-- Dashboard to Backend REST -->
+  <path d="M 900 120 L 870 120" fill="none" stroke="#58a6ff" stroke-width="2" marker-end="url(#arrow)" />
+  <text x="885" y="110" fill="#58a6ff" font-size="9" text-anchor="middle">JWT REST</text>
+
+  <!-- Backend to Dashboard WebSocket -->
+  <path d="M 870 580 L 900 580" fill="none" stroke="#d29922" stroke-width="2" marker-end="url(#arrowOrange)" />
+  <text x="885" y="570" fill="#d29922" font-size="9" text-anchor="middle">WSS /ws/dashboard</text>
+</svg>

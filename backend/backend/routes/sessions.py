@@ -5,10 +5,19 @@ from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy.orm import Session
 
 from backend.app.database import get_db
+from backend.app.dependencies import require_admin, require_staff
 from backend.models.session import ExamSession
 from backend.schemas.session import ExamSessionCreate, ExamSessionRead, ExamSessionUpdate
 
-router = APIRouter(prefix="/api/sessions", tags=["sessions"])
+# Management view of candidate sessions - roll numbers, which machine each candidate sat at, and
+# when. Endpoints create their own sessions through POST /api/v1/sessions/start, which
+# authenticates with a device token (routes/agent_api.py); this router is for operators only, so
+# gating it does not affect the agent.
+router = APIRouter(
+    prefix="/api/sessions",
+    tags=["sessions"],
+    dependencies=[Depends(require_staff)],
+)
 
 
 def _as_dict(model: Any) -> dict:
@@ -29,7 +38,8 @@ def get_session(session_id: UUID, db: Session = Depends(get_db)):
 
 
 @router.post("", response_model=ExamSessionRead, status_code=status.HTTP_201_CREATED)
-def create_session(payload: ExamSessionCreate, db: Session = Depends(get_db)):
+def create_session(payload: ExamSessionCreate, db: Session = Depends(get_db),
+                   _admin=Depends(require_admin)):
     data = _as_dict(payload)
     if data.get("session_id") is None:
         data.pop("session_id", None)
@@ -41,7 +51,8 @@ def create_session(payload: ExamSessionCreate, db: Session = Depends(get_db)):
 
 
 @router.put("/{session_id}", response_model=ExamSessionRead)
-def update_session(session_id: UUID, payload: ExamSessionUpdate, db: Session = Depends(get_db)):
+def update_session(session_id: UUID, payload: ExamSessionUpdate, db: Session = Depends(get_db),
+                   _admin=Depends(require_admin)):
     exam_session = db.get(ExamSession, session_id)
     if exam_session is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="ExamSession not found")
@@ -53,7 +64,8 @@ def update_session(session_id: UUID, payload: ExamSessionUpdate, db: Session = D
 
 
 @router.delete("/{session_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_session(session_id: UUID, db: Session = Depends(get_db)):
+def delete_session(session_id: UUID, db: Session = Depends(get_db),
+                   _admin=Depends(require_admin)):
     exam_session = db.get(ExamSession, session_id)
     if exam_session is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="ExamSession not found")

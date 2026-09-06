@@ -1,0 +1,128 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 750" width="1100" height="750" style="background:#0d1117; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
+  <defs>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#000" flood-opacity="0.5" />
+    </filter>
+    <marker id="arrow" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 8 5 L 0 9 z" fill="#58a6ff" />
+    </marker>
+    <marker id="arrowRed" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 8 5 L 0 9 z" fill="#f85149" />
+    </marker>
+    <marker id="arrowGreen" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 8 5 L 0 9 z" fill="#3fb950" />
+    </marker>
+  </defs>
+
+  <!-- Header -->
+  <rect x="0" y="0" width="1100" height="60" fill="#161b22" />
+  <text x="30" y="38" fill="#58a6ff" font-size="22" font-weight="700">Windows Runtime Architecture: Session 0 vs Session 1+ Isolation</text>
+  <rect x="950" y="18" width="120" height="24" rx="12" fill="#238636" />
+  <text x="965" y="34" fill="#ffffff" font-size="11" font-weight="600">VERIFIED CODE</text>
+
+  <!-- SESSION 0 ISOLATION ZONE -->
+  <g transform="translate(40, 80)">
+    <rect x="0" y="0" width="480" height="630" rx="10" fill="#161b22" stroke="#388bfd" stroke-width="2" filter="url(#shadow)" />
+    <rect x="0" y="0" width="480" height="45" rx="10" fill="#1f6feb" />
+    <text x="20" y="28" fill="#ffffff" font-size="15" font-weight="700">Session 0 — Non-Interactive System Services</text>
+    <text x="350" y="28" fill="#ffffff" font-size="11">NT AUTHORITY\SYSTEM</text>
+
+    <!-- Capabilities -->
+    <rect x="20" y="60" width="440" height="50" rx="6" fill="#0d1117" stroke="#30363d" />
+    <text x="30" y="80" fill="#79c0ff" font-size="12" font-weight="600">Security Ring / Privileges:</text>
+    <text x="30" y="98" fill="#8b949e" font-size="11">SeSecurityPrivilege, SeBackupPrivilege, Full Local Administration</text>
+
+    <!-- Windows Service Box -->
+    <rect x="20" y="125" width="440" height="485" rx="8" fill="#0d1117" stroke="#30363d" />
+    <text x="35" y="150" fill="#58a6ff" font-size="14" font-weight="700">Spemcs.Agent.Service (Background Daemon)</text>
+    <text x="35" y="168" fill="#8b949e" font-size="11">Executable: Spemcs.Agent.Service.exe | Managed by SCM (services.msc)</text>
+
+    <!-- Service Submodules -->
+    <g transform="translate(35, 185)">
+      <!-- Firewall COM -->
+      <rect x="0" y="0" width="410" height="75" rx="6" fill="#161b22" stroke="#238636" />
+      <text x="15" y="22" fill="#3fb950" font-size="12" font-weight="700">WindowsFirewallAdapter (COM Interop)</text>
+      <text x="15" y="40" fill="#8b949e" font-size="10">ProgID: HNetCfg.FwPolicy2 | TypeLib: INetFwPolicy2 / INetFwRules</text>
+      <text x="15" y="55" fill="#8b949e" font-size="10">Sets DefaultOutboundAction = NET_FW_ACTION_BLOCK across Domain/Private/Public</text>
+      <text x="15" y="68" fill="#7ee787" font-size="9">Dynamic rules tagged: SPEMCS-{sessionId}-{ruleSuffix}</text>
+
+      <!-- Rollback Journal -->
+      <rect x="0" y="85" width="410" height="65" rx="6" fill="#161b22" stroke="#f0883e" />
+      <text x="15" y="105" fill="#f0883e" font-size="12" font-weight="700">SqliteRollbackJournal (Persistent Journal)</text>
+      <text x="15" y="122" fill="#8b949e" font-size="10">Path: %ProgramData%\Spemcs\sqlite_rollback_journal.db</text>
+      <text x="15" y="138" fill="#8b949e" font-size="10">Guarantees firewall baseline restore even after catastrophic mid-exam crash</text>
+
+      <!-- Process Monitor -->
+      <rect x="0" y="160" width="410" height="65" rx="6" fill="#161b22" stroke="#a371f7" />
+      <text x="15" y="180" fill="#a371f7" font-size="12" font-weight="700">ConfigurableProcessClassifier (WMI / ETW)</text>
+      <text x="15" y="197" fill="#8b949e" font-size="10">Event Tracing for Windows &amp; WMI __InstanceCreationEvent subscription</text>
+      <text x="15" y="213" fill="#8b949e" font-size="10">Monitors all processes across all desktop sessions with sub-50ms latency</text>
+
+      <!-- Named Pipe Server -->
+      <rect x="0" y="235" width="410" height="65" rx="6" fill="#161b22" stroke="#d29922" />
+      <text x="15" y="255" fill="#d29922" font-size="12" font-weight="700">ControlPipeWorker (Named Pipe Server)</text>
+      <text x="15" y="272" fill="#8b949e" font-size="10">Pipe: \\.\pipe\spemcs-control-v1 | Strict Windows Security Descriptor DACL</text>
+      <text x="15" y="288" fill="#8b949e" font-size="10">Restricted IPC: only authenticated interactive user token can connect</text>
+
+      <!-- UI Launcher -->
+      <rect x="0" y="310" width="410" height="65" rx="6" fill="#161b22" stroke="#30363d" />
+      <text x="15" y="330" fill="#f0f6fc" font-size="12" font-weight="700">InteractiveSessionUiLauncher</text>
+      <text x="15" y="347" fill="#8b949e" font-size="10">WTSGetActiveConsoleSessionId() + DuplicateTokenEx() + CreateProcessAsUserW()</text>
+      <text x="15" y="363" fill="#8b949e" font-size="10">Spawns candidate UI across the Session 0 boundary into the active user desktop</text>
+    </g>
+  </g>
+
+  <!-- INTERACTIVE DESKTOP SESSION (SESSION 1+) -->
+  <g transform="translate(580, 80)">
+    <rect x="0" y="0" width="480" height="630" rx="10" fill="#161b22" stroke="#238636" stroke-width="2" filter="url(#shadow)" />
+    <rect x="0" y="0" width="480" height="45" rx="10" fill="#238636" />
+    <text x="20" y="28" fill="#ffffff" font-size="15" font-weight="700">Session 1+ — Interactive Candidate Desktop</text>
+    <text x="350" y="28" fill="#ffffff" font-size="11">Standard User Token</text>
+
+    <!-- Security Context -->
+    <rect x="20" y="60" width="440" height="50" rx="6" fill="#0d1117" stroke="#30363d" />
+    <text x="30" y="80" fill="#7ee787" font-size="12" font-weight="600">Security Ring / Privileges:</text>
+    <text x="30" y="98" fill="#8b949e" font-size="11">Standard Student Account | NO SeLoadDriverPrivilege | NO Firewall Control</text>
+
+    <!-- Candidate Desktop Box -->
+    <rect x="20" y="125" width="440" height="485" rx="8" fill="#0d1117" stroke="#30363d" />
+    <text x="35" y="150" fill="#3fb950" font-size="14" font-weight="700">Candidate Interactive Environment</text>
+    <text x="35" y="168" fill="#8b949e" font-size="11">Desktop GUI, Keyboard/Mouse, Graphics Surface, Shell</text>
+
+    <g transform="translate(35, 185)">
+      <!-- WPF Client -->
+      <rect x="0" y="0" width="410" height="110" rx="6" fill="#161b22" stroke="#238636" />
+      <text x="15" y="24" fill="#3fb950" font-size="13" font-weight="700">Spemcs.Agent.UI (WPF .NET 8 App)</text>
+      <text x="15" y="44" fill="#8b949e" font-size="11">Views: Student Verification, Compliance Scan, Lock Screen</text>
+      <text x="15" y="62" fill="#8b949e" font-size="11">Source: App.xaml.cs | MainWindow.xaml</text>
+      <text x="15" y="80" fill="#7ee787" font-size="10">NamedPipeUiGateway: connects to \\.\pipe\spemcs-control-v1</text>
+      <text x="15" y="96" fill="#8b949e" font-size="10">Displays exam PIN input and status indicators to student</text>
+
+      <!-- Candidate Browser -->
+      <rect x="0" y="125" width="410" height="100" rx="6" fill="#161b22" stroke="#58a6ff" />
+      <text x="15" y="148" fill="#58a6ff" font-size="13" font-weight="700">Approved Exam Browser (chrome.exe / msedge.exe)</text>
+      <text x="15" y="168" fill="#8b949e" font-size="11">Launches in locked exam portal window</text>
+      <text x="15" y="186" fill="#8b949e" font-size="10">Only browser binary path matches the Session 0 Firewall Allow rule</text>
+      <text x="15" y="204" fill="#7ee787" font-size="10">Restricted strictly to approved Exam Platform URLs and CDN ranges</text>
+
+      <!-- Prohibited Tools -->
+      <rect x="0" y="240" width="410" height="135" rx="6" fill="#161b22" stroke="#f85149" />
+      <text x="15" y="263" fill="#f85149" font-size="13" font-weight="700">Candidate Tampering Attempts (Neutralized)</text>
+      <text x="15" y="285" fill="#f85149" font-size="11">❌ Task Manager / Process Hacker:</text>
+      <text x="35" y="301" fill="#8b949e" font-size="10">Cannot terminate Session 0 Service (Access Denied / SeDebugPrivilege missing)</text>
+      <text x="15" y="319" fill="#f85149" font-size="11">❌ netsh advfirewall / PowerShell disable:</text>
+      <text x="35" y="335" fill="#8b949e" font-size="10">Standard user lacks elevated token to alter firewall rules</text>
+      <text x="15" y="353" fill="#f85149" font-size="11">❌ AnyDesk / Discord / Telegram:</text>
+      <text x="35" y="369" fill="#8b949e" font-size="10">Blocked outbound by firewall + flagged by WMI watcher in &lt;50ms</text>
+    </g>
+  </g>
+
+  <!-- IPC BRIDGE IN THE MIDDLE -->
+  <path d="M 445 450 L 615 450" fill="none" stroke="#d29922" stroke-width="3" stroke-dasharray="6,4" marker-end="url(#arrow)" />
+  <rect x="475" y="425" width="110" height="26" rx="4" fill="#21262d" stroke="#d29922" />
+  <text x="487" y="442" fill="#d29922" font-size="10" font-weight="700">Named Pipes</text>
+
+  <!-- Explanatory Bottom Legend -->
+  <rect x="40" y="720" width="1020" height="20" fill="none" />
+  <text x="550" y="734" fill="#8b949e" font-size="11" text-anchor="middle">Ground Truth: Windows Session 0 isolation ensures that even a malicious local user with admin desktop privileges cannot subvert the firewall or kill the monitoring engine.</text>
+</svg>

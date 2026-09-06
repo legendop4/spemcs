@@ -8,15 +8,27 @@ from fastapi import APIRouter, Depends, HTTPException, Response, status, Backgro
 from sqlalchemy.orm import Session
 
 from backend.app.database import get_db
+from backend.app.dependencies import require_staff
 from backend.models.exam import Exam, ExamDevice
 from backend.models.alert import Alert
 from backend.models.session import ExamSession
 from backend.schemas.exam import ExamCreate, ExamRead, ExamUpdate
-from backend.services import exam_service, realtime_service
+from backend.services import enforcement_readiness, exam_service, realtime_service
 from backend.services.auth_service import require_role
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/exams", tags=["exams"])
+# The CRUD routes below carry their own per-route role gates and always did. The four
+# sub-resource reads (/devices, /sessions, /alerts, /timeline) did not, so an anonymous caller who
+# knew or guessed an exam id could read that exam's candidate list, session records, violation
+# alerts and full event timeline while every route beside them was authenticated. A router-level
+# floor rather than four more decorators, so the next sub-resource added here inherits it instead
+# of repeating the omission. Per-route require_admin dependencies still apply on top: this is a
+# minimum, not a ceiling.
+router = APIRouter(
+    prefix="/api/exams",
+    tags=["exams"],
+    dependencies=[Depends(require_staff)],
+)
 
 
 def _as_dict(model: Any) -> dict:
@@ -122,40 +134,102 @@ def delete_exam(
 
 # --- Exam Lifecycle Endpoints ---
 
+@router.get("/{exam_id}/enforcement-readiness")
+def get_exam_enforcement_readiness(
+    exam_id: UUID,
+    db: Session = Depends(get_db),
+    _user=Depends(require_role(["admin", "proctor"])),
+):
+    """Whether this exam may be activated, and what is stopping it if not.
+
+    The same evaluation the activate endpoint refuses on, exposed as a read so an operator can see
+    the reason before pressing Launch instead of discovering it in a 409.
+    """
+    exam = db.get(Exam, exam_id)
+    if exam is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Exam not found")
+    readiness = enforcement_readiness.evaluate_exam_readiness(db, exam)
+    payload = readiness.to_dict()
+    payload["unarmed_devices"] = enforcement_readiness.describe_unarmed_devices(db, readiness)
+    return payload
+
+
 @router.post("/{exam_id}/activate")
 async def activate_exam(
     exam_id: UUID,
     db: Session = Depends(get_db),
     _user=Depends(require_role(["admin", "proctor"])),
 ):
-    """Activate an exam and send LAUNCH_EXAM_MODE to assigned devices."""
+    """Activate an exam and send LAUNCH_EXAM_MODE to assigned devices.
+
+    For a network-enforcement exam the lockdown precondition is checked HERE, on the server,
+    before anything is written. It used to live entirely in the browser
+    (`ExamShieldPage.tsx::handleActivate`), which meant a direct POST with any staff token produced
+    an ACTIVE enforcement exam with no policy at all, and meant the front-end's own distribution
+    loop could fail on every device and still reach this endpoint, which would report "activated".
+    A refusal is a 409 and leaves the exam PENDING - nothing is half-started.
+    """
+    exam = db.get(Exam, exam_id)
+    if exam is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Exam not found")
+
+    readiness = enforcement_readiness.evaluate_exam_readiness(db, exam)
+    if not readiness.ready:
+        detail = readiness.to_dict()
+        detail["unarmed_devices"] = enforcement_readiness.describe_unarmed_devices(db, readiness)
+        detail["message"] = (
+            "This exam enforces a network lockdown and is not ready to activate: "
+            + " ".join(p.message for p in readiness.problems)
+        )
+        logger.warning(
+            "Refused activation of enforcement exam %s: %s",
+            exam_id, ", ".join(p.code for p in readiness.problems),
+        )
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=detail)
+
+    for warning in readiness.warnings:
+        logger.warning("Activating exam %s with a caveat (%s): %s",
+                       exam_id, warning.code, warning.message)
+
+    # Only armed devices are launched and marked MONITORING. For a non-enforcement exam the
+    # readiness result marks every assigned device armed, so this is the pre-existing behaviour.
     try:
-        exam, hardware_uuids = exam_service.activate_exam(db, exam_id)
+        exam, hardware_uuids = exam_service.activate_exam(
+            db, exam_id, armed_device_ids=readiness.armed_device_ids
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    
+
     # Update cache
     from backend.websocket.manager import realtime_manager
     realtime_manager.set_exam_active(str(exam_id), hardware_uuids)
-    
+
     # Send WebSocket commands to devices
     results = await realtime_service.send_exam_launch(db, exam, hardware_uuids)
-    
+
     # Notify dashboards
     await realtime_service.broadcast_exam_status(
         exam_id=str(exam_id),
         status="active",
         exam_name=exam.exam_name,
     )
-    
+
     online = sum(1 for v in results.values() if v)
-    
+    unarmed = enforcement_readiness.describe_unarmed_devices(db, readiness)
+
     from backend.models.audit_log import AuditLog
     db.add(AuditLog(
         action="EXAM_ACTIVATED",
         entity_type="exam",
         entity_id=str(exam.exam_id),
-        details={"exam_name": exam.exam_name, "devices_targeted": len(hardware_uuids), "devices_reached": online}
+        details={
+            "exam_name": exam.exam_name,
+            "devices_targeted": len(hardware_uuids),
+            "devices_reached": online,
+            "network_enforcement": readiness.enforcement_required,
+            "policy_id": str(readiness.policy_id) if readiness.policy_id else None,
+            "devices_not_enforcing": len(unarmed),
+        }
     ))
     db.commit()
     return {
@@ -165,6 +239,12 @@ async def activate_exam(
         "devices_targeted": len(hardware_uuids),
         "devices_reached": online,
         "results": results,
+        "network_enforcement": readiness.enforcement_required,
+        "policy_id": str(readiness.policy_id) if readiness.policy_id else None,
+        # Named, not counted: an operator who launches 40 seats and gets 38 needs to know which
+        # two were left out, and those two are NOT under exam control.
+        "devices_not_enforcing": unarmed,
+        "warnings": [w.to_dict() for w in readiness.warnings],
     }
 
 

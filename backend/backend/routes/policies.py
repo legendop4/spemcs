@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from backend.app.database import get_db
 from backend.schemas.policy import (
+    DevicePolicyStateRead,
     NetworkPolicyRead,
     PolicyCompileRequest,
     SigningKeyRead,
@@ -19,6 +20,7 @@ from backend.schemas.policy import (
     VendorProfileRead,
     VendorProfileUpdate,
 )
+from backend.services import device_policy_state_service as dps
 from backend.services import policy_service
 from backend.services.auth_service import require_role
 from backend.services.policy_compiler import PolicyCompilationError
@@ -54,6 +56,40 @@ def _unavailable(err: SigningKeyUnavailableError) -> HTTPException:
     """
     logger.error("Policy signing key unavailable: %s", err)
     return HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(err))
+
+
+def _record_distribution_state(
+    db: Session,
+    *,
+    exam_id: UUID,
+    hardware_uuid: str,
+    policy_id: UUID,
+    status_value: str,
+    last_error: Optional[str] = None,
+) -> None:
+    """Record the outcome of a distribution attempt, without letting the bookkeeping break it.
+
+    A failure to write the state row is logged and swallowed, and that is safe in the only
+    direction that matters: the activation precondition treats "no state row" as "not armed", so
+    a lost write refuses an exam rather than starting one that is not locked down. Re-raising
+    would instead turn a *successful* policy hand-off into a 500 and tell the operator the
+    opposite of what happened.
+    """
+    try:
+        dps.record_state_for_hardware_uuid(
+            db,
+            exam_id=exam_id,
+            hardware_uuid=hardware_uuid,
+            policy_id=policy_id,
+            status=status_value,
+            last_error=last_error,
+        )
+    except Exception:  # pragma: no cover - defensive; exercised only by a database fault
+        db.rollback()
+        logger.exception(
+            "Failed to record %s enforcement state for device %s on exam %s",
+            status_value, hardware_uuid, exam_id,
+        )
 
 
 # ==============================================================================
@@ -327,10 +363,30 @@ async def distribute_policy_to_device(
     )
 
     if not sent:
+        # Recorded before raising, so the refusal is visible to the activation precondition and to
+        # the dashboard rather than existing only in this 503 the operator may not be watching for.
+        _record_distribution_state(
+            db,
+            exam_id=exam_id,
+            hardware_uuid=device_hardware_uuid,
+            policy_id=policy.policy_id,
+            status_value=dps.STATUS_FAILED,
+            last_error="Device is not connected to the agent WebSocket",
+        )
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=f"Device '{device_hardware_uuid}' is not connected to WebSocket",
         )
+
+    # APPLYING, not APPLIED: the bytes left the server. Whether enforcement is live is a claim
+    # only the endpoint can make, and it makes it over POLICY_VALIDATION_RESULT.
+    _record_distribution_state(
+        db,
+        exam_id=exam_id,
+        hardware_uuid=device_hardware_uuid,
+        policy_id=policy.policy_id,
+        status_value=dps.STATUS_APPLYING,
+    )
 
     return {
         "status": "SENT",
@@ -370,10 +426,29 @@ async def distribute_policy_update_to_device(
     )
 
     if not sent:
+        _record_distribution_state(
+            db,
+            exam_id=exam_id,
+            hardware_uuid=device_hardware_uuid,
+            policy_id=policy.policy_id,
+            status_value=dps.STATUS_FAILED,
+            last_error="Device is not connected to the agent WebSocket",
+        )
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=f"Device '{device_hardware_uuid}' is not connected to WebSocket",
         )
+
+    # A dynamic update supersedes whatever the device is currently enforcing, so its state goes
+    # back to APPLYING until the endpoint reports the swap succeeded. Leaving an earlier APPLIED
+    # in place would claim the device is enforcing a policy version it has not installed.
+    _record_distribution_state(
+        db,
+        exam_id=exam_id,
+        hardware_uuid=device_hardware_uuid,
+        policy_id=policy.policy_id,
+        status_value=dps.STATUS_APPLYING,
+    )
 
     return {
         "status": "SENT",
@@ -383,3 +458,67 @@ async def distribute_policy_update_to_device(
         "policy_id": str(policy.policy_id),
         "version": policy.version,
     }
+
+
+# ==============================================================================
+# Per-device enforcement state
+# ==============================================================================
+# These are the read side of `device_policy_states`. Until P1-R nothing wrote that table and
+# nothing read it, so the only per-device enforcement signal a proctor had was a toast in the
+# browser tab that happened to issue the distribution - lost on refresh, invisible to anyone else,
+# and gone entirely if the exam was activated from a different machine.
+
+
+def _serialize_state(state, device) -> DevicePolicyStateRead:
+    return DevicePolicyStateRead(
+        id=state.id,
+        exam_id=state.exam_id,
+        device_id=state.device_id,
+        policy_id=state.policy_id,
+        status=state.status,
+        armed=dps.is_armed(state.status),
+        rules_installed=state.rules_installed or 0,
+        last_error=state.last_error,
+        applied_at=state.applied_at,
+        updated_at=state.updated_at,
+        device_name=device.device_name if device else None,
+        hardware_uuid=device.hardware_uuid if device else None,
+    )
+
+
+@router.get("/exam/{exam_id}/device-states", response_model=List[DevicePolicyStateRead])
+def list_exam_device_policy_states(
+    exam_id: UUID,
+    db: Session = Depends(get_db),
+    _user=Depends(require_role(["admin", "proctor"])),
+):
+    """Per-device network enforcement state for an exam, most recently updated first."""
+    from backend.models.device import Device
+
+    states = dps.get_states_for_exam(db, exam_id)
+    device_ids = [s.device_id for s in states]
+    devices = (
+        db.query(Device).filter(Device.device_id.in_(device_ids)).all() if device_ids else []
+    )
+    device_map = {d.device_id: d for d in devices}
+    return [_serialize_state(s, device_map.get(s.device_id)) for s in states]
+
+
+@router.get("/exam/{exam_id}/device-states/{device_id}", response_model=DevicePolicyStateRead)
+def get_exam_device_policy_state(
+    exam_id: UUID,
+    device_id: UUID,
+    db: Session = Depends(get_db),
+    _user=Depends(require_role(["admin", "proctor"])),
+):
+    """Network enforcement state for one workstation in one exam."""
+    from backend.models.device import Device
+
+    state = dps.get_state(db, exam_id, device_id)
+    if state is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No enforcement state recorded for this device on this exam",
+        )
+    device = db.query(Device).filter(Device.device_id == device_id).first()
+    return _serialize_state(state, device)

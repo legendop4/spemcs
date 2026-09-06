@@ -7,6 +7,37 @@
 
 ---
 
+## ⚠ Document status: HISTORY, NOT SPECIFICATION — corrections added 2026-09-05
+
+> This report records a red-team pass performed on **2026-09-03**. It is not the specification and
+> must not be cited as the current state of the system. Claims that are now known to be wrong are
+> **left verbatim** and carry an inline marker `[†C-n]` pointing at the row below.
+>
+> | # | Claim in this report | Current ground truth | Source of truth |
+> |---|---|---|---|
+> | **†C-1** | §1 item 2 / Class B — device tokens enforce a **"7-day TTL"** | Device tokens live **30 days** (`ttl_seconds: int = 2592000`). Wrong when written; nothing ever issued a 7-day device token. The *binding* and *constant-time* claims around it are correct. | `backend/backend/services/auth_service.py:174` |
+> | **†C-2** | §1 item 1 / Class A — **"Unauthenticated requests consistently yield `401 Unauthorized`"** | Not consistently, and the word "consistently" is what makes this claim false rather than merely narrow. The seven Class A rows probed a handful of named routes and every one of them behaved as reported, but a full route inventory taken 2026-09-05 found **53 of 81 routes reachable with no credential at all** on the date of this report — exam device/session/alert/timeline reads, alerts, audit logs, reports, deployment, and the dashboard WebSocket among them. Closed in the P1-N/O/P phase: **71 gated / 10 deliberately public**, enforced by an inventory test that walks `app.routes`. An attack class that samples routes cannot support a claim quantified over all of them. | `backend/backend/tests/test_auth_security.py::test_every_route_is_either_gated_or_on_the_public_list` |
+> | **†C-3** | Table row **A-07** — *"Student role accessing admin/proctor routes"* | There is no `student` role and there never was one in `UserRole`, which has exactly `ADMIN` and `PROCTOR`. The test exercised an *unrecognised* role string, which is a real and useful case — but since the P1-N/O/P phase `role` is a closed enum on the schema, such a value is now rejected at validation (422) and can no longer reach the role comparison at all. | `backend/backend/models/user.py:13-15`; `backend/backend/schemas/user.py` |
+> | **†C-4** | §1 item 10 / Class J–K — SPEMCS rules are grouped as **`SPEMCS-EXAM-ENFORCEMENT`** | The group is **`SPEMCS_EXAM_LOCKDOWN`** (underscores). The *property* the row asserts — that ownership is deterministic and non-SPEMCS rules are untouched — holds, and is now stronger than described: ownership is scoped **per session** (`SPEMCS-{sessionId:N}-`), not merely by product prefix, so one session's rollback cannot delete another session's rules even inside the shared group. | `Endpoint-agent/src/Spemcs.Agent.Core/Network/EnforcementModels.cs:180`; `RollbackScopeTests.cs` |
+>
+> **Not corrected, because they are still accurate:** the RSA-PSS trust-chain results (Class E), the
+> agent-side revocation and rotation results (Class F), the M6/M7 state-machine and version-replay
+> results (Classes G, H), the crash/recovery results (Classes I, O), the transport results (Class M),
+> and the `Cryptographic Primitives` row in §2 — RSA-2048, RSA-PSS (SHA-256, MGF1, salt 32),
+> HMAC-SHA256, RFC 8785 canonical JSON. That row was correct here even while `HANDOFF.md` and the
+> frontend toast were calling the same signature "Ed25519"; **no Ed25519 code has ever existed in
+> this repository**, and both mislabels have been corrected.
+>
+> **One structural caveat this report could not have surfaced**, recorded here so it is not
+> rediscovered as a surprise: Class F's key-lifecycle results are about the *endpoint's*
+> `ITrustedKeyStore`. The *backend* signer at the time was a module-import-time RSA keypair fixed
+> under the literal id `dev-key-1`, so each backend restart minted a new private key under the old
+> name and invalidated every policy signature already issued. Agents then failed closed, which is
+> safe but silent. Backend key lifecycle now exists for real — see
+> `backend/backend/services/signing_key_manager.py`.
+
+---
+
 ## 1. Executive Summary
 
 As an independent red-team security validation engineer, an exhaustive adversarial security evaluation was conducted against the SPEMCS management server and C# endpoint agent codebase. The evaluation strictly probed the complete trust and enforcement chain:
@@ -16,8 +47,8 @@ $$\text{Attacker} \longrightarrow \text{REST API} \longrightarrow \text{WebSocke
 All 16 Attack Classes (A through P) defined in the M9 specification were analyzed and experimentally exercised against real runtime components. No production code was modified to facilitate test passage.
 
 ### Key Validation Outcomes:
-1. **REST Authentication & Role Authorization (Class A):** Unauthenticated requests consistently yield `401 Unauthorized`. Privilege escalation attempts by proctor credentials against administrative routes (exam creation, deletion, policy compilation, dynamic updates, device mutations) are strictly blocked with `403 Forbidden`. Forged JWTs and expired tokens are rejected.
-2. **Device Enrollment & Token Binding (Class B):** Bootstrap enrollment requires exact `ENROLLMENT_BOOTSTRAP_KEY` match. HMAC-SHA256 authenticated `device_token` credentials enforce constant-time signature verification, 7-day TTL, and hardware UUID binding. Presenting Token A for Hardware UUID B is definitively rejected.
+1. **REST Authentication & Role Authorization (Class A):** Unauthenticated requests consistently yield `401 Unauthorized`. Privilege escalation attempts by proctor credentials against administrative routes (exam creation, deletion, policy compilation, dynamic updates, device mutations) are strictly blocked with `403 Forbidden`. Forged JWTs and expired tokens are rejected. **`[†C-2 — "consistently" was not true; 53 of 81 routes were open]`**
+2. **Device Enrollment & Token Binding (Class B):** Bootstrap enrollment requires exact `ENROLLMENT_BOOTSTRAP_KEY` match. HMAC-SHA256 authenticated `device_token` credentials enforce constant-time signature verification, 7-day TTL, and hardware UUID binding. Presenting Token A for Hardware UUID B is definitively rejected. **`[†C-1 — the TTL is 30 days, not 7]`**
 3. **WebSocket Authentication & Context (Class C):** Connections to `/api/v1/ws/agent` sending `REGISTER` without or with mismatched/expired tokens terminate with close code `4401`. Spoofed identities cannot register.
 4. **Command Replay Defense (Class D):** Deduplication backed by SQLite `durable_processed_commands` prevents duplicate command execution. Freshness bounds ($\pm 5$ min) reject both stale and future timestamps. Deduplication is proven durable across simulated process and service restarts.
 5. **Policy Tampering & Trust Chain (Class E):** Any payload bit-flip (destination IP, port, management server, exam ID) invalidates the RSA-PSS signature. Untrusted signing keys, exam mismatches, and expired policies are rejected.
@@ -25,7 +56,7 @@ All 16 Attack Classes (A through P) defined in the M9 specification were analyze
 7. **M6 Fail-Safe State Machine (Class G):** The endpoint refuses to enter restrictive enforcement without a valid signed policy and successful management verification. Failed activation leaves zero orphan rules and preserves `Idle` or clean failure state. Conflicting sessions while `Active` are rejected.
 8. **M7 Dynamic Updates & IP Rotation (Class H):** Stale policy versions ($V_{\text{cand}} \le V_{\text{active}}$) are rejected with `VersionReplay`. Tampered candidate policies are rejected without disrupting the existing active enforcement session.
 9. **Crash / Interruption Recovery (Class I, O):** Offline expiration and service restart reconciliation detect expired policies, roll back outbound blocking, clean orphan rules, and restore baseline firewall state.
-10. **Firewall Rule Ownership & Baseline Preservation (Class J, K):** SPEMCS-owned rules are isolated by deterministic naming (`SPEMCS-...`) and grouping (`SPEMCS-EXAM-ENFORCEMENT`). Non-SPEMCS baseline rules (e.g. Core Networking DNS, RDP) are completely untouched during rule addition, removal, and rollback.
+10. **Firewall Rule Ownership & Baseline Preservation (Class J, K):** SPEMCS-owned rules are isolated by deterministic naming (`SPEMCS-...`) and grouping (`SPEMCS-EXAM-ENFORCEMENT`). Non-SPEMCS baseline rules (e.g. Core Networking DNS, RDP) are completely untouched during rule addition, removal, and rollback. **[†C-4 — the group is SPEMCS_EXAM_LOCKDOWN; ownership is now per-session, not per-product]**
 11. **Management Transport Security (Class M):** Verified in Section 3 that plain HTTP is rejected, untrusted CAs are rejected, hostname mismatches are rejected, expired certificates are rejected, and `status: degraded` is rejected.
 
 ---
@@ -100,13 +131,13 @@ All 16 Attack Classes (A through P) defined in the M9 specification were analyze
 
 | ID | Attack Surface | Attack Scenario / Vector | Expected Behavior | Actual Behavior | Result | Evidence File & Reference |
 |---|---|---|---|---|---|---|
-| **A-01** | REST API | No Authorization header on protected route | HTTP 401 Unauthorized | Returned 401 | **PASS** | `test_m9_redteam.py::test_unauthenticated_api_calls_return_401` |
+| **A-01** | REST API | No Authorization header on protected route | HTTP 401 Unauthorized | Returned 401 | **PASS** | `test_m9_redteam.py::test_unauthenticated_api_calls_return_401` **`[†C-2]`** |
 | **A-02** | REST API | Malformed / garbage JWT string | HTTP 401 Unauthorized | Returned 401 | **PASS** | `test_m9_redteam.py::test_class_a_malformed_jwt` |
 | **A-03** | REST API | Forged JWT signed with attacker key | HTTP 401 Unauthorized | Returned 401 | **PASS** | `test_m9_redteam.py::test_class_a_forged_signature_jwt` |
 | **A-04** | REST API | Expired JWT token | HTTP 401 Unauthorized | Returned 401 | **PASS** | `test_m9_redteam.py::test_class_a_expired_jwt` |
 | **A-05** | REST API | Proctor attempting exam creation / deletion | HTTP 403 Forbidden | Returned 403 | **PASS** | `test_m9_redteam.py::test_class_a_proctor_privilege_escalation` |
 | **A-06** | REST API | Proctor attempting policy compilation / update | HTTP 403 Forbidden | Returned 403 | **PASS** | `test_m9_redteam.py::test_class_a_proctor_privilege_escalation` |
-| **A-07** | REST API | Student role accessing admin/proctor routes | HTTP 403 Forbidden | Returned 403 | **PASS** | `test_m9_redteam.py::test_class_a_unauthorized_role_rejected` |
+| **A-07** | REST API | Student role accessing admin/proctor routes | HTTP 403 Forbidden | Returned 403 | **PASS** | `test_m9_redteam.py::test_class_a_unauthorized_role_rejected` **[†C-3 — no "student" role exists]** |
 | **B-01** | Device Reg | Registration without bootstrap enrollment key | HTTP 401 Unauthorized | Returned 401 | **PASS** | `test_m9_redteam.py::test_class_b_bootstrap_enrollment_rejections` |
 | **B-02** | Device Reg | Registration with incorrect bootstrap key | HTTP 401 Unauthorized | Returned 401 | **PASS** | `test_m9_redteam.py::test_class_b_bootstrap_enrollment_rejections` |
 | **B-03** | Device Token | Modified signature byte on device token | `verify_device_token` fails | Returned `None` | **PASS** | `test_m9_redteam.py::test_class_b_device_token_signature_tampering` |
@@ -251,7 +282,7 @@ The table below classifies the required 16 Attack Classes by their actual eviden
 
 | Attack Class | Required Scenarios | Actually Present | Evidence Type | Independently Re-run? | Result | Notes / Evidence Limits |
 |---|---|---|---|---|---|---|
-| **Class A: REST Auth & Matrix** | 5 | 5 | INTEGRATION | YES (`pytest`) | **PASS** | Full HTTP client integration with real FastAPI app and DB fixtures. Malformed/forged JWT, proctor escalation, student role rejection. |
+| **Class A: REST Auth & Matrix** | 5 | 5 | INTEGRATION | YES (`pytest`) | **PASS** | Full HTTP client integration with real FastAPI app and DB fixtures. Malformed/forged JWT, proctor escalation, student role rejection. **`[†C-2, †C-3]`** |
 | **Class B: Device Identity & Tokens** | 4 | 4 | INTEGRATION | YES (`pytest`) | **PASS** | Bootstrap key, signature byte tamper, cross-device theft, token expiration. |
 | **Class C: WebSocket Frame Auth** | 3 | 3 | INTEGRATION | YES (`pytest`) | **PASS** | Unauthenticated, invalid token, UUID mismatch, genuine registration tested against live WebSocket router. |
 | **Class D: Command Replay Protection** | 4 | 4 | INTEGRATION | YES (`dotnet test`) | **PASS** | Duplicate `command_id`, stale/future timestamp, durable SQLite restart survival. |
@@ -309,7 +340,7 @@ The table below classifies the required 16 Attack Classes by their actual eviden
 
 ### Critical Gap H: REST Object Authorization (BOLA/IDOR)
 - **Inspection:** Inspected `routes/exams.py`, `routes/policies.py`, and `routes/devices.py`.
-- **Findings:** REST routes enforce role-based access control (`require_role(["admin"])`). An administrator can manage any exam or policy object. Non-admin roles (proctor, student) are prevented from creating, updating, or deleting exams or compiling policies. Object-level multi-tenant student ownership is not part of the SPEMCS architecture (proctors monitor exam rooms, admins configure policies).
+- **Findings:** REST routes enforce role-based access control (`require_role(["admin"])`). An administrator can manage any exam or policy object. Non-admin roles (proctor, student) are prevented from creating, updating, or deleting exams or compiling policies. Object-level multi-tenant student ownership is not part of the SPEMCS architecture (proctors monitor exam rooms, admins configure policies). **[†C-2, †C-3 — "student" is not a role, and route-level gating was far from universal at the time]**
 - **Evidence Quality:** **INTEGRATION — PASS**
 
 ### Critical Gap J: Policy Tampering Matrix
@@ -322,7 +353,7 @@ The table below classifies the required 16 Attack Classes by their actual eviden
   - `ClassO_CheckExpiry_RollsBackWhenExpired` verifies automatic rollback when `expires_at` is reached.
   - `UpdatePolicy_WhenPolicyAExpiresDuringUpdate_ExpiryRemainsAuthoritative` proves update cannot extend an expired exam.
   - `UpdatePolicy_ConcurrentWithDeactivate_SerializedCleanly_NoOrphanRules` verifies thread-safe serialization via `SemaphoreSlim(1,1)`.
-  - `WindowsFirewallAdapterIntegrationTests` proves SPEMCS rules are tagged with group `SPEMCS-EXAM-ENFORCEMENT`.
+  - `WindowsFirewallAdapterIntegrationTests` proves SPEMCS rules are tagged with group `SPEMCS-EXAM-ENFORCEMENT`. **[†C-4 — the group string is SPEMCS_EXAM_LOCKDOWN]**
   - `ClassP_JournalStateConsistency_MatchesMemoryAndFirewall` verifies that SQLite durable state precisely tracks memory state.
 - **Evidence Quality:** **INTEGRATION — PASS**
 

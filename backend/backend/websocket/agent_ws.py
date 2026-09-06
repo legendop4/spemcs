@@ -10,18 +10,153 @@ Agent lifecycle:
 
 import logging
 from datetime import datetime
+from typing import Optional
+from uuid import UUID
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from fastapi.concurrency import run_in_threadpool
 
 from backend.app.database import SessionLocal
+from backend.app.identifiers import parse_uuid
 from backend.models.device import Device, DeviceStatus
 from backend.models.exam import Exam, ExamDevice, ExamStatus
+from backend.models.policy import NetworkPolicy
 from backend.models.session import ExamSession
+from backend.services import device_policy_state_service as dps
 from backend.websocket.manager import realtime_manager
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["websocket-agent"])
+
+
+# ── Endpoint-reported enforcement status ──────────────────────────────────────
+# The wire vocabulary an agent may report in POLICY_VALIDATION_RESULT / POLICY_UPDATE_STATUS,
+# mapped onto the `device_policy_states` lifecycle. This is a contract the endpoint has to
+# implement, not an observation: the shipped C# agent sends only REGISTER and HEARTBEAT_PONG over
+# this socket, so today these handlers persist nothing because nothing arrives. They exist and are
+# wired so the loop closes as soon as the agent side is written, and so the failure mode in the
+# meantime is a row stuck at APPLYING rather than a status invented by the server.
+_REPORTED_STATUS_MAP = {
+    "APPLIED": dps.STATUS_APPLIED,
+    "ENFORCING": dps.STATUS_APPLIED,
+    "APPLYING": dps.STATUS_APPLYING,
+    "FAILED": dps.STATUS_FAILED,
+    "REJECTED": dps.STATUS_FAILED,
+    "INVALID": dps.STATUS_FAILED,
+    "ROLLED_BACK": dps.STATUS_ROLLED_BACK,
+}
+
+
+def _map_reported_status(reported: Optional[str]) -> tuple[str, Optional[str]]:
+    """Map an endpoint-reported status onto the lifecycle. Unrecognised means FAILED.
+
+    Failing closed is deliberate and it is a trade. An unrecognised status could be a future agent
+    reporting something richer, and downgrading that to FAILED will refuse an activation. The
+    alternative is worse: leaving the row at APPLYING - which the activation precondition counts as
+    armed - would claim a workstation is locked down on the strength of a message the server could
+    not read. The unparsed value is carried into `last_error`, so the operator sees exactly what
+    arrived rather than a bare refusal.
+
+    It also grants an attacker nothing: anything that can reach this socket can send
+    ``status: "FAILED"`` outright.
+    """
+    key = (reported or "").strip().upper()
+    mapped = _REPORTED_STATUS_MAP.get(key)
+    if mapped is not None:
+        return mapped, None
+    return dps.STATUS_FAILED, f"Endpoint reported an unrecognised policy status: {reported!r}"
+
+
+def _persist_policy_state(
+    hardware_uuid: str,
+    *,
+    reported_status: Optional[str],
+    exam_id: Optional[str] = None,
+    policy_id: Optional[str] = None,
+    version: Optional[int] = None,
+    rules_installed: Optional[int] = None,
+    detail: Optional[str] = None,
+) -> None:
+    """Record an endpoint's enforcement report in `device_policy_states` (synchronous).
+
+    Runs in a threadpool with its own session, like the other database helpers in this module.
+    Every failure is contained: a WebSocket message handler must not be able to drop the
+    connection because a bookkeeping row could not be written.
+    """
+    status_value, mapping_error = _map_reported_status(reported_status)
+    last_error = mapping_error or detail if status_value == dps.STATUS_FAILED else None
+
+    db = SessionLocal()
+    try:
+        resolved_exam_id, resolved_policy_id = _resolve_policy_identity(
+            db, exam_id=exam_id, policy_id=policy_id, version=version
+        )
+        if resolved_exam_id is None or resolved_policy_id is None:
+            # Without both, the row cannot be keyed or its foreign key satisfied. Logged rather
+            # than guessed: attributing a report to the wrong exam is worse than not recording it,
+            # and "no row" is the not-armed answer the activation precondition already handles.
+            logger.warning(
+                "Cannot record enforcement state from %s: could not resolve exam/policy "
+                "(exam_id=%r, policy_id=%r, version=%r)",
+                hardware_uuid, exam_id, policy_id, version,
+            )
+            return
+
+        dps.record_state_for_hardware_uuid(
+            db,
+            exam_id=resolved_exam_id,
+            hardware_uuid=hardware_uuid,
+            policy_id=resolved_policy_id,
+            status=status_value,
+            rules_installed=rules_installed,
+            last_error=last_error,
+        )
+    except Exception as exc:
+        logger.error("Failed to record enforcement state for %s: %s", hardware_uuid, exc)
+        db.rollback()
+    finally:
+        db.close()
+
+
+def _resolve_policy_identity(
+    db,
+    *,
+    exam_id: Optional[str],
+    policy_id: Optional[str],
+    version: Optional[int],
+) -> tuple[Optional[UUID], Optional[UUID]]:
+    """Work out which (exam, policy) a report refers to, without guessing.
+
+    An agent may name the policy (POLICY_VALIDATION_RESULT) or the exam (POLICY_UPDATE_STATUS);
+    each is enough, because the policy row carries the exam id and an exam has a latest policy.
+    Deriving the exam from the policy row is exact - it is a foreign key, not an inference - and it
+    is why a report that omits `exam_id` is still recordable. What is never done is falling back to
+    "the device's active exam": at distribution time the exam is still PENDING, so that lookup
+    would fail in precisely the case this table exists to cover.
+    """
+    parsed_policy_id = parse_uuid(policy_id)
+    parsed_exam_id = parse_uuid(exam_id)
+
+    if parsed_policy_id is not None:
+        policy = (
+            db.query(NetworkPolicy)
+            .filter(NetworkPolicy.policy_id == parsed_policy_id)
+            .first()
+        )
+        if policy is not None:
+            return policy.exam_id, policy.policy_id
+
+    if parsed_exam_id is not None:
+        query = db.query(NetworkPolicy).filter(NetworkPolicy.exam_id == parsed_exam_id)
+        if version is not None:
+            match = query.filter(NetworkPolicy.version == version).first()
+            if match is not None:
+                return match.exam_id, match.policy_id
+        latest = query.order_by(NetworkPolicy.version.desc()).first()
+        if latest is not None:
+            return latest.exam_id, latest.policy_id
+
+    return None, None
 
 
 def _update_device_presence(hardware_uuid: str, online: bool) -> None:
@@ -268,6 +403,20 @@ async def agent_websocket_endpoint(websocket: WebSocket):
                 status_str = data.get("status")
                 logger.info(f"Agent {hardware_uuid} reported policy {policy_id} status: {status_str}")
                 if hardware_uuid:
+                    # Persisted BEFORE the broadcast. A broadcast reaches whichever dashboards
+                    # happen to be connected and is lost otherwise, so it was never a record of
+                    # anything - which is why the enforcement state of an exam could not be
+                    # answered after a page refresh.
+                    await run_in_threadpool(
+                        _persist_policy_state,
+                        hardware_uuid,
+                        reported_status=status_str,
+                        exam_id=data.get("exam_id"),
+                        policy_id=policy_id,
+                        version=data.get("version"),
+                        rules_installed=data.get("rules_installed"),
+                        detail=data.get("details"),
+                    )
                     await realtime_manager.broadcast_to_dashboard({
                         "type": "POLICY_STATUS_CHANGE",
                         "payload": {
@@ -285,6 +434,17 @@ async def agent_websocket_endpoint(websocket: WebSocket):
                 # Agent reporting dynamic network policy update outcome
                 logger.info(f"Agent {hardware_uuid} reported policy update: {data}")
                 if hardware_uuid:
+                    # A dynamic update carries the exam and the new version rather than a policy
+                    # id; _resolve_policy_identity handles either.
+                    await run_in_threadpool(
+                        _persist_policy_state,
+                        hardware_uuid,
+                        reported_status=data.get("status"),
+                        exam_id=data.get("exam_id"),
+                        version=data.get("new_version"),
+                        rules_installed=data.get("rules_installed"),
+                        detail=data.get("failure_reason"),
+                    )
                     await realtime_manager.broadcast_to_dashboard({
                         "type": "POLICY_UPDATE_STATUS_CHANGE",
                         "payload": {

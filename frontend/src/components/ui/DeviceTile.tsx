@@ -70,11 +70,11 @@ export function DeviceTile({
       {/* Status badge */}
       <div className="mb-2">
         <Badge variant={
-          isViolation ? 'red' :
+          isViolation ? 'danger' :
           isOffline ? 'gray' :
-          status === 'monitoring' ? 'green' :
-          status === 'pending' ? 'amber' :
-          'green'
+          status === 'monitoring' ? 'success' :
+          status === 'pending' ? 'warning' :
+          'success'
         }>
           {isViolation ? 'Violation' :
            isOffline ? 'Offline' :

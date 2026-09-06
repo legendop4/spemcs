@@ -50,41 +50,61 @@ def create_exam(
     return exam
 
 
-def activate_exam(db: Session, exam_id: UUID) -> tuple[Exam, list[str]]:
+def activate_exam(
+    db: Session,
+    exam_id: UUID,
+    armed_device_ids: Optional[set[UUID]] = None,
+) -> tuple[Exam, list[str]]:
     """Activate an exam. Returns (exam, list_of_device_hardware_uuids).
-    The caller is responsible for sending WebSocket commands."""
+    The caller is responsible for sending WebSocket commands.
+
+    `armed_device_ids` restricts which assigned devices are launched and marked MONITORING. It is
+    the enforcement precondition's answer (see services/enforcement_readiness.py), and None means
+    "no restriction" - the behaviour for exams that make no network-lockdown claim.
+
+    Why the restriction exists: this function used to mark EVERY assigned device MONITORING and
+    return every hardware UUID, regardless of whether the signed policy had reached any of them.
+    For a network-enforcement exam that is a fail-open in both directions at once - a workstation
+    that received no policy is told to enter exam mode with no lockdown, and the dashboard labels
+    it "monitoring", which is the word an invigilator reads as "this seat is controlled".
+    """
     exam = db.query(Exam).filter(Exam.exam_id == exam_id).first()
     if not exam:
         raise ValueError(f"Exam {exam_id} not found")
     if exam.status == ExamStatus.ACTIVE.value:
         raise ValueError(f"Exam {exam_id} is already active")
-    
+
     exam.status = ExamStatus.ACTIVE.value
     exam.started_at = datetime.utcnow()
-    
+
     # Get assigned devices with their hardware UUIDs
     exam_devices = (
         db.query(ExamDevice)
         .filter(ExamDevice.exam_id == exam_id)
         .all()
     )
-    
+
     device_ids = [ed.device_id for ed in exam_devices if ed.device_id]
     devices = db.query(Device).filter(Device.device_id.in_(device_ids)).all() if device_ids else []
     device_map = {d.device_id: d for d in devices}
-    
+
     hardware_uuids = []
     for ed in exam_devices:
+        if armed_device_ids is not None and ed.device_id not in armed_device_ids:
+            # Left PENDING rather than set MONITORING, and not launched. An un-armed seat in an
+            # enforcement exam is not under exam control and must not be reported as if it were.
+            ed.status = ExamDeviceStatus.PENDING.value
+            continue
         ed.status = ExamDeviceStatus.MONITORING.value
         device = device_map.get(ed.device_id)
         if device:
             target_id = device.hardware_uuid or device.device_name
             if target_id:
                 hardware_uuids.append(target_id)
-    
+
     db.commit()
     db.refresh(exam)
-    
+
     logger.info(f"Exam activated: {exam.exam_name} -> {len(hardware_uuids)} devices")
     return exam, hardware_uuids
 

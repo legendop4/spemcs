@@ -11,12 +11,22 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from backend.app.database import get_db
+from backend.app.dependencies import require_admin, require_staff
 from backend.models.report import Report
 from backend.schemas.report import ReportCreate, ReportRead, ReportUpdate
 from backend.services import report_service
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/reports", tags=["reports"])
+# Reports are the collated violation record for an exam, per student and per device, and
+# /export/csv streams the whole thing. This was the largest anonymous disclosure surface in the
+# API: nine endpoints, no credentials. Reads are staff; anything that creates, alters or destroys
+# a report is admin-only, on the same reasoning as alerts and events - the evidence must not be
+# rewritable by everyone who may read it.
+router = APIRouter(
+    prefix="/api/reports",
+    tags=["reports"],
+    dependencies=[Depends(require_staff)],
+)
 
 
 def _as_dict(model: Any) -> dict:
@@ -37,7 +47,8 @@ def get_report(report_id: UUID, db: Session = Depends(get_db)):
 
 
 @router.post("", response_model=ReportRead, status_code=status.HTTP_201_CREATED)
-def create_report(payload: ReportCreate, db: Session = Depends(get_db)):
+def create_report(payload: ReportCreate, db: Session = Depends(get_db),
+                  _admin=Depends(require_admin)):
     data = _as_dict(payload)
     if data.get("report_id") is None:
         data.pop("report_id", None)
@@ -49,7 +60,8 @@ def create_report(payload: ReportCreate, db: Session = Depends(get_db)):
 
 
 @router.put("/{report_id}", response_model=ReportRead)
-def update_report(report_id: UUID, payload: ReportUpdate, db: Session = Depends(get_db)):
+def update_report(report_id: UUID, payload: ReportUpdate, db: Session = Depends(get_db),
+                  _admin=Depends(require_admin)):
     report = db.get(Report, report_id)
     if report is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Report not found")
@@ -61,7 +73,8 @@ def update_report(report_id: UUID, payload: ReportUpdate, db: Session = Depends(
 
 
 @router.delete("/{report_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_report(report_id: UUID, db: Session = Depends(get_db)):
+def delete_report(report_id: UUID, db: Session = Depends(get_db),
+                  _admin=Depends(require_admin)):
     report = db.get(Report, report_id)
     if report is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Report not found")
@@ -73,7 +86,8 @@ def delete_report(report_id: UUID, db: Session = Depends(get_db)):
 # --- Report Generation ---
 
 @router.post("/generate/{exam_id}", response_model=ReportRead)
-def generate_report(exam_id: UUID, db: Session = Depends(get_db)):
+def generate_report(exam_id: UUID, db: Session = Depends(get_db),
+                    _admin=Depends(require_admin)):
     """Generate a comprehensive exam report from live data."""
     try:
         report = report_service.generate_exam_report(db, exam_id)

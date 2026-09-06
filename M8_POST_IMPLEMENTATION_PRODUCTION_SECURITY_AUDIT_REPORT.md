@@ -7,6 +7,30 @@
 
 ---
 
+## ⚠ Document status: HISTORY, NOT SPECIFICATION — corrections added 2026-09-05
+
+> This report is a **dated record of what was true on 2026-09-03**. It is not the specification and
+> must not be cited as the current state of the system. The takeover work that followed it changed
+> several of the facts below. Where a claim is now wrong, the claim is **left verbatim** (so the
+> record stays honest about what was asserted at the time) and carries an inline marker `[†C-n]`
+> pointing at the row here.
+>
+> | # | Claim in this report | Current ground truth | Source of truth |
+> |---|---|---|---|
+> | **†C-1** | §1 — device tokens have **"7-day lifetimes"** | Device tokens live **30 days** (`ttl_seconds: int = 2592000`). The claim was wrong when written, not merely superseded — nothing ever issued a 7-day device token. | `backend/backend/services/auth_service.py:174` |
+> | **†C-2** | §1 item 5 / §4 — role-based authorization **"Proved"**, unauthenticated requests **"cannot access protected routes"** | The matrix in §4 was really executed and really passed, but it only covers the eight routes it names. A full route inventory taken 2026-09-05 found that **53 of 81 routes were reachable with no credential at all** when this report was written — including every exam sub-resource read, the alert and audit-log routes, and the dashboard WebSocket. The gap was closed in the P1-N/O/P phase: the count is now **71 gated / 10 deliberately public**, and the inventory is executable data rather than prose. A passing authorization matrix is evidence about the routes it enumerates and nothing else. | `backend/backend/tests/test_auth_security.py` (`STAFF_READ_ENDPOINTS`, `ADMIN_ONLY_ENDPOINTS`, `STAFF_MUTATION_ENDPOINTS`, `DEVICE_ONLY_ENDPOINTS`, `INTENTIONALLY_PUBLIC`, and `test_every_route_is_either_gated_or_on_the_public_list`) |
+> | **†C-3** | §1 / §5 — **"cryptographic key lifecycle management"**, `KeyStore_Rotation`, `KeyStore_Revocation` | True, but **only about the agent side**. `ITrustedKeyStore` revocation and rotation on the endpoint were and are real. The *backend signer* at the time was a module-import-time RSA keypair labelled with the fixed literal `key_id="dev-key-1"`, so every backend restart minted a new private key under the old name and silently invalidated every policy signature already issued — agents then failed closed and enforcement was quietly dead. Backend key lifecycle now exists for real: a persistent keyring with ids **derived** from the key material (`spemcs-<32 hex SHA-256 of SPKI DER>`, or `ephemeral-<…>`), so an unannounced key swap is detectable rather than invisible. | `backend/backend/services/signing_key_manager.py`; `backend/backend/tests/test_signing_key_lifecycle.py` |
+> | **†C-4** | §1 / §5 — **"132 / 132"** C# and **"74 / 74"** Python | Superseded by growth, not wrong: **393 / 393** C# and **869 passed / 1 skipped** Python as of 2026-09-05. Quoted here only so the old figures are not read as a current regression baseline. | `dotnet test -c Release`; `cd backend && python -m pytest backend/tests -q` |
+>
+> **Not corrected, because they are still accurate:** the six TLS transport cases (A–F), the
+> `status: "degraded"` rejection contract, HMAC-SHA256 with `hmac.compare_digest` for device tokens,
+> hardware-UUID binding, the ±5-minute command-replay freshness bound and its SQLite durability, and
+> RSA-2048 / RSA-PSS / SHA-256 as the policy signature algorithm. **No Ed25519 code has ever existed
+> in this repository**; the "Ed25519" text that appeared in `HANDOFF.md` and in the frontend compile
+> toast was a mislabel and both have been corrected.
+
+---
+
 ## Executive Summary
 
 Milestone 8 establishes production-grade security, authenticated endpoint identity, role-based REST authorization, cryptographic key lifecycle management, durable command replay protection, and authenticated management transport across the SPEMCS system.
@@ -16,10 +40,10 @@ Following the Final Evidence Closure pass, the management transport security mod
 2. **Real TLS Handshake & Chain Validation:** Empirically verified across 6 live TLS integration test cases (Cases A through F) using real in-process TLS sockets, standard RFC 5280 certificate chains, and strict hostname validation without any certificate validation bypasses.
 3. **Separation of Transport Authentication & Payload Validation:** The audit strictly distinguishes server transport identity (verified via X.509 TLS certificate validation) from application health status (verified via `service: "SPEMCS"`, `status: "ok"`).
 4. **Resolution of Health Status Semantics:** The contract is restricted strictly to `status == "ok"`. Status `"degraded"` or any non-ok status is rejected and will not allow pre-enforcement policy acceptance.
-5. **Role-Based Authorization & Device Identity:** Proved via unit and integration tests that proctor capabilities cannot perform administrative actions (403 Forbidden), unauthenticated requests cannot access protected routes (401 Unauthorized), and device tokens bound via HMAC-SHA256 cannot be forged or transferred across hardware UUIDs.
+5. **Role-Based Authorization & Device Identity:** Proved via unit and integration tests that proctor capabilities cannot perform administrative actions (403 Forbidden), unauthenticated requests cannot access protected routes (401 Unauthorized), and device tokens bound via HMAC-SHA256 cannot be forged or transferred across hardware UUIDs. **`[†C-2]`**
 6. **Regression Guard:** 100% test pass rate maintained with zero regressions across M4 (firewall adapter/journal), M5 (distribution/verification), M6 (enforcement state machine), and M7 (dynamic updates).
 
-**Final Test Counts:**
+**Final Test Counts:** **`[†C-4]`**
 - **C# Endpoint Agent:** **132 / 132 PASSED** (14 new M8 security tests + 118 existing M4–M7 tests).
 - **Python Management Server:** **74 / 74 PASSED** (4 new M8 security tests + 70 existing M1–M7 tests).
 
@@ -28,7 +52,7 @@ Following the Final Evidence Closure pass, the management transport security mod
 ## 1. Verified Properties vs. Limitations
 
 ### VERIFIED
-- **Device-Token Authentication:** HMAC-SHA256 authenticated enrollment token (`device_token`) issuing high-entropy nonces and 7-day lifetimes; constant-time comparison via `hmac.compare_digest`.
+- **Device-Token Authentication:** HMAC-SHA256 authenticated enrollment token (`device_token`) issuing high-entropy nonces and 7-day lifetimes; constant-time comparison via `hmac.compare_digest`. **`[†C-1 — the lifetime is 30 days, not 7]`**
 - **Device UUID Binding:** Proved that Device A's token cannot authenticate or connect as Device B's `hardware_uuid`.
 - **WebSocket Identity Authentication:** Mismatched or missing `device_token` during WebSocket `REGISTER` handshake terminates with close code `4401`.
 - **REST Authentication & Role Matrix:** Distinguishes `admin` from `proctor` capabilities across exams, policies, and devices. Returns `401 Unauthorized` for unauthenticated requests and `403 Forbidden` for unauthorized proctor actions.
@@ -109,6 +133,11 @@ Test Case Summary:
 - `CommandReplay_SurvivesServiceRestart`: Duplicate detection verified across separate journal instances backed by the same SQLite database.
 
 ### Key Lifecycle & Pre-Verification Revocation
+
+**`[†C-3]`** — everything in this subsection is about the **agent-side** `ITrustedKeyStore`. It was
+true then and is true now. It says nothing about backend signing-key lifecycle, which did not exist
+at the time.
+
 - `KeyStore_Revocation_BlocksSignatureVerification`: Revoked key is rejected immediately with `RejectedKeyRevoked` before RSA signature computation.
 - `KeyStore_Rotation_AllowsMultipleTrustedKeys`: Concurrent active keys verified.
 - `KeyStore_Revocation_DurableAcrossRestart`: Revocations persist in `revoked_signing_keys` across journal reloads.
@@ -116,6 +145,13 @@ Test Case Summary:
 ---
 
 ## 4. REST API & WebSocket Authorization Matrix Verification
+
+> **`[†C-2]`** Every line below was really executed and really passed. Read it as evidence about
+> **these eight routes**, not about the API. 53 of the API's 81 routes were reachable with no
+> credential at all on the date of this report; the matrix could not have caught that, because a
+> matrix only tests the cells you write down. The replacement is inventory-driven
+> (`test_every_route_is_either_gated_or_on_the_public_list` walks `app.routes`), so a new ungated
+> route fails the suite instead of waiting to be noticed.
 
 - `test_unauthenticated_api_calls_return_401`: All unauthenticated calls to `/api/exams`, `/api/policies/compile/{id}`, `/api/policies/distribute/...`, `/api/devices` return `401 Unauthorized`.
 - `test_role_based_authorization_matrix`:

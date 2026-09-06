@@ -27,7 +27,11 @@ class User(Base):
     email = Column(String(100), unique=True, nullable=False)
     password = Column(String(255), nullable=False)
     password_hash = Column(String(255), nullable=False)
-    role = Column(String(20), default=UserRole.ADMIN.value, nullable=False)
+    # The column default is the LEAST privileged role. It used to be ADMIN, which made any future
+    # insert that omitted `role` an administrator by accident - the same defect the UserCreate
+    # schema had, one layer down. This is a Python-side default applied at INSERT, not a
+    # server_default, so changing it needs no migration and rewrites no existing row.
+    role = Column(String(20), default=UserRole.PROCTOR.value, nullable=False)
     avatar_color = Column(String(20), nullable=False)
     is_active = Column(Boolean, default=True, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)

@@ -169,7 +169,7 @@ export default function LiveMonitorPage() {
               <h1 style={{ fontSize: '20px', fontWeight: 800, color: 'var(--text)' }}>
                 {exam?.exam_name || 'Live Exam Proctoring'}
               </h1>
-              <Badge variant={exam?.status === 'active' ? 'green' : 'gray'} dot={true}>
+              <Badge variant={exam?.status === 'active' ? 'success' : 'gray'} dot={true}>
                 {exam?.status?.toUpperCase() || 'UNKNOWN'}
               </Badge>
             </div>
@@ -187,10 +187,10 @@ export default function LiveMonitorPage() {
 
       {/* KPI Stats */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '16px' }}>
-        <StatCard icon={Monitor} title="Total Assigned" value={devices.length} color="blue" />
-        <StatCard icon={Users} title="Active Students" value={sessionCount} color="green" />
-        <StatCard icon={AlertTriangle} title="Security Violations" value={violationCount} color="red" />
-        <StatCard icon={Monitor} title="Online Devices" value={onlineCount} color="amber" />
+        <StatCard icon={Monitor} label="Total Assigned" value={devices.length} accent="info" />
+        <StatCard icon={Users} label="Active Students" value={sessionCount} accent="success" />
+        <StatCard icon={AlertTriangle} label="Security Violations" value={violationCount} accent="danger" />
+        <StatCard icon={Monitor} label="Online Devices" value={onlineCount} accent="warning" />
       </div>
 
       {/* Filter Tabs */}

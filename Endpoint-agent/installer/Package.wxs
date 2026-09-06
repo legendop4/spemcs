@@ -1,14 +1,44 @@
-<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
+
+  <!--
+    SPEMCS Endpoint Agent - production MSI.
+
+    Built against the publish outputs in ..\publish\stage (merged Service + UI). Nothing in this
+    file bakes environment configuration: the server URL, enrollment key, device token and
+    approved browser all come from %ProgramData%\Spemcs\Endpoint Agent\config.json at first run.
+    The MSI writes an EMPTY template there so that the wizard can create the real one without
+    needing write access to Program Files.
+
+    Security posture: installation does NOT touch the Windows Firewall in any way - no rules, no
+    default-action changes, no lockdown, and no rollback. Enforcement is reached only through the
+    authenticated exam-activation flow. The Codex rule and every other pre-existing rule are never
+    enumerated or modified.
+
+    The GUI is run automatically for the installing user so the first-run enrolment wizard appears
+    without any user having to find the Start Menu entry; the service (LocalSystem) starts and
+    self-heals, and the UI is started per logon session via the Run key, on first launch only.
+  -->
+
   <Package Name="SPEMCS Endpoint Agent"
            Manufacturer="SPEMCS Security Inc."
-           Version="2.0.0.0"
+           Version="2.1.0.0"
            UpgradeCode="C781A814-118D-4F23-9D5C-2782A0399587"
            Scope="perMachine">
 
-    <MajorUpgrade DowngradeErrorMessage="A newer version of SPEMCS Endpoint Agent is already installed." />
-    
-    <MediaTemplate EmbedCab="yes" />
+    <SummaryInformation Description="SPEMCS Secure Examination Endpoint Agent"
+                         Manufacturer="SPEMCS Security Inc." />
 
+    <MajorUpgrade AllowSameVersionUpgrades="yes"
+                  DowngradeErrorMessage="A newer version of SPEMCS Endpoint Agent is already installed." />
+
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+
+    <!--
+      The service account is LocalSystem, so all mutable runtime state lives under
+      %ProgramData%\Spemcs (logs, SQLite store, rollback journal, device credentials, config).
+      Program Files stays read-only for the service and contains only immutable program files.
+    -->
     <StandardDirectory Id="ProgramFiles64Folder">
       <Directory Id="MANUFACTURERFOLDER" Name="SPEMCS">
         <Directory Id="INSTALLFOLDER" Name="Endpoint Agent" />
@@ -19,44 +49,246 @@
       <Directory Id="ApplicationProgramsFolder" Name="SPEMCS" />
     </StandardDirectory>
 
-    <ComponentGroup Id="ProductComponents" Directory="INSTALLFOLDER">
-      <!-- Harvest all published files from win-x64 self-contained output -->
-      <Files Include="..\src\Spemcs.Agent.UI\bin\Release\net8.0-windows\win-x64\publish\**">
-        <Exclude Files="..\src\Spemcs.Agent.UI\bin\Release\net8.0-windows\win-x64\publish\Spemcs.Agent.UI.exe" />
+    <!--
+      ProgramData layout. Only what the code actually reads or writes is declared:
+
+        %ProgramData%\Spemcs\Endpoint Agent\config.json  serverUrl / enrollmentKey / approvedBrowser
+                                                        / deviceToken. Written by the UI wizard
+                                                        (AgentConfigService), read by the service
+                                                        (Program.cs:23).
+        %ProgramData%\Spemcs\Logs\                       RollingFileLoggerProvider, both processes.
+        %ProgramData%\Spemcs\agent.db                    SqliteAgentStore, created on first run.
+        %ProgramData%\Spemcs\network_journal.db          SqliteRollbackJournal, created on first run.
+
+      The two .db files sit directly under the root and are created by the service at run time, so
+      they need no Directory entry and must not be MSI-managed: an uninstall that removed the
+      rollback journal would destroy the record of the firewall baseline a crashed session still
+      has to restore.
+
+      The casing difference across call sites (Program.cs uses "Spemcs", AgentConfigService uses
+      "SPEMCS") is harmless on NTFS — all of them resolve to the same directory — and is left alone
+      rather than churned.
+    -->
+    <StandardDirectory Id="CommonAppDataFolder">
+      <Directory Id="SPEMCSDATA" Name="Spemcs">
+        <Directory Id="CONFIGFOLDER" Name="Endpoint Agent" />
+        <Directory Id="LOGSDIR" Name="Logs" />
+      </Directory>
+    </StandardDirectory>
+
+    <!--
+      Per-user first-run latch so the "Launch UI" custom action runs exactly once after install.
+    -->
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="SPEMCSAPPDATA" Name="SPEMCS">
+        <Directory Id="FIRSTRUNDIR" Name="EndpointAgent" />
+      </Directory>
+    </StandardDirectory>
+
+    <!--
+      All immutable program files, harvested from the merged framework-dependent publish output
+      (..\publish\stage — Service and UI published into one directory, so the shared
+      Spemcs.Agent.Core / .Ipc assemblies and the Sqlite native bits are carried exactly once).
+
+      The two .exe files are excluded here and declared as explicit components below, because
+      ServiceInstall must hang off the service's own component and the UI's File needs a stable Id
+      for the Start Menu shortcut and the launch custom action. Exclusions must be Exclude children:
+      a '!pattern' inside @Include is not treated as a negated glob, it is read as part of the
+      literal path (WIX8601).
+    -->
+    <ComponentGroup Id="ProductFiles" Directory="INSTALLFOLDER">
+      <Files Include="..\publish\stage\**">
+        <Exclude Files="..\publish\stage\Spemcs.Agent.Service.exe" />
+        <Exclude Files="..\publish\stage\Spemcs.Agent.UI.exe" />
+
+        <!--
+          The complete publish runtime dependencies (including runtimes\win\lib\net8.0\ for
+          System.ServiceProcess.ServiceController.dll and System.Diagnostics.EventLog.dll,
+          as well as native platform binaries) must be preserved. Excluding runtimes\ causes
+          the Windows Service to fail at startup with .NET Runtime Event 1026
+          (FileNotFoundException for System.ServiceProcess.ServiceController).
+        -->
+        <!--
+          Symbols are excluded so the shipped package carries no source-path or private-build
+          detail. They stay in ..\publish\stage for local debugging.
+        -->
+        <Exclude Files="..\publish\stage\*.pdb" />
+
+        <!--
+          Build metadata, not a runtime input: packages.lock.json lands in the publish output but is
+          only consumed by NuGet restore. Shipping it puts the project's dependency graph on every
+          examination workstation for no benefit.
+        -->
+        <Exclude Files="..\publish\stage\packages.lock.json" />
       </Files>
+    </ComponentGroup>
 
-      <!-- Main Executable Component with Start Menu and Startup Registry -->
-      <Component Id="MainExecutableComponent" Guid="D5A9137B-7362-421A-9872-C081977BEA12">
-        <File Id="MainExecutableFile"
-              Source="..\src\Spemcs.Agent.UI\bin\Release\net8.0-windows\win-x64\publish\Spemcs.Agent.UI.exe"
-              KeyPath="yes">
-          <!-- Start Menu Shortcut -->
-          <Shortcut Id="ApplicationStartMenuShortcut"
-                    Directory="ApplicationProgramsFolder"
-                    Name="SPEMCS Endpoint Agent"
-                    Description="SPEMCS Secure Examination Endpoint Agent"
-                    WorkingDirectory="INSTALLFOLDER"
-                    Advertise="no" />
-        </File>
+    <!--
+      Service binary as its own component so ServiceInstall/ServiceControl can hang off it: MSI
+      requires the service's own component to carry those elements, and it lets uninstall stop the
+      service before its files are removed.
 
-        <!-- Machine-wide Windows Run Startup Key -->
-        <RegistryValue Root="HKLM"
-                       Key="Software\Microsoft\Windows\CurrentVersion\Run"
-                       Name="SpemcsEndpointAgent"
-                       Value="&quot;[INSTALLFOLDER]Spemcs.Agent.UI.exe&quot;"
-                       Type="string" />
+      Identity must match Program.cs:11 exactly — AddWindowsService sets ServiceName to
+      "SPEMCS Endpoint Agent", and a mismatch here produces a registered service the host cannot
+      attach to (error 1063 on start). Name is the SCM key, DisplayName is cosmetic.
+
+      LocalSystem is required, not a convenience: the service mutates profile-level
+      DefaultOutboundAction and firewall rules through the COM firewall API, and writes under
+      %ProgramData%\Spemcs. Start=auto with the util:ServiceConfig restart policy below is what
+      makes lockdown survive a crash — a dead agent mid-exam is an unenforced seat.
+    -->
+    <Component Id="ServiceExecutableComponent" Directory="INSTALLFOLDER" Guid="F3B0D2A1-4C62-4E4E-9D8B-2F6A1C4D7E83">
+      <File Id="ServiceExecutableFile"
+            Source="..\publish\stage\Spemcs.Agent.Service.exe"
+            KeyPath="yes" />
+
+      <ServiceInstall Id="AgentServiceInstall"
+                      Name="SPEMCS Endpoint Agent"
+                      DisplayName="SPEMCS Endpoint Agent"
+                      Description="Enforces SPEMCS examination network lockdown and reports endpoint telemetry."
+                      Type="ownProcess"
+                      Start="auto"
+                      Account="LocalSystem"
+                      ErrorControl="normal"
+                      Vital="yes">
+        <!--
+          Restart on every failure, including the third and later one, and never reset the failure
+          count (ResetPeriod=0). An agent that stops restarting after two crashes would leave the
+          seat silently unenforced for the rest of the exam.
+        -->
+        <util:ServiceConfig FirstFailureActionType="restart"
+                            SecondFailureActionType="restart"
+                            ThirdFailureActionType="restart"
+                            RestartServiceDelayInSeconds="30"
+                            ResetPeriodInDays="0" />
+      </ServiceInstall>
+
+      <!--
+        Start on install, stop on uninstall. Deliberately NOT Stop="both"/Start="both": a major
+        upgrade already sequences uninstall-then-install, and stopping on an upgrade's install pass
+        would bounce the agent mid-exam.
+      -->
+      <ServiceControl Id="AgentServiceControl"
+                      Name="SPEMCS Endpoint Agent"
+                      Start="install"
+                      Stop="uninstall"
+                      Remove="uninstall"
+                      Wait="yes" />
+    </Component>
+
+    <!--
+      The UI executable: KeyPath, the Start Menu shortcut, and the HKCU Run key that launches the
+      first-run wizard per user.
+    -->
+    <Component Id="UiExecutableComponent" Directory="INSTALLFOLDER" Guid="D5A9137B-7362-421A-9872-C081977BEA12">
+      <File Id="UiExecutableFile"
+            Source="..\publish\stage\Spemcs.Agent.UI.exe"
+            KeyPath="yes">
+        <Shortcut Id="ApplicationStartMenuShortcut"
+                  Directory="ApplicationProgramsFolder"
+                  Name="SPEMCS Endpoint Agent"
+                  Description="SPEMCS Secure Examination Endpoint Agent"
+                  WorkingDirectory="INSTALLFOLDER"
+                  Advertise="no" />
+      </File>
+
+      <RegistryValue Root="HKCU"
+                     Key="Software\Microsoft\Windows\CurrentVersion\Run"
+                     Name="SpemcsEndpointAgent"
+                     Value="&quot;[INSTALLFOLDER]Spemcs.Agent.UI.exe&quot;"
+                     Type="string" />
+    </Component>
+
+    <!-- Empty config.json template — no URL, no secret; the wizard fills it in. -->
+    <ComponentGroup Id="FirstRunData" Directory="CONFIGFOLDER">
+      <Component Id="ConfigTemplateComponent"
+                 Guid="B3A2E1C0-2F41-4D4B-9C7A-1E5A0D3C4B62">
+        <File Id="ConfigTemplateFile"
+              Source="..\installer\data\config.template.json"
+              KeyPath="yes" />
       </Component>
     </ComponentGroup>
 
-    <!-- Start Menu Directory Component -->
-    <Component Id="ProgramMenuDirComponent" Directory="ApplicationProgramsFolder" Guid="6A493012-58BC-4318-8A3B-DC47E82C84A9">
-      <RemoveFolder Id="CleanUpProgramMenuFolder" On="uninstall" />
-      <RegistryValue Root="HKCU" Key="Software\SPEMCS\EndpointAgent" Name="installed" Type="integer" Value="1" KeyPath="yes" />
+    <!--
+      Create the log directory at install time so the first UI run has somewhere to write without
+      depending on a standard user's rights to create a directory under %ProgramData%\Spemcs.
+      Deliberately no RemoveFolder: uninstall leaves the logs behind, because they are the audit
+      trail for exams that already ran.
+    -->
+    <Component Id="LogDirectoryComponent"
+               Directory="LOGSDIR"
+               Guid="C7D41E58-9A03-4B2E-8F16-5B7C9D0E2A34">
+      <CreateFolder />
     </Component>
 
+    <!-- Start Menu directory is removed when the last shortcut disappears. -->
+    <Component Id="ProgramMenuDirComponent"
+               Directory="ApplicationProgramsFolder"
+               Guid="6A493012-58BC-4318-8A3B-DC47E82C84A9">
+      <RemoveFolder Id="CleanUpProgramMenuFolder" On="uninstall" />
+      <RegistryValue Root="HKCU"
+                     Key="Software\SPEMCS\EndpointAgent"
+                     Name="installed"
+                     Type="integer"
+                     Value="1"
+                     KeyPath="yes" />
+    </Component>
+
+    <!-- First-run latch component (per-user, version-scoped). -->
+    <Component Id="FirstRunLatchComponent"
+               Directory="FIRSTRUNDIR"
+               Guid="A1C3E5B2-7D49-4A6F-B8C1-3D9E2F4A6B70">
+      <RegistryValue Root="HKCU"
+                     Key="Software\SPEMCS\EndpointAgent\FirstRun"
+                     Name="SeenVersion"
+                     Type="string"
+                     Value="2.1.0.0"
+                     KeyPath="yes" />
+      <CreateFolder />
+    </Component>
+
+    <!--
+      Launch the enrolment wizard once, at the end of a successful install, as the INSTALLING USER
+      rather than as the elevated installer.
+
+      Why WixShellExec and not a plain Custom Action on the exe: the MSI's execute sequence runs
+      elevated (LocalSystem for a perMachine package). Spawning the WPF UI from there would give a
+      SYSTEM-owned window on the wrong desktop, and any config.json it wrote would be owned by
+      SYSTEM. Impersonate="yes" + NotElevated hands the launch back to the interactive user's token,
+      which is also what makes the HKCU Run key above and the wizard's own writes land in the right
+      profile.
+
+      Condition NOT Installed keeps it to fresh installs and excludes repair/uninstall; the
+      first-run latch component keeps a major upgrade from re-showing the wizard to a user who has
+      already enrolled this machine.
+
+      Return="ignore" is deliberate: the agent is installed and the service is running by this
+      point. Failing the whole install — and rolling back a working, enforcing agent — because a
+      cosmetic window did not open would be the wrong trade.
+    -->
+    <Property Id="WixShellExecTarget" Value="[#UiExecutableFile]" />
+
+    <CustomAction Id="LaunchEnrollmentWizard"
+                  BinaryRef="Wix4UtilCA_X64"
+                  DllEntry="WixShellExec"
+                  Impersonate="yes"
+                  Execute="immediate"
+                  Return="ignore" />
+
+    <InstallExecuteSequence>
+      <Custom Action="LaunchEnrollmentWizard"
+              After="InstallFinalize"
+              Condition="NOT Installed" />
+    </InstallExecuteSequence>
+
     <Feature Id="MainFeature" Title="SPEMCS Endpoint Agent" Level="1">
-      <ComponentGroupRef Id="ProductComponents" />
+      <ComponentGroupRef Id="ProductFiles" />
+      <ComponentRef Id="ServiceExecutableComponent" />
+      <ComponentRef Id="UiExecutableComponent" />
+      <ComponentGroupRef Id="FirstRunData" />
+      <ComponentRef Id="LogDirectoryComponent" />
       <ComponentRef Id="ProgramMenuDirComponent" />
+      <ComponentRef Id="FirstRunLatchComponent" />
     </Feature>
 
   </Package>
