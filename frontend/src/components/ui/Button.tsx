@@ -1,6 +1,10 @@
 import type { ButtonHTMLAttributes, ReactNode } from 'react';
 
-type Variant = 'primary' | 'secondary' | 'danger' | 'ghost';
+// 'outline-danger' was already implemented below but was missing from this union, and the branch
+// that renders it was reachable only through an `as any` cast inside the component. The variant is
+// real - ExamShieldPage uses it for the "Stop" control on an active exam, where a filled danger
+// button next to "Live monitor" reads as the primary action.
+type Variant = 'primary' | 'secondary' | 'danger' | 'ghost' | 'outline-danger';
 type Size = 'sm' | 'md' | 'lg';
 
 interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
@@ -29,7 +33,7 @@ export function Button({ variant = 'primary', size = 'md', children, className =
   } else if (variant === 'ghost') {
     bg = 'transparent';
     color = 'var(--color-text-muted)';
-  } else if (variant === 'outline-danger' as any) {
+  } else if (variant === 'outline-danger') {
     bg = '#ffffff';
     color = 'var(--color-danger)';
     border = '1px solid rgba(209, 36, 47, 0.2)'; // faint red border

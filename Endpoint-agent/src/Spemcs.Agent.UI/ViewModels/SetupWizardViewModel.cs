@@ -16,6 +16,7 @@ public class SetupWizardViewModel : ViewModelBase
     private readonly ICentralApiClient _apiClient;
     private readonly IAgentConfigService _configService;
     private readonly IStartupService _startupService;
+    private readonly Func<string?> _enrollmentKeyResolver;
 
     private string _serverUrl = "http://127.0.0.1:8001";
     private LabDto? _selectedLab;
@@ -106,14 +107,22 @@ public class SetupWizardViewModel : ViewModelBase
 
     public Action? OnRegistrationCompleted { get; set; }
 
+    /// <param name="enrollmentKeyResolver">
+    /// Supplies the bootstrap enrolment key. Injected for the same reason
+    /// <see cref="CentralApiClient"/> takes one: a test must be able to drive the real registration
+    /// path without writing to %ProgramData% or to the machine's environment. Defaults to
+    /// <see cref="EnrollmentKeyProvider.Resolve"/>, so production behaviour is unchanged.
+    /// </param>
     public SetupWizardViewModel(
         ICentralApiClient? apiClient = null,
         IAgentConfigService? configService = null,
-        IStartupService? startupService = null)
+        IStartupService? startupService = null,
+        Func<string?>? enrollmentKeyResolver = null)
     {
         _apiClient = apiClient ?? new CentralApiClient();
         _configService = configService ?? new AgentConfigService();
         _startupService = startupService ?? new StartupService();
+        _enrollmentKeyResolver = enrollmentKeyResolver ?? (() => EnrollmentKeyProvider.Resolve());
 
         FetchLabsCommand = new RelayCommand(async () => await FetchLabsAsync(), () => !IsBusy);
         RegisterCommand = new RelayCommand(async () => await RegisterAsync(), () => CanRegister());
@@ -224,6 +233,24 @@ public class SetupWizardViewModel : ViewModelBase
             var hostname = Environment.MachineName;
             var hwUuid = WorkstationIdentifier; // Use authoritative identifier
 
+            // Read from configuration at the moment of use. It used to be a compiled-in
+            // default on the DTO, which published the backend's enrolment secret in every
+            // installed copy of this application.
+            var enrollmentKey = _enrollmentKeyResolver();
+            if (string.IsNullOrWhiteSpace(enrollmentKey))
+            {
+                // Refused here rather than sent as null, so the operator is pointed at this
+                // workstation's configuration instead of at a 401 that reads as the server
+                // rejecting them. Reaching this state is unlikely now that the lab fetch needs the
+                // same key, but it is reachable: the key can be removed between the two steps.
+                SetStatus(
+                    "No enrollment key is configured on this workstation. Set " +
+                    $"'{EnrollmentKeyProvider.ConfigPropertyName}' in {EnrollmentKeyProvider.DefaultConfigPath()} " +
+                    $"or the {EnrollmentKeyProvider.EnvironmentVariableName} environment variable.",
+                    isError: true);
+                return;
+            }
+
             var req = new DeviceRegistrationRequest
             {
                 DeviceName = WorkstationIdentifier,
@@ -231,10 +258,25 @@ public class SetupWizardViewModel : ViewModelBase
                 HardwareUuid = hwUuid,
                 LabId = SelectedLab.LabId.ToString(),
                 PcNumber = PcNumber.Trim(),
-                Hostname = hostname
+                Hostname = hostname,
+                EnrollmentKey = enrollmentKey
             };
 
             var res = await _apiClient.RegisterDeviceAsync(ServerUrl, req);
+
+            // A registration that issues no device token has not enrolled this workstation: every
+            // subsequent agent call (/api/v1/events, /api/v1/sessions/start, the agent WebSocket)
+            // is gated by that token, so persisting Registered=true without it produces an agent
+            // that starts, connects, monitors, and has all of its findings refused with 401 - the
+            // exact failure this fix exists to remove. Refuse instead of recording a false success.
+            if (string.IsNullOrWhiteSpace(res.DeviceToken))
+            {
+                SetStatus(
+                    "The Central Server completed registration but issued no device token, so this " +
+                    "workstation cannot report violations. Registration has NOT been saved.",
+                    isError: true);
+                return;
+            }
 
             // Persist configuration locally
             var config = new AgentConfig

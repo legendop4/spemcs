@@ -123,31 +123,59 @@ public partial class MainWindow : Window
                 await ws.ConnectAsync(wsUri, cancellationToken);
                 LogUi($"WebSocket connected! State={ws.State}");
 
-                // Self-Heal: Bootstrap Device Token if missing
+                // Self-heal: re-enrol if config.json carries no device token.
+                //
+                // This block was previously incapable of working and its failure was invisible. It
+                // posted to `api/devices/register`, which does not exist (the route is
+                // `api/v1/devices/register`), with snake_case field names the DeviceRegisterReq
+                // schema does not declare, and with the backend's committed placeholder enrolment key
+                // written as a literal - publishing that secret in every installed copy of this
+                // application while also breaking any deployment that had changed it. A non-success
+                // response was then discarded without a log line.
+                //
+                // It now goes through the same CentralApiClient the setup wizard uses, so there is
+                // one registration code path with one enrolment-key source.
                 if (string.IsNullOrWhiteSpace(_config.DeviceToken))
                 {
                     try
                     {
-                        var bootstrapRes = await _http.PostAsJsonAsync("api/devices/register", new
+                        var enrollmentKey = EnrollmentKeyProvider.Resolve();
+                        if (string.IsNullOrWhiteSpace(enrollmentKey))
                         {
-                            device_name = _deviceName,
-                            hardware_uuid = _deviceName,
-                            enrollment_key = "spemcs-enrollment-bootstrap-key-default"
-                        }, cancellationToken);
+                            LogUi("Self-heal registration skipped: no enrollment key is configured on this workstation.");
+                        }
+                        else
+                        {
+                            var regData = await new CentralApiClient().RegisterDeviceAsync(
+                                _backendUrl,
+                                new DeviceRegistrationRequest
+                                {
+                                    DeviceName = _deviceName,
+                                    HardwareUuid = string.IsNullOrWhiteSpace(_config.HardwareUuid)
+                                        ? _deviceName
+                                        : _config.HardwareUuid,
+                                    LabId = _config.LabId,
+                                    PcNumber = _config.PcNumber,
+                                    Hostname = Environment.MachineName,
+                                    EnrollmentKey = enrollmentKey,
+                                },
+                                cancellationToken).ConfigureAwait(false);
 
-                        if (bootstrapRes.IsSuccessStatusCode)
-                        {
-                            var regData = await bootstrapRes.Content.ReadFromJsonAsync<DeviceRegistrationResponse>(cancellationToken: cancellationToken);
-                            if (regData != null && !string.IsNullOrWhiteSpace(regData.DeviceToken))
+                            if (!string.IsNullOrWhiteSpace(regData.DeviceToken))
                             {
                                 _config.DeviceToken = regData.DeviceToken;
                                 new AgentConfigService().Save(_config);
+                                LogUi($"Self-heal registration succeeded for {_deviceName}; device token stored.");
+                            }
+                            else
+                            {
+                                LogUi("Self-heal registration returned no device token.");
                             }
                         }
                     }
                     catch (Exception bootEx)
                     {
-                        LogUi($"Bootstrap registration exception: {bootEx.Message}");
+                        LogUi($"Self-heal registration failed: {bootEx.Message}");
                     }
                 }
 
@@ -459,12 +487,35 @@ public partial class MainWindow : Window
                 // this agent was actually monitoring for on an Edge exam.
                 approvedBrowser = ApprovedBrowserFamilies.ToWireValue(_approvedBrowser.Effective)
             };
-            await _http.PostAsJsonAsync("api/v1/sessions/start", startReq);
+            // The device token is REQUIRED here: /api/v1/sessions/start is gated by
+            // require_device, and this call used to be posted with no credential at all, so it was
+            // answered 401 and the failure was discarded by the empty catch below. The session then
+            // existed only on this workstation - no server-side row, so nothing to attribute later
+            // violations to.
+            using var message = AgentRequestFactory.CreateJsonPost(
+                "api/v1/sessions/start", startReq, _config.DeviceToken);
+            using var response = await _http.SendAsync(message).ConfigureAwait(true);
+
+            LogUi(AgentRequestFactory.DescribeOutcome(
+                "api/v1/sessions/start",
+                !string.IsNullOrWhiteSpace(_config.DeviceToken),
+                (int)response.StatusCode));
         }
-        catch { }
+        catch (Exception ex)
+        {
+            // Still non-fatal - monitoring must start even if the server never hears about the
+            // session - but no longer silent. The previous `catch { }` is why a 401 here left no
+            // trace on the workstation.
+            LogUi($"api/v1/sessions/start failed: {ex.Message}");
+        }
 
         // 2. Start Live Background Process Monitor
-        var eventPublisher = new InlineEventPublisher(_http);
+        //
+        // The token is read through a delegate rather than captured by value because the WebSocket
+        // self-heal path can write a freshly issued token into _config while monitoring is already
+        // running. A captured null would keep every subsequent event unauthenticated for the rest of
+        // the session.
+        var eventPublisher = new InlineEventPublisher(_http, () => _config.DeviceToken);
         _monitor = new ProcessMonitor(
             _source,
             _classifier,
@@ -502,11 +553,31 @@ public partial class MainWindow : Window
     }
 }
 
+/// <summary>
+/// Publishes violation events from the UI process directly over HTTP.
+/// </summary>
+/// <remarks>
+/// This class is the reason the backend logged a stream of
+/// <c>POST /api/v1/events -&gt; 401 Unauthorized</c>: it posted through a bare
+/// <see cref="HttpClient"/> that carried no <c>X-Device-Token</c>, and then discarded the refusal in
+/// an empty catch. Every violation this agent detected was rejected, and nothing on the workstation
+/// or the dashboard said so.
+/// </remarks>
 public class InlineEventPublisher : IEventPublisher
 {
     private readonly HttpClient _http;
+    private readonly Func<string?> _deviceTokenAccessor;
 
-    public InlineEventPublisher(HttpClient http) => _http = http;
+    /// <param name="deviceTokenAccessor">
+    /// Read per request, not captured once: the token can be issued after monitoring has already
+    /// started (the WebSocket self-heal path), and a value captured at construction would be stale
+    /// for the rest of the session.
+    /// </param>
+    public InlineEventPublisher(HttpClient http, Func<string?> deviceTokenAccessor)
+    {
+        _http = http;
+        _deviceTokenAccessor = deviceTokenAccessor;
+    }
 
     public async Task PublishEventAsync(ViolationEvent violation, CancellationToken cancellationToken = default)
     {
@@ -524,8 +595,28 @@ public class InlineEventPublisher : IEventPublisher
                 executablePath = violation.ExecutablePath,
                 reason = violation.Reason
             };
-            await _http.PostAsJsonAsync("api/v1/events", req, cancellationToken);
+
+            var token = _deviceTokenAccessor();
+            using var message = AgentRequestFactory.CreateJsonPost("api/v1/events", req, token);
+            using var response = await _http.SendAsync(message, cancellationToken).ConfigureAwait(false);
+
+            // Only failures are logged. A monitored session generates an event per process
+            // transition, so logging successes would grow the file without adding information -
+            // whereas a 401 or 403 here means violations are being silently dropped, which is the
+            // one outcome nobody can afford to have gone unrecorded.
+            if (!response.IsSuccessStatusCode)
+            {
+                MainWindow.LogUi(AgentRequestFactory.DescribeOutcome(
+                    "api/v1/events",
+                    !string.IsNullOrWhiteSpace(token),
+                    (int)response.StatusCode));
+            }
         }
-        catch { }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+        {
+            // Transport failure. Non-fatal by design - monitoring continues and the event is lost -
+            // but recorded, unlike the previous `catch { }`.
+            MainWindow.LogUi($"api/v1/events transport failure: {ex.Message}");
+        }
     }
 }

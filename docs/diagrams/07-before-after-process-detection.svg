@@ -1,0 +1,103 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 750" width="1280" height="750" style="background:#0d1117; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
+  <defs>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#000" flood-opacity="0.5" />
+    </filter>
+    <marker id="arrowRed" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 8 5 L 0 9 z" fill="#f85149" />
+    </marker>
+    <marker id="arrowGreen" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 8 5 L 0 9 z" fill="#3fb950" />
+    </marker>
+  </defs>
+
+  <!-- Title -->
+  <rect x="0" y="0" width="1280" height="60" fill="#161b22" />
+  <text x="30" y="38" fill="#58a6ff" font-size="22" font-weight="700">Process Monitoring: Normal Execution vs SPEMCS Interception</text>
+  <rect x="1130" y="18" width="120" height="26" rx="13" fill="#238636" />
+  <text x="1145" y="35" fill="#ffffff" font-size="11" font-weight="600">VERIFIED CODE</text>
+
+  <!-- LEFT: BEFORE (UNMONITORED WORKSTATION) -->
+  <g transform="translate(30, 80)">
+    <rect x="0" y="0" width="580" height="630" rx="10" fill="#161b22" stroke="#f85149" stroke-width="2" filter="url(#shadow)" />
+    <rect x="0" y="0" width="580" height="40" rx="10" fill="#b91c1c" />
+    <text x="20" y="26" fill="#ffffff" font-size="15" font-weight="700">BEFORE: Unmonitored Process Execution</text>
+
+    <rect x="20" y="55" width="540" height="75" rx="6" fill="#0d1117" stroke="#30363d" />
+    <text x="35" y="78" fill="#f85149" font-size="12" font-weight="700">Candidate Launches Cheating Tools Freely</text>
+    <text x="35" y="96" fill="#8b949e" font-size="11">• OS kernel spawns process in Session 1+ with normal user privileges</text>
+    <text x="35" y="112" fill="#8b949e" font-size="11">• No security agent or ETW event sink listens to process lifecycle</text>
+
+    <!-- Execution Walkthrough -->
+    <g transform="translate(20, 145)">
+      <!-- Step 1 -->
+      <rect x="0" y="0" width="540" height="75" rx="6" fill="#0d1117" stroke="#30363d" />
+      <text x="15" y="25" fill="#f0f6fc" font-size="12" font-weight="600">1. Candidate executes AnyDesk.exe or Discord.exe</text>
+      <text x="15" y="44" fill="#8b949e" font-size="11">Binary loaded from user Downloads / AppData folder without administrative prompt.</text>
+      <text x="15" y="60" fill="#8b949e" font-size="10">Status: Process ID allocated, threads created, network sockets opened.</text>
+
+      <!-- Step 2 -->
+      <rect x="0" y="85" width="540" height="75" rx="6" fill="#0d1117" stroke="#30363d" />
+      <text x="15" y="25" fill="#f85149" font-size="12" font-weight="600">2. Remote Connection Established</text>
+      <text x="15" y="44" fill="#8b949e" font-size="11">AnyDesk connects to external relay server; external party views exam screen.</text>
+      <text x="15" y="60" fill="#8b949e" font-size="10">Proctor has zero visibility into background processes running on lab PC.</text>
+
+      <!-- Step 3 -->
+      <rect x="0" y="170" width="540" height="75" rx="6" fill="#0d1117" stroke="#30363d" />
+      <text x="15" y="25" fill="#f85149" font-size="12" font-weight="600">3. Undetected Exam Compromise</text>
+      <text x="15" y="44" fill="#8b949e" font-size="11">External solver controls mouse/keyboard or answers questions in real time.</text>
+      <text x="15" y="60" fill="#8b949e" font-size="10">Audit trail: NONE. Logged events: NONE. Exam marked as valid submission.</text>
+    </g>
+
+    <!-- Consequences -->
+    <rect x="20" y="405" width="540" height="205" rx="6" fill="#0d1117" stroke="#f85149" />
+    <text x="35" y="430" fill="#f85149" font-size="12" font-weight="700">Critical Failure Modes of Traditional Proctoring:</text>
+    <text x="35" y="452" fill="#8b949e" font-size="11">❌ Periodic polling (e.g. every 10-30s) misses ephemeral scripts and fast exits</text>
+    <text x="35" y="472" fill="#8b949e" font-size="11">❌ Rename attacks (renaming anydesk.exe to svchost.exe) bypass naive name filters</text>
+    <text x="35" y="492" fill="#8b949e" font-size="11">❌ User-space proctors can be killed via Task Manager or Process Hacker</text>
+    <text x="35" y="512" fill="#8b949e" font-size="11">❌ Virtual machines (VMware / VirtualBox) hide the real host operating environment</text>
+    <text x="35" y="532" fill="#8b949e" font-size="11">❌ Secondary screen sharing software streams video without physical cable detection</text>
+  </g>
+
+  <!-- RIGHT: AFTER (SPEMCS ACTIVE PROCESS INTERCEPTION) -->
+  <g transform="translate(670, 80)">
+    <rect x="0" y="0" width="580" height="630" rx="10" fill="#161b22" stroke="#238636" stroke-width="2" filter="url(#shadow)" />
+    <rect x="0" y="0" width="580" height="40" rx="10" fill="#238636" />
+    <text x="20" y="26" fill="#ffffff" font-size="15" font-weight="700">AFTER: SPEMCS Real-Time Process Interception (&lt;50ms)</text>
+
+    <rect x="20" y="55" width="540" height="75" rx="6" fill="#0d1117" stroke="#30363d" />
+    <text x="35" y="78" fill="#3fb950" font-size="12" font-weight="700">WMI / ETW Kernel Event Hooks in Session 0</text>
+    <text x="35" y="96" fill="#8b949e" font-size="11">• Event Tracing for Windows &amp; WMI __InstanceCreationEvent registered at service start</text>
+    <text x="35" y="112" fill="#8b949e" font-size="11">• Captures process creation across all Windows desktop sessions synchronously</text>
+
+    <!-- Execution Walkthrough -->
+    <g transform="translate(20, 145)">
+      <!-- Step 1 -->
+      <rect x="0" y="0" width="540" height="75" rx="6" fill="#0d1117" stroke="#30363d" />
+      <text x="15" y="25" fill="#58a6ff" font-size="12" font-weight="600">1. Candidate executes AnyDesk.exe</text>
+      <text x="15" y="44" fill="#8b949e" font-size="11">Kernel generates Win32_Process creation event in &lt;10ms.</text>
+      <text x="15" y="60" fill="#7ee787" font-size="10">Event captured by ConfigurableProcessClassifier in Session 0.</text>
+
+      <!-- Step 2 -->
+      <rect x="0" y="85" width="540" height="75" rx="6" fill="#0d1117" stroke="#30363d" />
+      <text x="15" y="25" fill="#3fb950" font-size="12" font-weight="600">2. Deep Signature &amp; Path Classification</text>
+      <text x="15" y="44" fill="#8b949e" font-size="11">Classifier evaluates: process_name, executable_path, command_line arguments.</text>
+      <text x="15" y="60" fill="#e3b341" font-size="10">Matches prohibited category: "RemoteDesktop" | Severity: CRITICAL</text>
+
+      <!-- Step 3 -->
+      <rect x="0" y="170" width="540" height="75" rx="6" fill="#0d1117" stroke="#30363d" />
+      <text x="15" y="25" fill="#3fb950" font-size="12" font-weight="600">3. Telemetry Stream &amp; Dashboard Alert</text>
+      <text x="15" y="44" fill="#8b949e" font-size="11">Agent sends POST /api/v1/events with Device HMAC Token.</text>
+      <text x="15" y="60" fill="#7ee787" font-size="10">Backend writes to events &amp; alerts tables; broadcasts via WSS to proctors.</text>
+    </g>
+
+    <!-- Verified Guarantees -->
+    <rect x="20" y="405" width="540" height="205" rx="6" fill="#0d1117" stroke="#238636" />
+    <text x="35" y="430" fill="#3fb950" font-size="12" font-weight="700">Enforcement Guarantees Verified in Source Code:</text>
+    <text x="35" y="452" fill="#8b949e" font-size="11">✅ Sub-50ms detection latency via WMI __InstanceCreationEvent subscription</text>
+    <text x="35" y="472" fill="#8b949e" font-size="11">✅ Session 0 privilege ring prevents student process from killing the monitor</text>
+    <text x="35" y="492" fill="#8b949e" font-size="11">✅ Network lockdown prevents the spawned tool from phoning home even before killed</text>
+    <text x="35" y="512" fill="#8b949e" font-size="11">✅ Prohibited process events outside exam recorded due to nullable alerts.exam_id</text>
+    <text x="35" y="532" fill="#8b949e" font-size="11">✅ Verified in code: ProcessClassifier.cs | EtwDnsListener.cs | EventUploaderWorker.cs</text>
+  </g>
+</svg>

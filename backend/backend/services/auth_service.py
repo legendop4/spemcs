@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from backend.app.config import settings
 from backend.app.database import get_db
+from backend.app.identifiers import parse_uuid
 from backend.models.user import User
 
 logger = logging.getLogger(__name__)
@@ -49,11 +50,14 @@ def get_current_user(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
     db: Session = Depends(get_db),
 ) -> Optional[User]:
-    """Extract and validate the current user from JWT token.
-    Returns None if no token is provided (for gradual auth adoption)."""
+    """Extract and validate the current user from a JWT.
+
+    Returns ``None`` for every failure, which is why this must never be the only gate on a route -
+    see the note in ``backend/app/dependencies.py``. Use ``require_auth`` or a role gate.
+    """
     if not credentials:
         return None
-    
+
     try:
         payload = jwt.decode(
             credentials.credentials,
@@ -63,8 +67,25 @@ def get_current_user(
         user_id = payload.get("sub")
         if not user_id:
             return None
-        
-        user = db.query(User).filter(User.user_id == user_id).first()
+
+        # The claim is validated here rather than by the database. `sub` is an arbitrary string as
+        # far as JWT is concerned, and handing a non-UUID string to a UUID column comparison makes
+        # PostgreSQL raise InvalidTextRepresentation - a 500 where the correct answer is "not
+        # authenticated". See backend/app/identifiers.py.
+        subject_id = parse_uuid(user_id)
+        if subject_id is None:
+            logger.warning("Rejected a token whose subject claim is not a UUID.")
+            return None
+
+        user = db.query(User).filter(User.user_id == subject_id).first()
+        # is_active is checked HERE and not only at login. Tokens live for
+        # ACCESS_TOKEN_EXPIRE_MINUTES (8 hours) and there is no revocation list, so without this a
+        # disabled account keeps full REST access for the rest of its token's lifetime - disabling
+        # an operator mid-exam would appear to work while changing nothing. The dashboard socket
+        # already refused disabled accounts (resolve_operator_token), so the two paths disagreed:
+        # the same credential was refused on the WebSocket and accepted on the REST API.
+        if user is None or not user.is_active:
+            return None
         return user
     except JWTError:
         return None
@@ -82,6 +103,47 @@ def require_auth(
             detail="Authentication required",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    return user
+
+
+def resolve_operator_token(token: str, db: Session) -> Optional[User]:
+    """Validate a raw operator JWT outside the request-dependency system.
+
+    ``get_current_user`` and ``require_auth`` are FastAPI dependencies and cannot be used from a
+    WebSocket handler, which has no ``HTTPAuthorizationCredentials`` and (in a browser) cannot set
+    an ``Authorization`` header on the handshake at all. This is the same validation expressed as
+    a plain function so the dashboard socket authenticates against exactly the token format and
+    signing key that the REST API does - a second, parallel implementation is how the two drift
+    until one of them accepts something the other refuses.
+
+    Returns ``None`` for every failure (absent, malformed, bad signature, expired, unknown
+    subject, disabled account). The caller must not report which: the WebSocket close frame is
+    visible to the client and would otherwise distinguish "no such account" from "wrong password
+    era token".
+    """
+    if not token:
+        return None
+    try:
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+    except JWTError:
+        # Covers signature failure AND expiry - python-jose raises ExpiredSignatureError, a
+        # JWTError subclass, so an expired token is refused here rather than falling through.
+        return None
+
+    user_id = payload.get("sub")
+    if not user_id:
+        return None
+
+    # Same claim validation as get_current_user, for the same reason. These two functions must
+    # accept and refuse exactly the same tokens; a difference here is a difference between what the
+    # REST API admits and what the dashboard WebSocket admits.
+    subject_id = parse_uuid(user_id)
+    if subject_id is None:
+        return None
+
+    user = db.query(User).filter(User.user_id == subject_id).first()
+    if user is None or not user.is_active:
+        return None
     return user
 
 

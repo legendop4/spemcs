@@ -12,7 +12,14 @@
 const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
 const WS_URL = `${wsProtocol}//${window.location.host}/api/v1/ws/dashboard`;
 
+/**
+ * Key the auth context stores the operator JWT under (see context/AppContext.tsx).
+ */
+const TOKEN_STORAGE_KEY = 'spemcs_token';
+
 export type WsMessageType =
+  | 'AUTHENTICATED'
+  | 'ERROR'
   | 'INITIAL_STATE'
   | 'DEVICE_STATUS_CHANGE'
   | 'VIOLATION_ALERT'
@@ -70,6 +77,14 @@ export class SpemcsWebSocket {
         this._isConnected = true;
         this._isConnecting = false;
         this.reconnectAttempts = 0;
+
+        // The dashboard socket requires authentication as its FIRST frame; the server sends
+        // nothing at all until it succeeds. The token goes in the frame body rather than in a
+        // ?token= query parameter because the query string is recorded verbatim by every reverse
+        // proxy and access log on the path.
+        const token = localStorage.getItem(TOKEN_STORAGE_KEY);
+        this.sendAction('AUTHENTICATE', { token: token ?? '' });
+
         this.startHeartbeat();
 
         // Re-subscribe to previously subscribed exams
@@ -98,6 +113,16 @@ export class SpemcsWebSocket {
         this._isConnected = false;
         this._isConnecting = false;
         this.stopHeartbeat();
+
+        // 4401 (unauthenticated) and 4403 (role not permitted) are decisions, not outages.
+        // Reconnecting would produce an unbounded retry loop against a server that will refuse
+        // every attempt identically, and would fill its logs with failed-auth warnings that mask
+        // real ones. A new token arrives by logging in again, which calls connect() afresh.
+        if (event.code === 4401 || event.code === 4403) {
+          console.warn('[WS] Dashboard socket refused this session; not reconnecting.');
+          this._shouldReconnect = false;
+          return;
+        }
 
         if (this._shouldReconnect) {
           this.scheduleReconnect();

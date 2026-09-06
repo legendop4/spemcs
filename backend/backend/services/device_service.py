@@ -8,6 +8,7 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
+from backend.app.identifiers import parse_uuid
 from backend.models.device import Device, DeviceStatus
 from backend.models.lab import Lab
 from backend.models.lab_device import LabDevice
@@ -54,10 +55,22 @@ def register_device(
     
     target_lab = None
     if lab_id:
-        try:
-            target_lab = db.query(Lab).filter(Lab.lab_id == lab_id).first()
-        except Exception:
-            target_lab = db.query(Lab).filter(Lab.lab_name == lab_id).first()
+        # `lab_id` arrives as a string from the enrolment body, so it is parsed here rather than
+        # handed to a UUID column comparison. The previous shape was
+        #
+        #     try:    target_lab = ...filter(Lab.lab_id == lab_id).first()
+        #     except Exception: target_lab = ...filter(Lab.lab_name == lab_id).first()
+        #
+        # and the bare except was a fail-open, not a fallback: ANY error in the lookup produced
+        # `target_lab = None`, and a None lab skips the (lab, pc_number) uniqueness check below
+        # entirely - so a second workstation could silently claim a seat that was already taken.
+        # Accepting a lab *name* here is deliberate and stays supported; what is gone is treating
+        # an unexpected failure as "no such lab".
+        parsed_lab_id = parse_uuid(lab_id)
+        if parsed_lab_id is not None:
+            target_lab = db.query(Lab).filter(Lab.lab_id == parsed_lab_id).first()
+        if target_lab is None:
+            target_lab = db.query(Lab).filter(Lab.lab_name == str(lab_id)).first()
     
     effective_building = target_lab.building_id if target_lab else hierarchy["building_name"]
     effective_lab_name = target_lab.lab_name if target_lab else hierarchy["lab_name"]

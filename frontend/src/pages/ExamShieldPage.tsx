@@ -129,7 +129,7 @@ export function ExamShieldPage() {
       setCompilingId(examId);
       const policy = await api.compileExamPolicy(examId);
       setPolicyMap(prev => ({ ...prev, [examId]: { compiled: true, policy } }));
-      showToast('Network policy compiled and signed with Ed25519 successfully', 'info');
+      showToast('Network policy compiled and signed (RSA-PSS / SHA-256) successfully', 'info');
     } catch (err: any) {
       showToast(`Policy compilation failed: ${err.message || err}`, 'error');
     } finally {
@@ -186,11 +186,41 @@ export function ExamShieldPage() {
         }
       }
 
-      // Step 4: Activate exam (sends LAUNCH_EXAM_MODE)
+      // Step 4: Activate exam (sends LAUNCH_EXAM_MODE).
+      //
+      // The lockdown precondition is NOT decided here any more. This page used to be the only
+      // thing standing between "compile failed" and an ACTIVE enforcement exam, which meant a
+      // direct POST bypassed the check entirely. The server now evaluates readiness itself and
+      // answers 409 with a structured refusal, leaving the exam PENDING. All this branch does is
+      // render that refusal in the operator's language.
       setLaunchStatus(prev => ({ ...prev, [examId]: 'Activating proctoring session...' }));
-      await activateExam(examId);
-      showToast('Exam activated — instructions sent to devices', 'info');
+      const result = await activateExam(examId);
+      const notEnforcing: any[] = result?.devices_not_enforcing || [];
+      if (notEnforcing.length > 0) {
+        // Named, not counted: these seats are ACTIVE-exam members that are NOT under lockdown.
+        const names = notEnforcing.map((d: any) => d.device_name || d.hardware_uuid || d.device_id).join(', ');
+        showToast(
+          `Exam activated, but ${notEnforcing.length} seat(s) are NOT enforcing and were left out: ${names}`,
+          'error'
+        );
+      } else {
+        showToast('Exam activated — instructions sent to devices', 'info');
+      }
     } catch (err: any) {
+      if (err?.status === 409 && err?.detail && typeof err.detail === 'object') {
+        const problems: any[] = err.detail.problems || [];
+        const unarmed: any[] = err.detail.unarmed_devices || [];
+        const lines = problems.map((p: any) => `• ${p.message || p.code}`);
+        if (unarmed.length > 0) {
+          const names = unarmed.map((d: any) => d.device_name || d.hardware_uuid || d.device_id).join(', ');
+          lines.push(`• Seats not enforcing: ${names}`);
+        }
+        showToast(
+          `Launch blocked — this exam is not ready to activate:\n${lines.join('\n')}`,
+          'error'
+        );
+        return;
+      }
       showToast(err.message || 'Failed to activate exam', 'error');
     } finally {
       setLaunchingId(null);
@@ -315,7 +345,7 @@ export function ExamShieldPage() {
                       <Button size="sm" variant="primary" onClick={() => navigate(`/exam-shield/monitor/${exam.exam_id}`)}>
                         <Eye size={14} /> Live monitor
                       </Button>
-                      <Button size="sm" variant="outline-danger" as="any" disabled={deactivatingId === exam.exam_id} onClick={() => handleDeactivate(exam.exam_id)}>
+                      <Button size="sm" variant="outline-danger" disabled={deactivatingId === exam.exam_id} onClick={() => handleDeactivate(exam.exam_id)}>
                         {deactivatingId === exam.exam_id ? 'Stopping...' : 'Stop'}
                       </Button>
                     </div>

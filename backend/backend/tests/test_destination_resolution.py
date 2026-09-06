@@ -78,6 +78,11 @@ def resolver():
                 "metadata.univ.edu": ["169.254.169.254"],
                 "loopback.univ.edu": ["127.0.0.1"],
                 "mixed.univ.edu": ["127.0.0.1", "203.0.113.10"],
+                # An AAAA answer that is an ISATAP address. A resolver a candidate can influence -
+                # or a compromised authoritative zone - is the realistic way a transition-mechanism
+                # address reaches the compiler, since ip_ranges cannot be caller-supplied at all.
+                "isatap.univ.edu": ["2001:db8::5efe:c000:204"],
+                "isatap-mixed.univ.edu": ["2001:db8::200:5efe:c000:204", "203.0.113.11"],
                 "empty.univ.edu": [],
                 "wide.univ.edu": [f"203.0.113.{n}" for n in range(1, 40)],
             }
@@ -140,6 +145,12 @@ def _compile(**overrides):
         "::ffff:127.0.0.1/128",  # IPv4-mapped IPv6
         "2002:c000:204::/48",    # 6to4 tunnel range
         "2001:0:53aa::/48",      # Teredo tunnel range
+        # ISATAP (RFC 5214) - the third transition mechanism requirement 7 names, and the only one
+        # with no assigned prefix. It is identified by the modified-EUI-64 interface identifier, so
+        # these sit under an ordinary documentation prefix and are caught by the marker, not a CIDR.
+        "2001:db8::5efe:c000:204/128",      # ISATAP, non-globally-unique form (0000:5EFE)
+        "2001:db8::200:5efe:c000:204/128",  # ISATAP, globally-unique form (0200:5EFE)
+        "2001:db8::5efe:0:0/96",            # the whole ISATAP interface-identifier block
     ],
 )
 def test_unsafe_ranges_are_refused(cidr):
@@ -164,6 +175,15 @@ def test_unsafe_ranges_are_refused(cidr):
         "192.168.1.0/24",
         "2606:4700::7/128",
         "2606:4700::/32",
+        # An ordinary IPv6 subnet whose interface-identifier bits are simply not pinned. An
+        # overlap-style ISATAP test would refuse this and every other IPv6 /64 or shorter, which
+        # would cancel exams - see test_isatap_detection_has_no_false_positives.
+        "2001:db8::/48",
+        # The documented ISATAP residual. A /95 straddles the marker's last bit, so the marker is
+        # not determined for every address in the range and the predicate deliberately does not
+        # fire. Containment for this case is the absence of any protocol-41 allow rule, not this
+        # check.
+        "2001:db8::5efe:0:0/95",
     ],
 )
 def test_safe_ranges_are_accepted(cidr):
@@ -383,6 +403,120 @@ def test_unsafe_answers_are_dropped_when_safe_ones_remain(resolver):
     nothing unsafe ever reaches the allowlist either way.
     """
     assert resolver.resolve_domain("mixed.univ.edu") == ["203.0.113.10/32"]
+
+
+# ==============================================================================
+# 4b. Requirement 7: all THREE IPv6 transition mechanisms, ISATAP included
+#
+# 6to4 and Teredo have assigned prefixes and are rows in the forbidden table. ISATAP has none: RFC
+# 5214 identifies it by the modified-EUI-64 interface identifier `0000:5EFE:w.x.y.z` (embedded IPv4
+# that is not globally unique) or `0200:5EFE:w.x.y.z` (globally unique), under whatever prefix the
+# ISATAP router advertises. The marker therefore sits at bytes 8-11 rather than at the front, and
+# needs a predicate.
+#
+# Two properties are asserted here and they pull in opposite directions, which is the whole
+# difficulty:
+#   * no ISATAP address may enter a trusted policy;
+#   * no ORDINARY IPv6 subnet may be mistaken for one. A false positive cancels an exam, so the
+#     predicate is exact - it fires only when the prefix pins all 32 marker bits (>= /96).
+#
+# Neither property is what stops an ISATAP tunnel. All three mechanisms encapsulate IPv6 in IPv4
+# protocol 41, and no SPEMCS allow rule names a protocol other than TCP or UDP under profile-level
+# default-deny. That is asserted on the endpoint side, against rule generation, in
+# AdversarialSecurityValidationTests.ClassQ_NoGeneratedRuleCanCarryAProtocol41Tunnel.
+# ==============================================================================
+@pytest.mark.parametrize(
+    "cidr",
+    [
+        "2002:c000:204::/48",
+        "2001:0:53aa::/48",
+        "2001:db8::5efe:c000:204/128",
+        "2001:db8::200:5efe:c000:204/128",
+    ],
+)
+def test_every_named_transition_mechanism_is_refused(cidr):
+    """Requirement 7 names 6to4, Teredo and ISATAP. None may become an allow rule."""
+    assert describe_unsafe_network(ipaddress.ip_network(cidr)), f"{cidr} must be refused"
+
+
+def test_isatap_refusal_says_isatap():
+    """The operator-facing reason has to identify the mechanism, not just say 'unsafe'.
+
+    An address like 2001:db8::5efe:c000:204 looks entirely ordinary; without the mechanism named,
+    an operator debugging a refused policy has no way to know why a global-looking address was
+    rejected, and the likely response is to weaken the check.
+    """
+    reason = describe_unsafe_network(ipaddress.ip_network("2001:db8::5efe:c000:204/128"))
+    assert reason is not None
+    assert "ISATAP" in reason
+    assert "requirement 7" in reason
+
+
+@pytest.mark.parametrize(
+    "cidr",
+    [
+        "2001:db8::/48",          # documentation prefix
+        "2606:4700::/32",         # a real CDN prefix, at the widest allowed IPv6 prefix
+        "2620:fe::/48",
+        "2a00:1450:4001::/48",
+        "2001:db8:0:0::/64",      # a /64 that CONTAINS ISATAP addresses but pins none of the marker
+        "2001:5efe::/32",         # 0x5efe in the PREFIX, not the interface identifier
+        "2001:db8:5efe::/48",     # likewise - wrong offset, not a marker
+        "2606:4700::7/128",       # an ordinary /128 with zeros where the marker would be
+    ],
+)
+def test_isatap_detection_has_no_false_positives(cidr):
+    """The predicate must not refuse ordinary IPv6.
+
+    This is the constraint that rules out the obvious implementation. Treating the marker as
+    something to test by overlap - the way 2002::/16 and 2001::/32 are tested - would refuse every
+    IPv6 range of /95 or shorter, because such a range always *contains* some address carrying the
+    marker. That includes 2001:db8::/48 and 2606:4700::/32. A refused legitimate destination
+    cancels an exam, which is a worse outcome than the residual it would close.
+    """
+    assert describe_unsafe_network(ipaddress.ip_network(cidr)) is None, f"{cidr} must stay usable"
+
+
+def test_the_isatap_residual_boundary_is_exactly_where_it_is_documented():
+    """Pins the /95-accepted, /96-refused boundary so it cannot drift unnoticed.
+
+    Below /96 the marker bits are not fully pinned, so the range is accepted; at /96 and longer it
+    is refused. Both halves are asserted, so tightening OR loosening the boundary breaks a test
+    rather than silently changing which destinations an exam can use.
+    """
+    assert describe_unsafe_network(ipaddress.ip_network("2001:db8::5efe:0:0/95")) is None
+    assert describe_unsafe_network(ipaddress.ip_network("2001:db8::5efe:0:0/96")) is not None
+    assert describe_unsafe_network(ipaddress.ip_network("2001:db8::5efe:0:0/112")) is not None
+    assert describe_unsafe_network(ipaddress.ip_network("2001:db8::5efe:0:0/128")) is not None
+
+
+def test_link_local_isatap_is_refused_by_the_more_specific_enclosing_range():
+    """fe80::5efe:w.x.y.z is refused, but reported as fe80::/10.
+
+    The ISATAP predicate runs AFTER the forbidden-range table on purpose: link-local ISATAP is
+    already covered by fe80::/10, and naming the tighter range is more useful to an operator than
+    naming the mechanism. Refused either way - this asserts the message did not silently change.
+    """
+    reason = describe_unsafe_network(ipaddress.ip_network("fe80::5efe:c000:204/128"))
+    assert reason is not None
+    assert "fe80::/10" in reason
+
+
+def test_an_isatap_aaaa_answer_cannot_enter_the_allowlist(resolver):
+    """DNS is the only route by which an ISATAP address can reach the compiler.
+
+    ip_ranges cannot be caller-supplied at all, so a hostile or misconfigured zone publishing an
+    ISATAP AAAA record is the realistic vector. An answer consisting only of ISATAP addresses must
+    fail loudly rather than compile to an empty allowlist.
+    """
+    with pytest.raises(DnsResolutionError) as exc:
+        resolver.resolve_domain("isatap.univ.edu")
+    assert "isatap.univ.edu" in str(exc.value)
+
+
+def test_an_isatap_aaaa_answer_is_dropped_when_a_safe_answer_remains(resolver):
+    """Same rule as any other unsafe record: dropped individually, never allowlisted."""
+    assert resolver.resolve_domain("isatap-mixed.univ.edu") == ["203.0.113.11/32"]
 
 
 # ==============================================================================

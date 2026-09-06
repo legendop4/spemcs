@@ -1,0 +1,263 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 950" width="1400" height="950" style="background:#0d1117; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
+  <defs>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#000" flood-opacity="0.5" />
+    </filter>
+    <marker id="fkArrow" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 8 5 L 0 9 z" fill="#58a6ff" />
+    </marker>
+    <marker id="fkArrowWarn" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 8 5 L 0 9 z" fill="#e3b341" />
+    </marker>
+  </defs>
+
+  <!-- Title -->
+  <rect x="0" y="0" width="1400" height="60" fill="#161b22" />
+  <text x="30" y="38" fill="#58a6ff" font-size="22" font-weight="700">SPEMCS Complete Entity-Relationship Diagram (ERD)</text>
+  <text x="630" y="38" fill="#8b949e" font-size="14">14 PostgreSQL Tables + SQLite Rollback Journal (Empirically Verified)</text>
+  <rect x="1240" y="18" width="130" height="26" rx="13" fill="#238636" />
+  <text x="1255" y="35" fill="#ffffff" font-size="11" font-weight="600">14 TABLES VERIFIED</text>
+
+  <!-- COLUMN 1: USERS, LABS, LAB_DEVICES, AUDIT_LOGS -->
+  <!-- users -->
+  <g transform="translate(30, 80)">
+    <rect x="0" y="0" width="240" height="170" rx="8" fill="#161b22" stroke="#388bfd" stroke-width="1.5" filter="url(#shadow)" />
+    <rect x="0" y="0" width="240" height="28" rx="8" fill="#1f6feb" />
+    <text x="12" y="19" fill="#ffffff" font-size="12" font-weight="700">users (10 cols)</text>
+    <text x="12" y="44" fill="#79c0ff" font-size="10">PK: user_id (UUID)</text>
+    <text x="12" y="58" fill="#8b949e" font-size="10">name: VARCHAR(100)</text>
+    <text x="12" y="72" fill="#8b949e" font-size="10">username: VARCHAR(50) [UNIQUE]</text>
+    <text x="12" y="86" fill="#8b949e" font-size="10">email: VARCHAR(100) [UNIQUE]</text>
+    <text x="12" y="100" fill="#8b949e" font-size="10">password_hash: VARCHAR(255)</text>
+    <text x="12" y="114" fill="#8b949e" font-size="10">role: VARCHAR(20) [admin|proctor]</text>
+    <text x="12" y="128" fill="#8b949e" font-size="10">avatar_color: VARCHAR(20)</text>
+    <text x="12" y="142" fill="#8b949e" font-size="10">is_active: BOOLEAN</text>
+    <text x="12" y="156" fill="#8b949e" font-size="10">created_at: DATETIME</text>
+  </g>
+
+  <!-- audit_logs -->
+  <g transform="translate(30, 270)">
+    <rect x="0" y="0" width="240" height="155" rx="8" fill="#161b22" stroke="#30363d" stroke-width="1.5" filter="url(#shadow)" />
+    <rect x="0" y="0" width="240" height="28" rx="8" fill="#21262d" />
+    <text x="12" y="19" fill="#c9d1d9" font-size="12" font-weight="700">audit_logs (8 cols)</text>
+    <text x="12" y="44" fill="#79c0ff" font-size="10">PK: log_id (UUID)</text>
+    <text x="12" y="58" fill="#58a6ff" font-size="10">FK: user_id (UUID) -> users</text>
+    <text x="12" y="72" fill="#8b949e" font-size="10">action: VARCHAR(50)</text>
+    <text x="12" y="86" fill="#8b949e" font-size="10">entity_type: VARCHAR(50)</text>
+    <text x="12" y="100" fill="#8b949e" font-size="10">entity_id: VARCHAR(100)</text>
+    <text x="12" y="114" fill="#8b949e" font-size="10">details: JSONB</text>
+    <text x="12" y="128" fill="#8b949e" font-size="10">ip_address: VARCHAR(50)</text>
+    <text x="12" y="142" fill="#8b949e" font-size="10">created_at: DATETIME</text>
+  </g>
+
+  <!-- labs -->
+  <g transform="translate(30, 445)">
+    <rect x="0" y="0" width="240" height="155" rx="8" fill="#161b22" stroke="#30363d" stroke-width="1.5" filter="url(#shadow)" />
+    <rect x="0" y="0" width="240" height="28" rx="8" fill="#21262d" />
+    <text x="12" y="19" fill="#c9d1d9" font-size="12" font-weight="700">labs (8 cols)</text>
+    <text x="12" y="44" fill="#79c0ff" font-size="10">PK: lab_id (UUID)</text>
+    <text x="12" y="58" fill="#8b949e" font-size="10">building_id: VARCHAR</text>
+    <text x="12" y="72" fill="#8b949e" font-size="10">lab_name: VARCHAR</text>
+    <text x="12" y="86" fill="#8b949e" font-size="10">description: VARCHAR</text>
+    <text x="12" y="100" fill="#8b949e" font-size="10">capacity: INTEGER</text>
+    <text x="12" y="114" fill="#8b949e" font-size="10">spemcs_enabled: BOOLEAN</text>
+    <text x="12" y="128" fill="#8b949e" font-size="10">status: VARCHAR</text>
+    <text x="12" y="142" fill="#8b949e" font-size="10">created_at: DATETIME</text>
+  </g>
+
+  <!-- lab_devices -->
+  <g transform="translate(30, 620)">
+    <rect x="0" y="0" width="240" height="85" rx="8" fill="#161b22" stroke="#30363d" stroke-width="1.5" filter="url(#shadow)" />
+    <rect x="0" y="0" width="240" height="28" rx="8" fill="#21262d" />
+    <text x="12" y="19" fill="#c9d1d9" font-size="12" font-weight="700">lab_devices (3 cols)</text>
+    <text x="12" y="44" fill="#79c0ff" font-size="10">PK: id (UUID)</text>
+    <text x="12" y="58" fill="#58a6ff" font-size="10">FK: lab_id -> labs.lab_id</text>
+    <text x="12" y="72" fill="#58a6ff" font-size="10">FK: device_id -> devices.device_id</text>
+  </g>
+
+  <!-- COLUMN 2: DEVICES, EXAM_DEVICES, SESSIONS, EVENTS, ALERTS -->
+  <!-- devices -->
+  <g transform="translate(310, 80)">
+    <rect x="0" y="0" width="250" height="185" rx="8" fill="#161b22" stroke="#388bfd" stroke-width="1.5" filter="url(#shadow)" />
+    <rect x="0" y="0" width="250" height="28" rx="8" fill="#1f6feb" />
+    <text x="12" y="19" fill="#ffffff" font-size="12" font-weight="700">devices (10 cols)</text>
+    <text x="12" y="44" fill="#79c0ff" font-size="10">PK: device_id (UUID)</text>
+    <text x="12" y="58" fill="#7ee787" font-size="10">hardware_uuid: VARCHAR(100) [HMAC BOUND]</text>
+    <text x="12" y="72" fill="#8b949e" font-size="10">device_name: VARCHAR(100)</text>
+    <text x="12" y="86" fill="#8b949e" font-size="10">building_name: VARCHAR(50)</text>
+    <text x="12" y="100" fill="#8b949e" font-size="10">lab_name: VARCHAR(50)</text>
+    <text x="12" y="114" fill="#8b949e" font-size="10">pc_number: VARCHAR(10)</text>
+    <text x="12" y="128" fill="#8b949e" font-size="10">registered_ip: VARCHAR(50)</text>
+    <text x="12" y="142" fill="#8b949e" font-size="10">status: VARCHAR(20) [online|offline]</text>
+    <text x="12" y="156" fill="#8b949e" font-size="10">last_seen: DATETIME</text>
+    <text x="12" y="170" fill="#8b949e" font-size="10">created_at: DATETIME</text>
+  </g>
+
+  <!-- exam_devices -->
+  <g transform="translate(310, 285)">
+    <rect x="0" y="0" width="250" height="100" rx="8" fill="#161b22" stroke="#30363d" stroke-width="1.5" filter="url(#shadow)" />
+    <rect x="0" y="0" width="250" height="28" rx="8" fill="#21262d" />
+    <text x="12" y="19" fill="#c9d1d9" font-size="12" font-weight="700">exam_devices (4 cols)</text>
+    <text x="12" y="44" fill="#79c0ff" font-size="10">PK: id (UUID)</text>
+    <text x="12" y="58" fill="#58a6ff" font-size="10">FK: exam_id -> exams.exam_id</text>
+    <text x="12" y="72" fill="#58a6ff" font-size="10">FK: device_id -> devices.device_id</text>
+    <text x="12" y="86" fill="#8b949e" font-size="10">status: VARCHAR(20) [assigned|active]</text>
+  </g>
+
+  <!-- exam_sessions -->
+  <g transform="translate(310, 405)">
+    <rect x="0" y="0" width="250" height="140" rx="8" fill="#161b22" stroke="#30363d" stroke-width="1.5" filter="url(#shadow)" />
+    <rect x="0" y="0" width="250" height="28" rx="8" fill="#21262d" />
+    <text x="12" y="19" fill="#c9d1d9" font-size="12" font-weight="700">exam_sessions (7 cols)</text>
+    <text x="12" y="44" fill="#79c0ff" font-size="10">PK: session_id (UUID)</text>
+    <text x="12" y="58" fill="#58a6ff" font-size="10">FK: exam_id -> exams.exam_id</text>
+    <text x="12" y="72" fill="#58a6ff" font-size="10">FK: device_id -> devices.device_id</text>
+    <text x="12" y="86" fill="#8b949e" font-size="10">student_roll_number: VARCHAR(50)</text>
+    <text x="12" y="100" fill="#8b949e" font-size="10">status: VARCHAR(20) [active|completed]</text>
+    <text x="12" y="114" fill="#8b949e" font-size="10">started_at: DATETIME</text>
+    <text x="12" y="128" fill="#8b949e" font-size="10">ended_at: DATETIME</text>
+  </g>
+
+  <!-- events -->
+  <g transform="translate(310, 565)">
+    <rect x="0" y="0" width="250" height="230" rx="8" fill="#161b22" stroke="#30363d" stroke-width="1.5" filter="url(#shadow)" />
+    <rect x="0" y="0" width="250" height="28" rx="8" fill="#21262d" />
+    <text x="12" y="19" fill="#c9d1d9" font-size="12" font-weight="700">events (14 cols)</text>
+    <text x="12" y="44" fill="#79c0ff" font-size="10">PK: event_id (UUID)</text>
+    <text x="12" y="58" fill="#58a6ff" font-size="10">FK: session_id -> exam_sessions</text>
+    <text x="12" y="72" fill="#58a6ff" font-size="10">FK: device_id -> devices.device_id</text>
+    <text x="12" y="86" fill="#8b949e" font-size="10">device_name: VARCHAR</text>
+    <text x="12" y="100" fill="#8b949e" font-size="10">ip_address: VARCHAR</text>
+    <text x="12" y="114" fill="#8b949e" font-size="10">student_roll_number: VARCHAR</text>
+    <text x="12" y="128" fill="#8b949e" font-size="10">event_type: VARCHAR [process|net]</text>
+    <text x="12" y="142" fill="#8b949e" font-size="10">timestamp: DATETIME</text>
+    <text x="12" y="156" fill="#8b949e" font-size="10">process_name: VARCHAR</text>
+    <text x="12" y="170" fill="#8b949e" font-size="10">pid: INTEGER</text>
+    <text x="12" y="184" fill="#8b949e" font-size="10">executable_path: VARCHAR</text>
+    <text x="12" y="198" fill="#8b949e" font-size="10">classification: VARCHAR</text>
+    <text x="12" y="212" fill="#8b949e" font-size="10">reason: VARCHAR</text>
+    <text x="12" y="226" fill="#8b949e" font-size="10">resolution_status: VARCHAR</text>
+  </g>
+
+  <!-- COLUMN 3: ALERTS, EXAMS, VENDOR_PROFILES, REPORTS -->
+  <!-- alerts -->
+  <g transform="translate(600, 80)">
+    <rect x="0" y="0" width="260" height="175" rx="8" fill="#161b22" stroke="#e3b341" stroke-width="2" filter="url(#shadow)" />
+    <rect x="0" y="0" width="260" height="28" rx="8" fill="#d29922" />
+    <text x="12" y="19" fill="#000000" font-size="12" font-weight="700">alerts (9 cols) — NULLABLE EXAM_ID</text>
+    <text x="12" y="44" fill="#79c0ff" font-size="10">PK: alert_id (UUID)</text>
+    <text x="12" y="58" fill="#58a6ff" font-size="10">FK: event_id -> events.event_id</text>
+    <text x="12" y="72" fill="#e3b341" font-size="10" font-weight="700">FK: exam_id -> exams.exam_id (NULLABLE!)</text>
+    <text x="12" y="86" fill="#58a6ff" font-size="10">FK: device_id -> devices.device_id</text>
+    <text x="12" y="100" fill="#8b949e" font-size="10">agent_event_id: VARCHAR(100)</text>
+    <text x="12" y="114" fill="#f85149" font-size="10">severity: VARCHAR(20) [HIGH|CRITICAL]</text>
+    <text x="12" y="128" fill="#8b949e" font-size="10">message: VARCHAR</text>
+    <text x="12" y="142" fill="#8b949e" font-size="10">status: VARCHAR(20) [PENDING|RESOLVED]</text>
+    <text x="12" y="156" fill="#8b949e" font-size="10">created_at: DATETIME</text>
+  </g>
+
+  <!-- exams -->
+  <g transform="translate(600, 280)">
+    <rect x="0" y="0" width="260" height="185" rx="8" fill="#161b22" stroke="#388bfd" stroke-width="1.5" filter="url(#shadow)" />
+    <rect x="0" y="0" width="260" height="28" rx="8" fill="#1f6feb" />
+    <text x="12" y="19" fill="#ffffff" font-size="12" font-weight="700">exams (11 cols)</text>
+    <text x="12" y="44" fill="#79c0ff" font-size="10">PK: exam_id (UUID)</text>
+    <text x="12" y="58" fill="#8b949e" font-size="10">exam_name: VARCHAR(150)</text>
+    <text x="12" y="72" fill="#8b949e" font-size="10">section: VARCHAR(150)</text>
+    <text x="12" y="86" fill="#8b949e" font-size="10">exam_link: TEXT</text>
+    <text x="12" y="100" fill="#8b949e" font-size="10">approved_browser: VARCHAR(20)</text>
+    <text x="12" y="114" fill="#8b949e" font-size="10">status: VARCHAR(20) [PENDING|ACTIVE|STOPPED]</text>
+    <text x="12" y="128" fill="#7ee787" font-size="10">network_enforcement: BOOLEAN</text>
+    <text x="12" y="142" fill="#58a6ff" font-size="10">FK: vendor_profile_id -> vendor_profiles</text>
+    <text x="12" y="156" fill="#8b949e" font-size="10">started_at: DATETIME</text>
+    <text x="12" y="170" fill="#8b949e" font-size="10">ended_at: DATETIME | created_at: DATETIME</text>
+  </g>
+
+  <!-- vendor_profiles -->
+  <g transform="translate(600, 485)">
+    <rect x="0" y="0" width="260" height="155" rx="8" fill="#161b22" stroke="#30363d" stroke-width="1.5" filter="url(#shadow)" />
+    <rect x="0" y="0" width="260" height="28" rx="8" fill="#21262d" />
+    <text x="12" y="19" fill="#c9d1d9" font-size="12" font-weight="700">vendor_profiles (8 cols)</text>
+    <text x="12" y="44" fill="#79c0ff" font-size="10">PK: vendor_id (UUID)</text>
+    <text x="12" y="58" fill="#8b949e" font-size="10">vendor_name: VARCHAR(100)</text>
+    <text x="12" y="72" fill="#8b949e" font-size="10">description: VARCHAR(255)</text>
+    <text x="12" y="86" fill="#7ee787" font-size="10">required_domains: JSONB</text>
+    <text x="12" y="100" fill="#7ee787" font-size="10">approved_ip_ranges: JSONB</text>
+    <text x="12" y="114" fill="#7ee787" font-size="10">required_tcp_ports: JSONB</text>
+    <text x="12" y="128" fill="#7ee787" font-size="10">required_udp_ports: JSONB</text>
+    <text x="12" y="142" fill="#8b949e" font-size="10">created_at: DATETIME</text>
+  </g>
+
+  <!-- reports -->
+  <g transform="translate(600, 660)">
+    <rect x="0" y="0" width="260" height="135" rx="8" fill="#161b22" stroke="#30363d" stroke-width="1.5" filter="url(#shadow)" />
+    <rect x="0" y="0" width="260" height="28" rx="8" fill="#21262d" />
+    <text x="12" y="19" fill="#c9d1d9" font-size="12" font-weight="700">reports (7 cols)</text>
+    <text x="12" y="44" fill="#79c0ff" font-size="10">PK: report_id (UUID)</text>
+    <text x="12" y="58" fill="#58a6ff" font-size="10">FK: exam_id -> exams.exam_id</text>
+    <text x="12" y="72" fill="#8b949e" font-size="10">generated_at: DATETIME</text>
+    <text x="12" y="86" fill="#8b949e" font-size="10">summary: JSONB</text>
+    <text x="12" y="100" fill="#8b949e" font-size="10">report_data: JSONB</text>
+    <text x="12" y="114" fill="#8b949e" font-size="10">alert_count: INTEGER | event_count: INTEGER</text>
+  </g>
+
+  <!-- COLUMN 4: NETWORK_POLICIES, DEVICE_POLICY_STATES, SQLITE ROLLBACK JOURNAL -->
+  <!-- network_policies -->
+  <g transform="translate(900, 80)">
+    <rect x="0" y="0" width="270" height="215" rx="8" fill="#161b22" stroke="#388bfd" stroke-width="1.5" filter="url(#shadow)" />
+    <rect x="0" y="0" width="270" height="28" rx="8" fill="#1f6feb" />
+    <text x="12" y="19" fill="#ffffff" font-size="12" font-weight="700">network_policies (13 cols)</text>
+    <text x="12" y="44" fill="#79c0ff" font-size="10">PK: policy_id (UUID)</text>
+    <text x="12" y="58" fill="#58a6ff" font-size="10">FK: exam_id -> exams.exam_id</text>
+    <text x="12" y="72" fill="#8b949e" font-size="10">version: INTEGER</text>
+    <text x="12" y="86" fill="#58a6ff" font-size="10">FK: vendor_profile_id -> vendor_profiles</text>
+    <text x="12" y="100" fill="#8b949e" font-size="10">approved_browser: VARCHAR(20)</text>
+    <text x="12" y="114" fill="#7ee787" font-size="10">allowed_destinations: JSONB</text>
+    <text x="12" y="128" fill="#7ee787" font-size="10">management_server: JSONB</text>
+    <text x="12" y="142" fill="#8b949e" font-size="10">not_before: DATETIME | expires_at: DATETIME</text>
+    <text x="12" y="156" fill="#a371f7" font-size="10">key_id: VARCHAR(64) [RSA-PSS KEYRING]</text>
+    <text x="12" y="170" fill="#8b949e" font-size="10">schema_version: VARCHAR(10)</text>
+    <text x="12" y="184" fill="#a371f7" font-size="10">signature: TEXT [BASE64 PSS SIGNATURE]</text>
+    <text x="12" y="198" fill="#8b949e" font-size="10">created_at: DATETIME</text>
+  </g>
+
+  <!-- device_policy_states -->
+  <g transform="translate(900, 315)">
+    <rect x="0" y="0" width="270" height="170" rx="8" fill="#161b22" stroke="#388bfd" stroke-width="1.5" filter="url(#shadow)" />
+    <rect x="0" y="0" width="270" height="28" rx="8" fill="#1f6feb" />
+    <text x="12" y="19" fill="#ffffff" font-size="12" font-weight="700">device_policy_states (9 cols)</text>
+    <text x="12" y="44" fill="#79c0ff" font-size="10">PK: id (UUID)</text>
+    <text x="12" y="58" fill="#58a6ff" font-size="10">FK: exam_id -> exams.exam_id</text>
+    <text x="12" y="72" fill="#58a6ff" font-size="10">FK: device_id -> devices.device_id</text>
+    <text x="12" y="86" fill="#58a6ff" font-size="10">FK: policy_id -> network_policies</text>
+    <text x="12" y="100" fill="#7ee787" font-size="10">status: VARCHAR(30) [PENDING|APPLIED|FAILED]</text>
+    <text x="12" y="114" fill="#8b949e" font-size="10">rules_installed: INTEGER</text>
+    <text x="12" y="128" fill="#f85149" font-size="10">last_error: VARCHAR(255)</text>
+    <text x="12" y="142" fill="#8b949e" font-size="10">applied_at: DATETIME | updated_at: DATETIME</text>
+  </g>
+
+  <!-- LOCAL AGENT DATABASE: SQLITE ROLLBACK JOURNAL -->
+  <g transform="translate(900, 510)">
+    <rect x="0" y="0" width="270" height="215" rx="8" fill="#161b22" stroke="#238636" stroke-width="2" filter="url(#shadow)" />
+    <rect x="0" y="0" width="270" height="28" rx="8" fill="#238636" />
+    <text x="12" y="19" fill="#ffffff" font-size="12" font-weight="700">Agent Local SQLite (Crash Recovery)</text>
+    <text x="12" y="44" fill="#7ee787" font-size="10">sqlite_rollback_journal.db</text>
+    <text x="12" y="60" fill="#79c0ff" font-size="10">Table: rollback_journal (8 cols)</text>
+    <text x="20" y="74" fill="#8b949e" font-size="9">• id: INTEGER [PK AUTOINCREMENT]</text>
+    <text x="20" y="88" fill="#8b949e" font-size="9">• session_id: TEXT NOT NULL</text>
+    <text x="20" y="102" fill="#8b949e" font-size="9">• rule_name: TEXT NOT NULL</text>
+    <text x="20" y="116" fill="#8b949e" font-size="9">• original_state: TEXT NOT NULL</text>
+    <text x="20" y="130" fill="#8b949e" font-size="9">• applied_state: TEXT NOT NULL</text>
+    <text x="20" y="144" fill="#8b949e" font-size="9">• status: TEXT [ACTIVE|ROLLED_BACK]</text>
+    <text x="20" y="158" fill="#8b949e" font-size="9">• created_at: TEXT NOT NULL</text>
+    <text x="20" y="172" fill="#8b949e" font-size="9">• rolled_back_at: TEXT NULL</text>
+    <text x="12" y="195" fill="#3fb950" font-size="9" font-weight="600">Reconciled on Service Start</text>
+  </g>
+
+  <!-- Ground Truth Explanatory Footnote -->
+  <rect x="30" y="820" width="1340" height="100" rx="8" fill="#161b22" stroke="#30363d" />
+  <text x="50" y="845" fill="#e3b341" font-size="12" font-weight="700">Crucial Architectural Ground Truth Verified in Code:</text>
+  <text x="50" y="865" fill="#c9d1d9" font-size="11">1. alerts.exam_id is nullable (UUID NULL) by deliberate security design: lab machines report background security events (e.g. prohibited remote control software)</text>
+  <text x="65" y="880" fill="#8b949e" font-size="11">outside an active exam session. Enforcing NOT NULL would abort the transaction and permanently drop critical telemetry.</text>
+  <text x="50" y="898" fill="#c9d1d9" font-size="11">2. Alembic migrations 0001_baseline.py and 0002_add_network_enforcement.py strictly define this schema. On server startup, schema_check.py validates foreign keys.</text>
+</svg>

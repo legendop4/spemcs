@@ -38,7 +38,7 @@ Usage
     python3 ...verify_policy_destination_validator_parity.py --emit-fixture \
         Endpoint-agent/tests/Spemcs.Agent.Tests/AddressValidationFixtures.cs
 
---self-check mutates this file's own logic 27 ways and requires every mutant to fail the suite,
+--self-check mutates this file's own logic 34 ways and requires every mutant to fail the suite,
 which is the evidence that a pass here means something. Requires only the standard library plus
 an importable `backend` package; no network, no database, no .NET.
 """
@@ -52,7 +52,14 @@ import sys
 import subprocess
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-REPO = os.path.abspath(os.path.join(HERE, os.pardir, os.pardir, os.pardir))
+# --self-check writes each mutant to a temp directory and runs it. A mutant that derived REPO from
+# its own __file__ would resolve to the temp directory, fail at `import backend`, and exit non-zero
+# for a reason that has nothing to do with the mutation - which would mark every mutant "caught" and
+# make the whole self-check vacuous. (It was: before this variable existed, an UNMUTATED copy run
+# from a temp directory also exited 1.) The parent passes the real repo root down explicitly.
+REPO = os.environ.get("SPEMCS_PARITY_REPO") or os.path.abspath(
+    os.path.join(HERE, os.pardir, os.pardir, os.pardir)
+)
 CS_FILE = os.path.join(
     REPO, "Endpoint-agent", "src", "Spemcs.Agent.Core", "Network",
     "PolicyDestinationValidator.cs",
@@ -74,6 +81,12 @@ if "--emit-fixture" in sys.argv:
 # covers, so no verdict changes and only the operator-facing message differs. Those are pinned by
 # message assertions rather than by verdict, and this list records which they are so a future
 # reader does not mistake redundancy for a gap.
+#
+# NOTE on the runner below, because it bit this file once: every `old` string here also appears in
+# the code it targets, so the mutation must be applied to the source BELOW this table (see the
+# _SPLIT_MARKER logic), and the mutant must be handed the real repo root (SPEMCS_PARITY_REPO) or it
+# cannot import `backend` and exits non-zero without testing anything. Both bugs were present at
+# once, and together they made this self-check report a perfect score while proving nothing.
 MUTATIONS = [
     ("overlap test reduced to one-directional membership",
      "    return shares_prefix(a[0], b[0], min(a[1], b[1]))",
@@ -84,6 +97,18 @@ MUTATIONS = [
      '    ("169.254.0.0/16",', '    ("169.254.0.0/32",'),
     ("loopback narrowed in the IPv4 table", '    ("127.0.0.0/8",', '    ("127.0.0.1/32",'),
     ("6to4 narrowed in the IPv6 table", '    ("2002::/16",', '    ("2002::/128",'),
+    ("ISATAP predicate disabled", "    if is_isatap_range(parsed):", "    if False:"),
+    ("ISATAP marker byte 0x5E mistyped",
+     "            and data[offset + 2] == 0x5E", "            and data[offset + 2] == 0x5F"),
+    ("ISATAP marker byte 0xFE mistyped",
+     "            and data[offset + 3] == 0xFE", "            and data[offset + 3] == 0xFF"),
+    ("ISATAP globally-unique form (0200:5EFE) no longer recognised",
+     "ISATAP_MARKER_FIRST_BYTES = (0x00, 0x02)", "ISATAP_MARKER_FIRST_BYTES = (0x00,)"),
+    ("ISATAP marker offset off by one", "ISATAP_MARKER_OFFSET = 8", "ISATAP_MARKER_OFFSET = 9"),
+    ("ISATAP pinned prefix loosened 96 -> 64 (would reject ordinary subnets)",
+     "ISATAP_PINNED_PREFIX = 96", "ISATAP_PINNED_PREFIX = 64"),
+    ("ISATAP pinned prefix tightened 96 -> 128 (misses the whole-IID-block form)",
+     "ISATAP_PINNED_PREFIX = 96", "ISATAP_PINNED_PREFIX = 128"),
     ("IPv4-mapped IPv6 narrowed", '    ("::ffff:0:0/96",', '    ("::ffff:0:0/128",'),
     ("match-everything guard removed (EQUIVALENT - min-prefix also rejects /0)",
      "    if prefix_length == 0:", "    if prefix_length == -1:"),
@@ -127,24 +152,53 @@ MUTATIONS = [
 if "--self-check" in sys.argv:
     own_source = open(os.path.abspath(__file__), encoding="utf-8").read()
     import tempfile
+
+    # Every mutation target also appears, verbatim, as a string literal inside MUTATIONS above -
+    # that is what makes the table readable. So a plain own_source.replace(old, new, 1) rewrites the
+    # TABLE ENTRY and leaves the logic untouched, and the mutant then passes because nothing was
+    # actually mutated. (That was the second half of why this self-check used to report 27/27: the
+    # first half was that mutants could not import `backend` at all.) Mutate only the source below
+    # the backend import, which is past the table and contains every target.
+    _SPLIT_MARKER = "from backend.services.policy_compiler import"
+    _head, _sep, _tail = own_source.partition(_SPLIT_MARKER)
+    if not _sep:
+        print("SELF-CHECK ABORTED - the split marker used to protect the MUTATIONS table from "
+              "being mutated instead of the code is no longer present.")
+        sys.exit(1)
+
     survivors = []
+    crash_caught = []
+    mutant_env = {**os.environ, "SPEMCS_PARITY_REPO": REPO}
     print(f"MUTATION SELF-CHECK - {len(MUTATIONS)} mutants, each must be caught")
     for label, old, new in MUTATIONS:
-        if old not in own_source:
+        if old not in _tail:
             survivors.append(f"{label} (mutation target no longer present in this file)")
             print(f"  STALE       {label}")
             continue
         with tempfile.TemporaryDirectory() as tmp:
             mutant = os.path.join(tmp, "mutant.py")
             with open(mutant, "w", encoding="utf-8") as fh:
-                fh.write(own_source.replace(old, new, 1))
-            done = subprocess.run([sys.executable, mutant], capture_output=True, text=True)
+                fh.write(_head + _sep + _tail.replace(old, new, 1))
+            done = subprocess.run([sys.executable, mutant], capture_output=True, text=True,
+                                  env=mutant_env)
         if done.returncode == 0:
             survivors.append(label)
             print(f"  NOT CAUGHT  {label}")
-        else:
+        elif "FAILED -" in done.stdout:
             print(f"  caught      {label}")
+        else:
+            # Non-zero, but the harness never reached its own verdict. Usually the mutation makes
+            # the logic throw (the cross-family guard is there to prevent exactly that), which is a
+            # genuine detection - but it is a different kind of evidence from a failed assertion, so
+            # it is reported separately rather than being counted as one.
+            crash_caught.append(label)
+            print(f"  caught*     {label} (mutant crashed rather than failing an assertion)")
     print()
+    if crash_caught:
+        print(f"  * {len(crash_caught)} mutant(s) were detected by crashing, not by an assertion:")
+        for item in crash_caught:
+            print(f"      - {item}")
+        print()
     if survivors:
         print(f"SELF-CHECK FAILED - {len(survivors)} mutant(s) survived; the corpus below does "
               "not distinguish a correct validator from these broken ones:")
@@ -158,6 +212,11 @@ from backend.services.policy_compiler import (  # noqa: E402
     _ALWAYS_FORBIDDEN_V4,
     _ALWAYS_FORBIDDEN_V6,
     _FORBIDDEN_NAME_CHARS,
+    _ISATAP_MARKER_FIRST_BYTES,
+    _ISATAP_MARKER_OFFSET,
+    _ISATAP_PINNED_PREFIX,
+    _ISATAP_REASON,
+    _is_isatap_network,
     MAX_DESTINATION_NAME_LENGTH,
     MIN_DESTINATION_PREFIX_V4,
     MIN_DESTINATION_PREFIX_V6,
@@ -258,6 +317,29 @@ FORBIDDEN_V6 = (
     ("2002::/16", "the 6to4 tunnel range (requirement 7 contains transition mechanisms)"),
     ("2001::/32", "the Teredo tunnel range (requirement 7 contains transition mechanisms)"),
 )
+
+# ISATAP is the transition mechanism that cannot be a row in FORBIDDEN_V6 - it has no assigned
+# prefix, so the marker is bytes 8-11 of the interface identifier under whatever prefix the ISATAP
+# router advertises. Transliterated from PolicyDestinationValidator.IsIsatapRange.
+ISATAP_MARKER_FIRST_BYTES = (0x00, 0x02)
+ISATAP_MARKER_OFFSET = 8
+ISATAP_PINNED_PREFIX = 96
+ISATAP_REASON = (
+    "an ISATAP address, whose interface identifier tunnels IPv6 over IPv4 to a router the IPv4 "
+    "rules never inspect (requirement 7 contains transition mechanisms)"
+)
+
+
+def is_isatap_range(parsed):
+    """True when every address in the parsed range carries the ISATAP interface identifier."""
+    data, prefix_length, is_v4 = parsed
+    if is_v4 or prefix_length < ISATAP_PINNED_PREFIX:
+        return False
+    offset = ISATAP_MARKER_OFFSET
+    return (data[offset] in ISATAP_MARKER_FIRST_BYTES
+            and data[offset + 1] == 0x00
+            and data[offset + 2] == 0x5E
+            and data[offset + 3] == 0xFE)
 
 CS_WHITESPACE = set(" \t\n\v\f\r\x85\xa0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006"
                     "\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000")
@@ -429,6 +511,10 @@ def cs_describe_unsafe_address(value):
         if overlaps(parsed, fparsed):
             return f"address range '{trimmed}' overlaps {cidr}, which is {reason}"
 
+    # After the table, deliberately: fe80::5efe:w.x.y.z is already caught by fe80::/10.
+    if is_isatap_range(parsed):
+        return f"address range '{trimmed}' is {ISATAP_REASON}"
+
     return None
 
 
@@ -509,6 +595,21 @@ check(tuple(FORBIDDEN_V6) == tuple(_ALWAYS_FORBIDDEN_V6),
       "\n    backend " + repr(_ALWAYS_FORBIDDEN_V6))
 print(f"  constants + forbidden tables compared: {len(FORBIDDEN_V4)} v4, {len(FORBIDDEN_V6)} v6")
 
+# ISATAP is a predicate rather than a table row on both sides, so its constants get the same
+# treatment the tables get - drift here would silently un-contain one of the three mechanisms
+# requirement 7 names.
+check(tuple(ISATAP_MARKER_FIRST_BYTES) == tuple(_ISATAP_MARKER_FIRST_BYTES),
+      f"ISATAP marker first-byte drift: C# {ISATAP_MARKER_FIRST_BYTES} vs backend "
+      f"{_ISATAP_MARKER_FIRST_BYTES}")
+check(ISATAP_MARKER_OFFSET == _ISATAP_MARKER_OFFSET,
+      f"ISATAP marker offset drift: C# {ISATAP_MARKER_OFFSET} vs backend {_ISATAP_MARKER_OFFSET}")
+check(ISATAP_PINNED_PREFIX == _ISATAP_PINNED_PREFIX,
+      f"ISATAP pinned-prefix drift: C# {ISATAP_PINNED_PREFIX} vs backend {_ISATAP_PINNED_PREFIX}")
+check(ISATAP_REASON == _ISATAP_REASON,
+      f"ISATAP reason drift:\n    C#      {ISATAP_REASON!r}\n    backend {_ISATAP_REASON!r}")
+print(f"  ISATAP predicate constants compared: marker at byte {ISATAP_MARKER_OFFSET}, "
+      f"determined at /{ISATAP_PINNED_PREFIX}")
+
 # The transliteration is only evidence if it really came from the file. Pin every literal.
 for cidr, reason in list(FORBIDDEN_V4) + list(FORBIDDEN_V6):
     check(f'new("{cidr}"' in CS_SRC, f"'{cidr}' is in the transliteration but not in the .cs file")
@@ -518,6 +619,17 @@ for cidr, reason in list(FORBIDDEN_V4) + list(FORBIDDEN_V6):
 check(f"MinPrefixV4 = {MIN_PREFIX_V4}" in CS_SRC, "MinPrefixV4 literal mismatch vs .cs")
 check(f"MinPrefixV6 = {MIN_PREFIX_V6}" in CS_SRC, "MinPrefixV6 literal mismatch vs .cs")
 check(f"MaxNameLength = {MAX_NAME_LENGTH}" in CS_SRC, "MaxNameLength literal mismatch vs .cs")
+check(f"IsatapMarkerOffset = {ISATAP_MARKER_OFFSET}" in CS_SRC,
+      "IsatapMarkerOffset literal mismatch vs .cs")
+check(f"IsatapPinnedPrefix = {ISATAP_PINNED_PREFIX}" in CS_SRC,
+      "IsatapPinnedPrefix literal mismatch vs .cs")
+check(ISATAP_REASON in CS_SRC, "the ISATAP reason text differs between the transliteration and .cs")
+# The marker bytes are written as C# literals rather than a table, so pin them individually: a
+# typo'd 0x5E or 0xFE would leave a predicate that never fires and a suite that never notices.
+for literal in ("bytes[IsatapMarkerOffset] == 0x00", "bytes[IsatapMarkerOffset] == 0x02",
+                "bytes[IsatapMarkerOffset + 1] == 0x00", "bytes[IsatapMarkerOffset + 2] == 0x5E",
+                "bytes[IsatapMarkerOffset + 3] == 0xFE"):
+    check(literal in CS_SRC, f"expected the ISATAP marker test '{literal}' in the .cs file")
 print(f"  every transliterated literal located in {os.path.basename(CS_FILE)}")
 
 
@@ -572,6 +684,34 @@ CORPUS += [
     "0.0.0.0/9", "1.0.0.0/8", "255.0.0.0/8", "255.255.255.254/31",
     "fc00::/7", "fd00::/8", "fdff::/16", "::2/128", "100::/64", "3fff::/20",
 ]
+# ISATAP: the marker in the interface identifier, its near misses, and the prefix boundary at which
+# it becomes determined. Near misses matter as much as hits - a predicate that fires one byte early
+# would reject ordinary subnets, which is the failure mode that cancels an exam.
+CORPUS += [
+    "2001:db8::5efe:c000:201/128", "2001:db8::200:5efe:c000:201/128",
+    "2001:db8::5efe:0:0/96", "2001:db8::200:5efe:0:0/96",
+    "2001:db8::5efe:0:0/97", "2001:db8::5efe:0:0/112", "2001:db8::5efe:0:0/128",
+    "2001:db8::5efe:0:0/95", "2001:db8::5efe:0:0/64", "2001:db8::5efe:0:0/48",
+    "2001:db8::5eff:0:0/96", "2001:db8::5efd:0:0/96", "2001:db8::5dfe:0:0/96",
+    "2001:db8::1:5efe:0:0/96", "2001:db8::100:5efe:0:0/96", "2001:db8::300:5efe:0:0/96",
+    "fe80::5efe:c000:201/128", "fe80::200:5efe:c000:201/128",
+    "2002::5efe:0:0/96", "2001:0:0:0:0:5efe:0:0/96",
+    "2001:db8::/96", "2001:db8::/64", "2001:db8::/128",
+]
+# Randomized ISATAP sweep across every prefix length that could pin the marker, so the differential
+# is not carried by the handful of curated cases above.
+_isatap_rng = random.Random(20260905)
+for _ in range(600):
+    prefix = _isatap_rng.randint(64, 128)
+    marker = _isatap_rng.choice(ISATAP_MARKER_FIRST_BYTES)
+    raw = bytearray(_isatap_rng.getrandbits(8) for _ in range(16))
+    raw[0:2] = b"\x20\x01"
+    raw[ISATAP_MARKER_OFFSET] = marker
+    raw[ISATAP_MARKER_OFFSET + 1] = 0x00
+    raw[ISATAP_MARKER_OFFSET + 2] = 0x5E
+    raw[ISATAP_MARKER_OFFSET + 3] = 0xFE
+    net = ipaddress.ip_network((bytes(raw), prefix), strict=False)
+    CORPUS.append(str(net))
 # Every boundary around every forbidden range: the range itself, each supernet up to the
 # minimum prefix, the first and last /32 or /128 inside it, and its immediate neighbours.
 for cidr, _ in list(FORBIDDEN_V4) + list(FORBIDDEN_V6):
@@ -757,6 +897,10 @@ MUST_REJECT = {
     "::ffff:8.8.8.8/128": "an IPv4 destination smuggled in as IPv6",
     "2002:c000:204::/48": "6to4 tunnelling",
     "2001:0:53aa:64c:2c:1234:5678:9abc/128": "Teredo tunnelling",
+    "2001:db8::5efe:c000:201/128": "ISATAP tunnelling, non-globally-unique IID form",
+    "2001:db8::200:5efe:c000:201/128": "ISATAP tunnelling, globally-unique IID form",
+    "2001:db8::5efe:0:0/96": "the whole ISATAP IID block under an ordinary global prefix",
+    "fe80::5efe:c000:201/128": "link-local ISATAP",
     "10.0.0.0/7": "a /7 that reaches outside RFC 1918",
     "255.255.255.255/32": "broadcast",
     "239.255.255.250/32": "SSDP multicast",
@@ -784,6 +928,103 @@ for cidr in ("0.0.0.0/0", "::/0"):
           f"(message was: {reason!r})")
 print(f"    {'reason':>7}  {'0.0.0.0/0 and ::/0':<42} "
       "reported as nullifying default-deny, not merely as too broad")
+
+# ==============================================================================
+# Part B4b - requirement 7: all THREE IPv6 transition mechanisms, by name
+# ==============================================================================
+# 6to4 and Teredo are forbidden PREFIXES; ISATAP is a forbidden INTERFACE IDENTIFIER and therefore
+# a predicate. Asserting the reason, not just the verdict, is what keeps the three distinguishable:
+# a single over-broad rule that happened to reject all three would pass a verdict-only check while
+# rejecting legitimate subnets too.
+print()
+print("  requirement-7 transition mechanisms (reason asserted, not just the verdict):")
+TRANSITION_CASES = [
+    ("2002:c000:204::/48", "2002::/16", "6to4 - a forbidden prefix"),
+    ("2001:0:53aa:64c:2c:1234:5678:9abc/128", "2001::/32", "Teredo - a forbidden prefix"),
+    ("2001:db8::5efe:c000:201/128", "is an ISATAP address", "ISATAP 0000:5EFE IID form"),
+    ("2001:db8::200:5efe:c000:201/128", "is an ISATAP address", "ISATAP 0200:5EFE IID form"),
+    ("2001:db8::5efe:0:0/96", "is an ISATAP address", "the whole ISATAP IID block"),
+    # Reported as link-local, not as ISATAP: fe80::/10 comes first and is the more specific fact.
+    ("fe80::5efe:c000:201/128", "fe80::/10", "link-local ISATAP - caught by fe80::/10"),
+    ("2002::5efe:0:0/96", "2002::/16", "6to4 prefix carrying an ISATAP IID - 6to4 reported"),
+    ("2001:0:0:0:0:5efe:0:0/96", "2001::/32", "Teredo prefix carrying an ISATAP IID"),
+]
+for cidr, fragment, why in TRANSITION_CASES:
+    reason = cs_describe_unsafe_address(cidr) or ""
+    ok = check(fragment in reason,
+               f"{cidr} ({why}) should be refused with a reason containing {fragment!r}, "
+               f"got: {reason!r}")
+    print(f"    {'reject' if ok else 'WRONG!':>7}  {cidr:<42} {why}")
+
+# The near misses. Every one of these is an ordinary destination, and a predicate that fired on any
+# of them would cancel exams. This is the half of the ISATAP check that has to be tested hardest,
+# because the failure is silent until exam day.
+print()
+print("  ISATAP near misses, which MUST remain acceptable:")
+ISATAP_NEAR_MISSES = [
+    ("2001:db8::5eff:0:0/96", "0x5EFF, one above the marker"),
+    ("2001:db8::5efd:0:0/96", "0x5EFD, one below the marker"),
+    ("2001:db8::5dfe:0:0/96", "0x5DFE, wrong first marker byte"),
+    ("2001:db8::1:5efe:0:0/96", "marker present but IID byte 9 is 0x01, not 0x00"),
+    ("2001:db8::100:5efe:0:0/96", "IID byte 8 is 0x01, which is neither 0x00 nor 0x02"),
+    ("2001:db8::300:5efe:0:0/96", "IID byte 8 is 0x03"),
+    ("2001:db8::/96", "an ordinary /96 whose IID bytes are all zero"),
+    ("2001:db8::/64", "an ordinary /64 - contains ISATAP addresses, is not one"),
+    ("2001:db8::/48", "an ordinary /48"),
+    ("2606:4700::/32", "an ordinary /32"),
+]
+for cidr, why in ISATAP_NEAR_MISSES:
+    reason = cs_describe_unsafe_address(cidr)
+    ok = check(reason is None, f"the ordinary range {cidr} ({why}) was refused: {reason}")
+    print(f"    {'accept' if ok else 'REFUSE!':>7}  {cidr:<42} {why}")
+
+# The documented residual, asserted rather than left implicit. A /95 spanning the marker is NOT
+# rejected, because at /95 the marker is not pinned and the range is half ordinary space. Pinning
+# this as a test means the boundary is a decision on the record, not an accident, and that moving it
+# is a deliberate act that changes a failing assertion.
+residual = cs_describe_unsafe_address("2001:db8::5efe:0:0/95")
+check(residual is None,
+      "2001:db8::5efe:0:0/95 is refused; the ISATAP predicate has started firing on ranges where "
+      f"the marker is not pinned, which will reject ordinary subnets. Reason given: {residual!r}")
+check(cs_describe_unsafe_address("2001:db8::5efe:0:0/96") is not None,
+      "the /96 that DOES pin the ISATAP marker is accepted - the predicate is not firing at all")
+print()
+print("    residual  2001:db8::5efe:0:0/95 accepted (marker not pinned below /96); the /96 is "
+      "refused")
+
+# The predicate itself, differentially, over every parseable entry in the corpus.
+isatap_agree = 0
+isatap_hits = 0
+isatap_pred_diff = []
+for text in CORPUS:
+    parsed = try_parse_cidr(cs_trim(text))
+    if parsed[0] == "error":
+        continue
+    try:
+        net = ipaddress.ip_network(cs_trim(text), strict=False)
+    except ValueError:
+        continue
+    mine, theirs = is_isatap_range(parsed), _is_isatap_network(net)
+    if mine == theirs:
+        isatap_agree += 1
+        isatap_hits += 1 if mine else 0
+    else:
+        isatap_pred_diff.append((text, mine, theirs))
+check(not isatap_pred_diff,
+      "the ISATAP predicate disagrees with the backend's on:\n    " +
+      "\n    ".join(f"{t!r}: agent={m} backend={b}" for t, m, b in isatap_pred_diff[:15]))
+check(isatap_hits > 20,
+      f"only {isatap_hits} corpus entries are ISATAP; the predicate differential is too thin to "
+      "distinguish a working predicate from one that never fires")
+print(f"    predicate compared on {isatap_agree} ranges, {isatap_hits} of them ISATAP")
+
+notes.append(
+    "ISATAP is contained at two layers and only the first is this validator: the predicate keeps a "
+    "determinately-ISATAP address out of the trusted allowlist, while what denies an ISATAP tunnel "
+    "whose address the allowlist never names is that ISATAP encapsulates in IPv4 protocol 41 and "
+    "no SPEMCS allow rule names a protocol other than TCP or UDP under profile-level default-deny. "
+    "A /64 containing ISATAP addresses is therefore accepted here by design."
+)
 
 # ==============================================================================
 # Part B5 - management address rules (the one unscoped rule)
@@ -947,6 +1188,15 @@ def emit_fixture(path):
             curated.append(f"{cls(above)}/{net.max_prefixlen}")
     curated.extend(HOST_BIT_CASES)
     curated.extend(NON_CANONICAL)
+    # ISATAP has no forbidden-table row to expand boundaries from, so its cases are added
+    # explicitly - both the hits and, just as importantly, the near misses that must stay allowed.
+    curated.extend(cidr for cidr, _fragment, _why in TRANSITION_CASES)
+    curated.extend(cidr for cidr, _why in ISATAP_NEAR_MISSES)
+    curated.extend([
+        "2001:db8::5efe:0:0/95", "2001:db8::5efe:0:0/97", "2001:db8::5efe:0:0/112",
+        "2001:db8::5efe:0:0/128", "2001:db8::5efe:0:0/64", "2001:db8::200:5efe:0:0/96",
+        "fe80::200:5efe:c000:201/128",
+    ])
     curated.extend([
         "203.0.113.5", "2001:db8::1", " 203.0.113.5/32 ", "203.0.113.5/33", "203.0.113.5/-1",
         "203.0.113.5/", "203.0.113.5/x", "203.0.113.5//32", "203.0.113.5/032", "", "   ",
@@ -977,6 +1227,14 @@ def emit_fixture(path):
         ("::ffff:8.8.8.8/128", "::ffff:0:0/96"),
         ("2002:c000:204::/48", "2002::/16"),
         ("2001:0:53aa:64c:2c:1234:5678:9abc/128", "2001::/32"),
+        # ISATAP: the reason distinguishes the predicate from the table. A future change that
+        # rejected these by widening a forbidden prefix instead would reject ordinary subnets with
+        # them, and only a message assertion notices the difference.
+        ("2001:db8::5efe:c000:201/128", "is an ISATAP address"),
+        ("2001:db8::200:5efe:c000:201/128", "is an ISATAP address"),
+        ("2001:db8::5efe:0:0/96", "is an ISATAP address"),
+        ("fe80::5efe:c000:201/128", "fe80::/10"),
+        ("2002::5efe:0:0/96", "2002::/16"),
         ("128.0.0.0/1", "widest allowed IPv4 prefix"),
         ("1000::/8", "widest allowed IPv6 prefix"),
         ("192.168.1.5/24", "bits set below its prefix length"),

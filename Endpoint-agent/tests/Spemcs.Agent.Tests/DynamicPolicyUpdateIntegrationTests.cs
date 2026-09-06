@@ -226,7 +226,7 @@ public sealed class DynamicPolicyUpdateIntegrationTests : IDisposable
 
             // SPEMCS rules purged; unrelated rules intact
             Assert.Empty(mockFirewall.Rules);
-            Assert.Equal(3, mockFirewall.UnrelatedRuleNames.Count);
+            Assert.Equal(MockFirewallAdapter.DefaultUnrelatedRuleNames, mockFirewall.UnrelatedRuleNames);
         }
         finally
         {
@@ -293,7 +293,7 @@ public sealed class DynamicPolicyUpdateIntegrationTests : IDisposable
             Assert.Equal(FirewallAction.Block, mockFirewall.GetBaseline().PrivateDefaultOutbound);
 
             // Unrelated rules preserved:
-            Assert.Equal(3, mockFirewall.UnrelatedRuleNames.Count);
+            Assert.Equal(MockFirewallAdapter.DefaultUnrelatedRuleNames, mockFirewall.UnrelatedRuleNames);
         }
         finally
         {

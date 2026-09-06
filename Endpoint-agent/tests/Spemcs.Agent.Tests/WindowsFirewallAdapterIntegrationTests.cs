@@ -82,8 +82,18 @@ public class WindowsFirewallAdapterIntegrationTests
             Assert.Equal(FirewallProtocol.TCP, v4Model.Protocol);
             Assert.Equal(FirewallDirection.Outbound, v4Model.Direction);
             Assert.Equal(FirewallAction.Allow, v4Model.Action);
-            Assert.Contains("192.168.250.0/24", v4Model.RemoteAddresses);
-            Assert.Contains("2001:db8:cafe:1234::/64", v6Model.RemoteAddresses);
+            // Windows Firewall does not round-trip an address specification verbatim: it rewrites
+            // IPv4 CIDR into a dotted-decimal subnet mask, so "192.168.250.0/24" is stored and read
+            // back as "192.168.250.0/255.255.255.0". IPv6 prefixes round-trip unchanged. Assert the
+            // address the firewall actually holds is *equivalent* to the one requested - which is a
+            // stronger check than the substring match this replaced, and one that does not pin the
+            // test to whichever spelling a given Windows build happens to return.
+            Assert.True(
+                FirewallAddressSpec.AreEquivalent("192.168.250.0/24", v4Model.RemoteAddresses),
+                $"IPv4 rule RemoteAddresses '{v4Model.RemoteAddresses}' is not equivalent to the requested 192.168.250.0/24");
+            Assert.True(
+                FirewallAddressSpec.AreEquivalent("2001:db8:cafe:1234::/64", v6Model.RemoteAddresses),
+                $"IPv6 rule RemoteAddresses '{v6Model.RemoteAddresses}' is not equivalent to the requested 2001:db8:cafe:1234::/64");
         }
         finally
         {

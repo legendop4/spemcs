@@ -20,6 +20,19 @@ from backend.models.device import Device
 from backend.models.policy import VendorProfile, NetworkPolicy, DevicePolicyState
 
 
+# NetworkPolicy.approved_browser, .key_id and .schema_version are all nullable=False: each is part
+# of the RSA-PSS signed canonical payload, so a row without them cannot have its signed bytes
+# reproduced at distribution time. The constructions below omitted all three and still committed,
+# because the deployed database was missing the columns entirely - the INSERT never saw the
+# constraint. Migration 0002 adds them, and the hermetic test database (see conftest.py) is built
+# from the model, so these rows now have to be valid. The values are placeholders: this module
+# tests the ORM mapping and its constraints, not the signing envelope, which is covered by
+# test_policy_crypto.py and test_policy_compiler.py.
+def _signed_envelope(**overrides):
+    """The three signed-envelope columns every NetworkPolicy row must carry."""
+    return {"approved_browser": "chrome", "key_id": "test-key-1", "schema_version": "1.0", **overrides}
+
+
 @pytest.fixture
 def db_session():
     """Provides a transactional database session for each test, cleaning up created fixtures."""
@@ -108,6 +121,7 @@ def test_network_policy_creation(db_session):
         not_before=now,
         expires_at=now + timedelta(hours=3),
         signature="SAMPLE-BASE64-RSA-SIGNATURE",
+        **_signed_envelope(),
     )
     db.add(policy)
     db.commit()
@@ -143,6 +157,7 @@ def test_network_policy_unique_exam_version_constraint(db_session):
         management_server={"ip_addresses": ["127.0.0.1"], "port": 8000},
         not_before=now,
         expires_at=now + timedelta(hours=2),
+        **_signed_envelope(),
     )
     db.add(policy1)
     db.commit()
@@ -156,6 +171,7 @@ def test_network_policy_unique_exam_version_constraint(db_session):
         management_server={"ip_addresses": ["127.0.0.1"], "port": 8000},
         not_before=now,
         expires_at=now + timedelta(hours=2),
+        **_signed_envelope(),
     )
     db.add(policy2_duplicate)
     with pytest.raises(IntegrityError):
@@ -195,6 +211,7 @@ def test_device_policy_state_creation_and_unique_constraint(db_session):
         management_server={"ip_addresses": ["10.0.0.1"], "port": 8000},
         not_before=now,
         expires_at=now + timedelta(hours=2),
+        **_signed_envelope(),
     )
     db.add(policy)
     db.commit()

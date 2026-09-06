@@ -30,6 +30,15 @@ string backendUrl = "http://127.0.0.1:8002/";
 var hostApprovedBrowser = ApprovedBrowserFamily.Chrome;
 var approvedBrowserProvenance = "built-in fallback (no 'approvedBrowser' in config.json)";
 
+// Bootstrap enrolment key. It authorises this machine to register and thereby to obtain the
+// device token every other agent call is authenticated with, so it is a real shared secret and is
+// read from configuration only - config.json, then the SPEMCS_ENROLLMENT_KEY environment
+// variable, then host configuration. There is deliberately NO compiled-in default: a key baked
+// into a binary installed on every examination workstation is readable by anyone holding the
+// binary. Null here means unconfigured, which surfaces as a 401 from registration naming the
+// problem, rather than as a working default nobody replaces.
+string? enrollmentKey = null;
+
 if (File.Exists(configPath))
 {
     try
@@ -38,6 +47,13 @@ if (File.Exists(configPath))
         if (doc.RootElement.TryGetProperty("serverUrl", out var sProp) && !string.IsNullOrWhiteSpace(sProp.GetString()))
         {
             backendUrl = sProp.GetString()!.TrimEnd('/') + "/";
+        }
+
+        if (doc.RootElement.TryGetProperty("enrollmentKey", out var eProp)
+            && eProp.ValueKind == System.Text.Json.JsonValueKind.String
+            && !string.IsNullOrWhiteSpace(eProp.GetString()))
+        {
+            enrollmentKey = eProp.GetString();
         }
 
         if (doc.RootElement.TryGetProperty("approvedBrowser", out var bProp)
@@ -66,6 +82,12 @@ if (string.IsNullOrWhiteSpace(backendUrl) || backendUrl.Contains(":8000"))
     backendUrl = builder.Configuration["BackendApiUrl"] ?? "http://127.0.0.1:8002/";
 }
 if (!backendUrl.EndsWith("/")) backendUrl += "/";
+
+if (string.IsNullOrWhiteSpace(enrollmentKey))
+{
+    enrollmentKey = Environment.GetEnvironmentVariable("SPEMCS_ENROLLMENT_KEY")
+                    ?? builder.Configuration["EnrollmentKey"];
+}
 
 // Milestone 5 Policy Distribution & Pre-Enforcement Verification
 builder.Services.AddSingleton<ITrustedKeyStore, TrustedKeyStore>();
@@ -101,6 +123,11 @@ builder.Services.AddSingleton<IApprovedBrowserContext>(sp =>
 });
 
 builder.Services.AddSingleton<IEnforcementStateMachine, EnforcementStateMachine>();
+
+// One credential store for the whole process. Registration writes the device token into it and
+// the session and event adapters read it, so this MUST be a singleton: three separate instances
+// would mean registration credentials that no other call can see.
+builder.Services.AddSingleton(_ => new DeviceCredentialStore(enrollmentKey));
 
 builder.Services.AddHttpClient("BackendApi", c => c.BaseAddress = new Uri(backendUrl));
 builder.Services.AddHttpClient<IRegistrationService, BackendRegistrationService>(c => c.BaseAddress = new Uri(backendUrl));

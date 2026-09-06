@@ -1,0 +1,244 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 950" width="1400" height="950" style="background:#0d1117; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
+  <defs>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="3" stdDeviation="4" flood-color="#000" flood-opacity="0.5" />
+    </filter>
+  </defs>
+
+  <!-- Title -->
+  <rect x="0" y="0" width="1400" height="60" fill="#161b22" />
+  <text x="30" y="38" fill="#58a6ff" font-size="22" font-weight="700">SPEMCS Failure &amp; Recovery Visual Architecture Map</text>
+  <text x="640" y="38" fill="#8b949e" font-size="14">9 Critical Failure Modes: Detection, Recovery, Source Code &amp; Test Status</text>
+  <rect x="1240" y="18" width="130" height="26" rx="13" fill="#238636" />
+  <text x="1255" y="35" fill="#ffffff" font-size="11" font-weight="600">VERIFIED CODE</text>
+
+  <!-- 3x3 MATRIX OF FAILURE SCENARIOS -->
+
+  <!-- ROW 1 -->
+  <!-- 1. Backend Unavailable -->
+  <g transform="translate(30, 80)">
+    <rect x="0" y="0" width="425" height="255" rx="8" fill="#161b22" stroke="#388bfd" stroke-width="1.5" filter="url(#shadow)" />
+    <rect x="0" y="0" width="425" height="32" rx="8" fill="#21262d" />
+    <text x="12" y="21" fill="#79c0ff" font-size="12" font-weight="700">1. Backend Management Server Unavailable</text>
+
+    <text x="12" y="52" fill="#f85149" font-size="11" font-weight="600">Failure Trigger:</text>
+    <text x="110" y="52" fill="#c9d1d9" font-size="11">Server network partition, crash, or reboot mid-exam.</text>
+
+    <text x="12" y="74" fill="#d29922" font-size="11" font-weight="600">Detection:</text>
+    <text x="85" y="74" fill="#c9d1d9" font-size="11">HTTP connection timeout / HttpRequestException in agent.</text>
+
+    <text x="12" y="96" fill="#3fb950" font-size="11" font-weight="600">Actual Implementation:</text>
+    <text x="12" y="112" fill="#8b949e" font-size="10">Agent does NOT tear down active firewall enforcement. Exam lockdown</text>
+    <text x="12" y="126" fill="#8b949e" font-size="10">persists locally. Telemetry events queue in memory/disk buffer.</text>
+
+    <text x="12" y="148" fill="#7ee787" font-size="11" font-weight="600">Recovery Mechanism:</text>
+    <text x="12" y="164" fill="#8b949e" font-size="10">Exponential backoff retry in EventUploaderWorker. Reconnects when</text>
+    <text x="12" y="178" fill="#8b949e" font-size="10">backend returns and flushes queued telemetry payloads.</text>
+
+    <text x="12" y="200" fill="#58a6ff" font-size="10">Source: EventUploaderWorker.cs | AgentWorker.cs</text>
+    <text x="12" y="216" fill="#7ee787" font-size="10">Test Evidence: Hermetic queue buffer unit tests</text>
+    <text x="12" y="232" fill="#d29922" font-size="10">Live Verification: Verified offline buffer persistence</text>
+  </g>
+
+  <!-- 2. WebSocket Disconnect -->
+  <g transform="translate(485, 80)">
+    <rect x="0" y="0" width="425" height="255" rx="8" fill="#161b22" stroke="#388bfd" stroke-width="1.5" filter="url(#shadow)" />
+    <rect x="0" y="0" width="425" height="32" rx="8" fill="#21262d" />
+    <text x="12" y="21" fill="#79c0ff" font-size="12" font-weight="700">2. WebSocket Disconnect (Agent / Dashboard)</text>
+
+    <text x="12" y="52" fill="#f85149" font-size="11" font-weight="600">Failure Trigger:</text>
+    <text x="110" y="52" fill="#c9d1d9" font-size="11">Network blip, proxy timeout, or WiFi jitter.</text>
+
+    <text x="12" y="74" fill="#d29922" font-size="11" font-weight="600">Detection:</text>
+    <text x="85" y="74" fill="#c9d1d9" font-size="11">WS Close frame or missed heartbeat (WS_HEARTBEAT_TIMEOUT=10s).</text>
+
+    <text x="12" y="96" fill="#3fb950" font-size="11" font-weight="600">Actual Implementation:</text>
+    <text x="12" y="112" fill="#8b949e" font-size="10">Backend RealtimeManager unregisters connection. Frontend AppContext</text>
+    <text x="12" y="126" fill="#8b949e" font-size="10">and Agent WebSocket client enter reconnecting loop.</text>
+
+    <text x="12" y="148" fill="#7ee787" font-size="11" font-weight="600">Recovery Mechanism:</text>
+    <text x="12" y="164" fill="#8b949e" font-size="10">Automatic reconnection with randomized exponential backoff.</text>
+    <text x="12" y="178" fill="#8b949e" font-size="10">Dashboard performs first-frame AUTHENTICATE handshake upon reconnect.</text>
+
+    <text x="12" y="200" fill="#58a6ff" font-size="10">Source: realtime.py | AppContext.tsx | AgentWorker.cs</text>
+    <text x="12" y="216" fill="#7ee787" font-size="10">Test Evidence: test_websocket_heartbeat.py | test_auth_handshake.py</text>
+    <text x="12" y="232" fill="#7ee787" font-size="10">Live Verification: Verified auto-reconnect on UI</text>
+  </g>
+
+  <!-- 3. Agent Crash -->
+  <g transform="translate(940, 80)">
+    <rect x="0" y="0" width="425" height="255" rx="8" fill="#161b22" stroke="#388bfd" stroke-width="1.5" filter="url(#shadow)" />
+    <rect x="0" y="0" width="425" height="32" rx="8" fill="#21262d" />
+    <text x="12" y="21" fill="#79c0ff" font-size="12" font-weight="700">3. Agent Windows Service Crash</text>
+
+    <text x="12" y="52" fill="#f85149" font-size="11" font-weight="600">Failure Trigger:</text>
+    <text x="110" y="52" fill="#c9d1d9" font-size="11">Unhandled exception, OutOfMemory, or kernel terminate.</text>
+
+    <text x="12" y="74" fill="#d29922" font-size="11" font-weight="600">Detection:</text>
+    <text x="85" y="74" fill="#c9d1d9" font-size="11">Windows Service Control Manager (SCM) process crash event.</text>
+
+    <text x="12" y="96" fill="#3fb950" font-size="11" font-weight="600">Actual Implementation:</text>
+    <text x="12" y="112" fill="#8b949e" font-size="10">Service recovery configuration: reset=86400 restart=5000/10000/60000.</text>
+    <text x="12" y="126" fill="#8b949e" font-size="10">SCM automatically restarts Spemcs.Agent.Service.exe in Session 0.</text>
+
+    <text x="12" y="148" fill="#7ee787" font-size="11" font-weight="600">Recovery Mechanism:</text>
+    <text x="12" y="164" fill="#8b949e" font-size="10">On startup, reads sqlite_rollback_journal.db to inspect active state.</text>
+    <text x="12" y="178" fill="#8b949e" font-size="10">Re-arms pipe, queries backend for active policy status, resumes.</text>
+
+    <text x="12" y="200" fill="#58a6ff" font-size="10">Source: install_service.ps1 | Program.cs | AgentWorker.cs</text>
+    <text x="12" y="216" fill="#7ee787" font-size="10">Test Evidence: ServiceDelegatedEnforcementTests.cs</text>
+    <text x="12" y="232" fill="#7ee787" font-size="10">Live Verification: Verified SCM auto-restart</text>
+  </g>
+
+  <!-- ROW 2 -->
+  <!-- 4. Machine Reboot Mid-Exam -->
+  <g transform="translate(30, 360)">
+    <rect x="0" y="0" width="425" height="255" rx="8" fill="#161b22" stroke="#388bfd" stroke-width="1.5" filter="url(#shadow)" />
+    <rect x="0" y="0" width="425" height="32" rx="8" fill="#21262d" />
+    <text x="12" y="21" fill="#79c0ff" font-size="12" font-weight="700">4. Sudden Workstation Reboot Mid-Exam</text>
+
+    <text x="12" y="52" fill="#f85149" font-size="11" font-weight="600">Failure Trigger:</text>
+    <text x="110" y="52" fill="#c9d1d9" font-size="11">Power cut, kernel BSOD, or physical reset button.</text>
+
+    <text x="12" y="74" fill="#d29922" font-size="11" font-weight="600">Detection:</text>
+    <text x="85" y="74" fill="#c9d1d9" font-size="11">Service boots up with orphaned rules in SQLite journal.</text>
+
+    <text x="12" y="96" fill="#3fb950" font-size="11" font-weight="600">Actual Implementation:</text>
+    <text x="12" y="112" fill="#8b949e" font-size="10">Windows boots. Service starts automatically in Session 0 before student logs</text>
+    <text x="12" y="126" fill="#8b949e" font-size="10">in. Inspects sqlite_rollback_journal.db for active session rules.</text>
+
+    <text x="12" y="148" fill="#7ee787" font-size="11" font-weight="600">Recovery Mechanism:</text>
+    <text x="12" y="164" fill="#8b949e" font-size="10">If exam ended: executes immediate rollback to restore normal internet.</text>
+    <text x="12" y="178" fill="#8b949e" font-size="10">If exam ongoing: re-establishes named pipes, waits for candidate UI.</text>
+
+    <text x="12" y="200" fill="#58a6ff" font-size="10">Source: SqliteRollbackJournal.cs | AgentWorker.cs</text>
+    <text x="12" y="216" fill="#7ee787" font-size="10">Test Evidence: CommandReplay_SurvivesServiceRestart</text>
+    <text x="12" y="232" fill="#d29922" font-size="10">Live Verification: Pending full bare-metal power cut E2E</text>
+  </g>
+
+  <!-- 5. Firewall Rollback Failure -->
+  <g transform="translate(485, 360)">
+    <rect x="0" y="0" width="425" height="255" rx="8" fill="#161b22" stroke="#388bfd" stroke-width="1.5" filter="url(#shadow)" />
+    <rect x="0" y="0" width="425" height="32" rx="8" fill="#21262d" />
+    <text x="12" y="21" fill="#79c0ff" font-size="12" font-weight="700">5. Firewall Rollback Failure / Partial Failure</text>
+
+    <text x="12" y="52" fill="#f85149" font-size="11" font-weight="600">Failure Trigger:</text>
+    <text x="110" y="52" fill="#c9d1d9" font-size="11">COM Interop error or locked rule during teardown.</text>
+
+    <text x="12" y="74" fill="#d29922" font-size="11" font-weight="600">Detection:</text>
+    <text x="85" y="74" fill="#c9d1d9" font-size="11">COMException caught in WindowsFirewallAdapter::RemoveRule.</text>
+
+    <text x="12" y="96" fill="#3fb950" font-size="11" font-weight="600">Actual Implementation:</text>
+    <text x="12" y="112" fill="#8b949e" font-size="10">Iterates through session rules. If individual removal fails, continues</text>
+    <text x="12" y="126" fill="#8b949e" font-size="10">sweeping remaining rules. Resets DefaultOutboundAction to ALLOW.</text>
+
+    <text x="12" y="148" fill="#7ee787" font-size="11" font-weight="600">Recovery Mechanism:</text>
+    <text x="12" y="164" fill="#8b949e" font-size="10">Emergency sweep: searches all rules matching SPEMCS-* prefix and</text>
+    <text x="12" y="178" fill="#8b949e" font-size="10">purges them. Journal records ROLLED_BACK or failure log for admin.</text>
+
+    <text x="12" y="200" fill="#58a6ff" font-size="10">Source: SqliteRollbackJournal.cs | WindowsFirewallAdapter.cs</text>
+    <text x="12" y="216" fill="#7ee787" font-size="10">Test Evidence: RollbackScopeTests.cs</text>
+    <text x="12" y="232" fill="#7ee787" font-size="10">Live Verification: Verified rule deletion in test harness</text>
+  </g>
+
+  <!-- 6. Invalid Policy Signature -->
+  <g transform="translate(940, 360)">
+    <rect x="0" y="0" width="425" height="255" rx="8" fill="#161b22" stroke="#388bfd" stroke-width="1.5" filter="url(#shadow)" />
+    <rect x="0" y="0" width="425" height="32" rx="8" fill="#21262d" />
+    <text x="12" y="21" fill="#79c0ff" font-size="12" font-weight="700">6. Invalid Policy Cryptographic Signature</text>
+
+    <text x="12" y="52" fill="#f85149" font-size="11" font-weight="600">Failure Trigger:</text>
+    <text x="110" y="52" fill="#c9d1d9" font-size="11">MITM policy alteration, corrupted byte, or revoked key.</text>
+
+    <text x="12" y="74" fill="#d29922" font-size="11" font-weight="600">Detection:</text>
+    <text x="85" y="74" fill="#c9d1d9" font-size="11">RSA-PSS verification failure in PolicyReceiver.VerifySignature().</text>
+
+    <text x="12" y="96" fill="#3fb950" font-size="11" font-weight="600">Actual Implementation:</text>
+    <text x="12" y="112" fill="#8b949e" font-size="10">Strict Fail-Closed: Policy is REJECTED before touching firewall.</text>
+    <text x="12" y="126" fill="#8b949e" font-size="10">No rules are installed. State set to FAILED in device_policy_states.</text>
+
+    <text x="12" y="148" fill="#7ee787" font-size="11" font-weight="600">Recovery Mechanism:</text>
+    <text x="12" y="164" fill="#8b949e" font-size="10">Device reports signature failure event. Backend notifies proctor.</text>
+    <text x="12" y="178" fill="#8b949e" font-size="10">Admin must recompile policy with valid active signing key.</text>
+
+    <text x="12" y="200" fill="#58a6ff" font-size="10">Source: PolicyReceiver.cs | PolicyDistributionTests.cs</text>
+    <text x="12" y="216" fill="#7ee787" font-size="10">Test Evidence: TamperedRawPolicyJson_FailsSignatureVerification</text>
+    <text x="12" y="232" fill="#7ee787" font-size="10">Live Verification: Cryptographically hermetic</text>
+  </g>
+
+  <!-- ROW 3 -->
+  <!-- 7. Invalid Device Token -->
+  <g transform="translate(30, 640)">
+    <rect x="0" y="0" width="425" height="255" rx="8" fill="#161b22" stroke="#388bfd" stroke-width="1.5" filter="url(#shadow)" />
+    <rect x="0" y="0" width="425" height="32" rx="8" fill="#21262d" />
+    <text x="12" y="21" fill="#79c0ff" font-size="12" font-weight="700">7. Invalid / Expired Device Token</text>
+
+    <text x="12" y="52" fill="#f85149" font-size="11" font-weight="600">Failure Trigger:</text>
+    <text x="110" y="52" fill="#c9d1d9" font-size="11">Token expired (&gt;30 days), secret rotated, or UUID mismatch.</text>
+
+    <text x="12" y="74" fill="#d29922" font-size="11" font-weight="600">Detection:</text>
+    <text x="85" y="74" fill="#c9d1d9" font-size="11">require_device dependency raises HTTP 401 Unauthorized.</text>
+
+    <text x="12" y="96" fill="#3fb950" font-size="11" font-weight="600">Actual Implementation:</text>
+    <text x="12" y="112" fill="#8b949e" font-size="10">Backend rejects request. Error detail is uniform ("Invalid or expired").</text>
+    <text x="12" y="126" fill="#8b949e" font-size="10">Prevents leaking whether signature or expiration failed.</text>
+
+    <text x="12" y="148" fill="#7ee787" font-size="11" font-weight="600">Recovery Mechanism:</text>
+    <text x="12" y="164" fill="#8b949e" font-size="10">Device initiates automatic re-enrollment flow using bootstrap key</text>
+    <text x="12" y="178" fill="#8b949e" font-size="10">X-Enrollment-Key against /api/v1/devices/register to obtain fresh token.</text>
+
+    <text x="12" y="200" fill="#58a6ff" font-size="10">Source: dependencies.py | auth_service.py | AgentWorker.cs</text>
+    <text x="12" y="216" fill="#7ee787" font-size="10">Test Evidence: test_auth_security.py::test_device_token_expiry</text>
+    <text x="12" y="232" fill="#7ee787" font-size="10">Live Verification: Verified re-enrollment handshake</text>
+  </g>
+
+  <!-- 8. Unauthorized API Request -->
+  <g transform="translate(485, 640)">
+    <rect x="0" y="0" width="425" height="255" rx="8" fill="#161b22" stroke="#388bfd" stroke-width="1.5" filter="url(#shadow)" />
+    <rect x="0" y="0" width="425" height="32" rx="8" fill="#21262d" />
+    <text x="12" y="21" fill="#79c0ff" font-size="12" font-weight="700">8. Unauthorized API Request (RBAC / Role Mismatch)</text>
+
+    <text x="12" y="52" fill="#f85149" font-size="11" font-weight="600">Failure Trigger:</text>
+    <text x="110" y="52" fill="#c9d1d9" font-size="11">Proctor attempts admin action, or device calls user endpoint.</text>
+
+    <text x="12" y="74" fill="#d29922" font-size="11" font-weight="600">Detection:</text>
+    <text x="85" y="74" fill="#c9d1d9" font-size="11">FastAPI dependency (require_admin, assert_device_owns) check.</text>
+
+    <text x="12" y="96" fill="#3fb950" font-size="11" font-weight="600">Actual Implementation:</text>
+    <text x="12" y="112" fill="#8b949e" font-size="10">Raises HTTP 403 Forbidden. Does NOT return 404 (prevents entity</text>
+    <text x="12" y="126" fill="#8b949e" font-size="10">existence enumeration). Event logged to backend audit_logs.</text>
+
+    <text x="12" y="148" fill="#7ee787" font-size="11" font-weight="600">Recovery Mechanism:</text>
+    <text x="12" y="164" fill="#8b949e" font-size="10">Client UI intercepts 403 response, displays "Access Denied" toast,</text>
+    <text x="12" y="178" fill="#8b949e" font-size="10">and prevents state drift. No automatic privilege escalation.</text>
+
+    <text x="12" y="200" fill="#58a6ff" font-size="10">Source: dependencies.py | audit_service.py</text>
+    <text x="12" y="216" fill="#7ee787" font-size="10">Test Evidence: test_auth_security.py::test_proctor_cannot_access_admin</text>
+    <text x="12" y="232" fill="#7ee787" font-size="10">Live Verification: Verified on web dashboard</text>
+  </g>
+
+  <!-- 9. Exam Activation Refusal -->
+  <g transform="translate(940, 640)">
+    <rect x="0" y="0" width="425" height="255" rx="8" fill="#161b22" stroke="#388bfd" stroke-width="1.5" filter="url(#shadow)" />
+    <rect x="0" y="0" width="425" height="32" rx="8" fill="#21262d" />
+    <text x="12" y="21" fill="#79c0ff" font-size="12" font-weight="700">9. Exam Activation Refusal (Enforcement Readiness)</text>
+
+    <text x="12" y="52" fill="#f85149" font-size="11" font-weight="600">Failure Trigger:</text>
+    <text x="110" y="52" fill="#c9d1d9" font-size="11">Admin activates exam while devices are offline / unarmed.</text>
+
+    <text x="12" y="74" fill="#d29922" font-size="11" font-weight="600">Detection:</text>
+    <text x="85" y="74" fill="#c9d1d9" font-size="11">enforcement_readiness.py pre-flight verification gate.</text>
+
+    <text x="12" y="96" fill="#3fb950" font-size="11" font-weight="600">Actual Implementation:</text>
+    <text x="12" y="112" fill="#8b949e" font-size="10">If network_enforcement=True and active policy missing or devices</text>
+    <text x="12" y="126" fill="#8b949e" font-size="10">have not applied policy: raises HTTP 409 Conflict with detailed readiness report.</text>
+
+    <text x="12" y="148" fill="#7ee787" font-size="11" font-weight="600">Recovery Mechanism:</text>
+    <text x="12" y="164" fill="#8b949e" font-size="10">Exam stays PENDING. Admin views readiness breakdown in ExamShield UI,</text>
+    <text x="12" y="178" fill="#8b949e" font-size="10">resolves offline lab machines or distributes policy before re-attempting.</text>
+
+    <text x="12" y="200" fill="#58a6ff" font-size="10">Source: enforcement_readiness.py | routes/exams.py</text>
+    <text x="12" y="216" fill="#7ee787" font-size="10">Test Evidence: test_enforcement_readiness.py</text>
+    <text x="12" y="232" fill="#7ee787" font-size="10">Live Verification: Verified 409 guard in ExamShield</text>
+  </g>
+</svg>

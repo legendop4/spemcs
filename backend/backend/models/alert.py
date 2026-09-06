@@ -15,7 +15,17 @@ class Alert(Base):
 
     alert_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     event_id = Column(UUID(as_uuid=True), ForeignKey("events.event_id"), nullable=False, unique=True)
-    exam_id = Column(UUID(as_uuid=True), ForeignKey("exams.exam_id"), nullable=False)
+    # Nullable on purpose. `event_service.ingest_event` resolves the exam by looking for an exam
+    # with status ACTIVE that this device is assigned to, and writes
+    # `exam_id=exam.exam_id if exam else None` - so every alert raised by a device that is not
+    # currently sitting an exam has no exam. That is not an edge case; it is the ordinary state of a
+    # lab machine outside exam hours, and those alerts are exactly the ones a proctoring system
+    # exists to record. Under NOT NULL the `db.flush()` that follows would raise IntegrityError and
+    # abort the surrounding transaction, so the *event* would be lost too, not just the alert.
+    # Every reader is already written for NULL: `_enrich_alert` guards on `if alert.exam_id`,
+    # `list_alerts` uses `outerjoin(Exam, ...)`, `agent_api` falls back to "", and `AlertCreate`
+    # declares `exam_id: Optional[UUID] = None`.
+    exam_id = Column(UUID(as_uuid=True), ForeignKey("exams.exam_id"), nullable=True)
     device_id = Column(UUID(as_uuid=True), ForeignKey("devices.device_id"), nullable=False)
 
     # Deduplication: agent-generated event ID to prevent duplicate alerts

@@ -52,8 +52,22 @@ public class DeviceRegistrationRequest
     [JsonPropertyName("hostname")]
     public string? Hostname { get; set; }
 
+    /// <summary>
+    /// Bootstrap enrolment key authorising this registration.
+    /// </summary>
+    /// <remarks>
+    /// This property previously defaulted to the literal string
+    /// <c>"spemcs-enrollment-bootstrap-key-default"</c>, which is the backend's committed
+    /// development placeholder. The consequence was not that enrolment was convenient: it was that
+    /// the shared secret guarding device enrolment was published in the agent binary installed on
+    /// every examination workstation AND in the backend source, so it protected nothing, and any
+    /// deployment that changed the backend's key would have been broken by this default anyway.
+    /// It is now supplied by the caller from configuration - see
+    /// <c>EnrollmentKeyProvider.Resolve</c> - and a null value means unconfigured, which the
+    /// backend answers with a 401 naming the problem.
+    /// </remarks>
     [JsonPropertyName("enrollmentKey")]
-    public string? EnrollmentKey { get; set; } = "spemcs-enrollment-bootstrap-key-default";
+    public string? EnrollmentKey { get; set; }
 }
 
 public class DeviceRegistrationResponse

@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from backend.app.database import get_db
+from backend.app.dependencies import require_staff
 from backend.models.device import Device
 from backend.models.exam import Exam, ExamDevice
 from backend.models.alert import Alert
@@ -14,7 +15,13 @@ from backend.models.lab import Lab
 from backend.websocket.manager import realtime_manager
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
+# The same aggregate the dashboard WebSocket pushes as INITIAL_STATE, reachable over plain HTTP.
+# Both had to be closed together: authenticating one and not the other just moves the disclosure.
+router = APIRouter(
+    prefix="/api/dashboard",
+    tags=["dashboard"],
+    dependencies=[Depends(require_staff)],
+)
 
 
 @router.get("/summary")

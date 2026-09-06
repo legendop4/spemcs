@@ -451,4 +451,205 @@ public sealed class AdversarialSecurityValidationTests : IDisposable
         var postDeactState = _journal.GetActiveEnforcementState();
         Assert.Null(postDeactState);
     }
+
+    // =========================================================================
+    // ATTACK CLASS Q: IPv6 transition mechanisms (requirement 7) and DNS paths
+    //
+    // Requirement 7 names 6to4, Teredo and ISATAP. Containment is two-layered and
+    // the layers are tested separately on purpose, because they answer different
+    // questions:
+    //
+    //   Layer 1 - a transition-mechanism destination must never enter a trusted
+    //             policy. That is PolicyReceiver + PolicyDestinationValidator, and
+    //             it is hygiene: it means an operator or a compromised backend
+    //             cannot get one installed even by signing it.
+    //   Layer 2 - even if one somehow did, no allow rule would carry the tunnel,
+    //             because all three encapsulate IPv6 in IPv4 protocol 41 and
+    //             BuildSessionRules emits nothing but TCP and UDP. That is the
+    //             control that actually stops the tunnel.
+    //
+    // Tests below assert BOTH, and also assert the no-false-positive property,
+    // because a validator that rejected ordinary IPv6 subnets would cancel exams.
+    // =========================================================================
+
+    [Theory]
+    // 6to4: the whole 2002::/16 range, plus a single host inside it.
+    [InlineData("2002:c000:0204::/48")]
+    [InlineData("2002:c633:6401::1/128")]
+    // Teredo: 2001::/32.
+    [InlineData("2001:0:4136:e378:8000:63bf:3fff:fdd2/128")]
+    [InlineData("2001:0::/32")]
+    // ISATAP: no assigned prefix - identified by the modified-EUI-64 interface
+    // identifier. Both forms, under a global prefix.
+    [InlineData("2001:db8::5efe:c000:204/128")]
+    [InlineData("2001:db8::200:5efe:c000:204/128")]
+    // ISATAP under a documentation prefix, as a whole /96 interface-ID block.
+    [InlineData("2001:db8::5efe:0:0/96")]
+    public async Task ClassQ_SignedPolicyNamingTransitionMechanism_IsRejected(string transitionRange)
+    {
+        var msg = CreatePolicyMessage(ActiveKeyId, version: 1, tamper: payload =>
+        {
+            payload["allowed_destinations"] = new List<object>
+            {
+                new Dictionary<string, object>
+                {
+                    ["name"] = "VendorApp",
+                    ["domains"] = new List<string> { "vendor.example.com" },
+                    ["ip_ranges"] = new List<string> { transitionRange },
+                    ["tcp_ports"] = new List<int> { 443 },
+                    ["udp_ports"] = new List<int>()
+                }
+            };
+        });
+
+        var result = await _receiver.ProcessPolicyMessageAsync(msg, TestExamId, DateTimeOffset.UtcNow);
+
+        // The signature is VALID here - this policy is correctly signed by a trusted
+        // key. Rejection therefore proves the endpoint re-validates destinations
+        // rather than trusting whatever a signature vouches for.
+        Assert.NotEqual(PolicyAcceptanceStatus.Accepted, result.Status);
+    }
+
+    [Theory]
+    // Ordinary global IPv6 that MUST stay usable. Every one of these has zeros or
+    // arbitrary bytes where the ISATAP marker would sit, and an overlap-style
+    // ISATAP test would reject all of them.
+    [InlineData("2001:db8::/48")]
+    [InlineData("2606:4700::/32")]
+    [InlineData("2620:fe::/48")]
+    [InlineData("2a00:1450:4001::/48")]
+    // A /64 that CONTAINS ISATAP addresses but does not pin the marker bits. The
+    // marker is undetermined here, so accepting it is the documented, deliberate
+    // residual - see BuildSessionRules remarks - not an oversight.
+    [InlineData("2001:db8:0:0::/64")]
+    // 0x5efe appearing OUTSIDE the interface identifier is not an ISATAP marker.
+    [InlineData("2001:5efe::/32")]
+    [InlineData("2001:db8:5efe::/48")]
+    public void ClassQ_OrdinaryIPv6Destinations_AreNotMistakenForTransitionMechanisms(string safeRange)
+    {
+        var reason = PolicyDestinationValidator.DescribeUnsafeAddress(safeRange);
+
+        Assert.Null(reason);
+    }
+
+    [Fact]
+    public void ClassQ_IsatapResidualBoundary_IsExactlyWhereItIsDocumented()
+    {
+        // A /95 spans the marker bits, so the marker is not determined for every
+        // address in the range and the predicate deliberately does not fire. The
+        // /96 immediately below it does. This pins the documented boundary: moving
+        // it in either direction breaks a test instead of passing silently.
+        Assert.Null(PolicyDestinationValidator.DescribeUnsafeAddress("2001:db8::5efe:0:0/95"));
+
+        var pinned = PolicyDestinationValidator.DescribeUnsafeAddress("2001:db8::5efe:0:0/96");
+        Assert.NotNull(pinned);
+        Assert.Contains("ISATAP", pinned, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ClassQ_LinkLocalIsatap_IsRejectedByTheMoreSpecificEnclosingRange()
+    {
+        // fe80::5efe:w.x.y.z is the link-local ISATAP form. It is caught by
+        // fe80::/10, which is checked before the ISATAP predicate on purpose so the
+        // operator-facing reason names the tighter range. Rejected either way; this
+        // asserts the message did not silently change.
+        var reason = PolicyDestinationValidator.DescribeUnsafeAddress("fe80::5efe:c000:204/128");
+
+        Assert.NotNull(reason);
+        Assert.Contains("fe80::/10", reason, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ClassQ_NoGeneratedRuleCanCarryAProtocol41Tunnel()
+    {
+        var sessionId = Guid.NewGuid();
+        var msg = CreatePolicyMessage(ActiveKeyId, version: 1, tamper: payload =>
+        {
+            // A destination declaring BOTH TCP and UDP ports, so the assertion below
+            // runs against the widest rule set an accepted policy can produce.
+            payload["allowed_destinations"] = new List<object>
+            {
+                new Dictionary<string, object>
+                {
+                    ["name"] = "VendorApp",
+                    ["domains"] = new List<string> { "vendor.example.com" },
+                    ["ip_ranges"] = new List<string> { "198.51.100.7", "2606:4700::/32" },
+                    ["tcp_ports"] = new List<int> { 443, 80 },
+                    ["udp_ports"] = new List<int> { 443 }
+                }
+            };
+        });
+
+        var act = await _machine.ActivateAsync(sessionId, msg, TestExamId);
+        Assert.True(act.Success, act.FailureReason);
+
+        var installed = _firewall.GetRulesByGroup(FirewallRuleModel.SpemcsRuleGroup);
+        Assert.NotEmpty(installed);
+
+        foreach (var rule in installed)
+        {
+            if (rule.Purpose.StartsWith("Loopback", StringComparison.Ordinal))
+            {
+                // The only Protocol.Any rules in the system. They are allowed to be
+                // Any precisely because BOTH ends are pinned to loopback, so they
+                // cannot carry anything off the machine - assert that, rather than
+                // exempting them.
+                Assert.Contains(rule.RemoteAddresses, new[] { "127.0.0.1", "::/127" });
+                Assert.Contains(rule.LocalAddresses, new[] { "127.0.0.1", "::/127" });
+                continue;
+            }
+
+            // Everything that can reach off-box is TCP or UDP. Protocol 41 - the
+            // encapsulation all three of 6to4, ISATAP and (in its relay form) 6in4
+            // rely on - has no rule, and under DefaultOutboundAction=Block an
+            // unnamed protocol is a denied protocol.
+            Assert.True(
+                rule.Protocol is FirewallProtocol.TCP or FirewallProtocol.UDP,
+                $"Rule '{rule.Name}' (purpose '{rule.Purpose}') uses protocol {rule.Protocol}. " +
+                "Only loopback rules may be Protocol.Any; anything else that is not TCP or UDP " +
+                "would open an IPv6 transition tunnel (requirement 7).");
+        }
+    }
+
+    [Fact]
+    public async Task ClassQ_NoGeneratedRuleOpensPort53ToEveryProcess()
+    {
+        var sessionId = Guid.NewGuid();
+        var msg = CreatePolicyMessage(ActiveKeyId, version: 1, tamper: payload =>
+        {
+            // A hostile-looking but structurally legal destination that asks for the
+            // DNS ports. Even if such a policy is accepted, the resulting rules must
+            // stay pinned to the approved browser - they must never become the
+            // machine-wide ":53 for everyone" hole that would also hand curl.exe a
+            // resolver, and with it a DoH/DoT-shaped exfiltration path.
+            payload["allowed_destinations"] = new List<object>
+            {
+                new Dictionary<string, object>
+                {
+                    ["name"] = "VendorApp",
+                    ["domains"] = new List<string> { "vendor.example.com" },
+                    ["ip_ranges"] = new List<string> { "198.51.100.7" },
+                    ["tcp_ports"] = new List<int> { 53, 853 },
+                    ["udp_ports"] = new List<int> { 53 }
+                }
+            };
+        });
+
+        var act = await _machine.ActivateAsync(sessionId, msg, TestExamId);
+        Assert.True(act.Success, act.FailureReason);
+
+        foreach (var rule in _firewall.GetRulesByGroup(FirewallRuleModel.SpemcsRuleGroup))
+        {
+            if (rule.Purpose.StartsWith("Loopback", StringComparison.Ordinal) ||
+                rule.Purpose.Equals("Mgmt", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            Assert.False(
+                string.IsNullOrWhiteSpace(rule.ApplicationPath),
+                $"Rule '{rule.Name}' for ports '{rule.RemotePorts}' is not program-scoped. " +
+                "An unscoped rule on 53/853 is a resolver for every process on the box.");
+        }
+    }
 }

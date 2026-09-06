@@ -693,7 +693,7 @@ public sealed class EnforcementStateMachine : IEnforcementStateMachine
             // against the whole group would mark a concurrent session's rules as "not in my
             // candidate set" and retire them, tearing down another exam's lockdown. Rule names are
             // session-prefixed, which is what makes ownership decidable here.
-            var sessionRulePrefix = $"SPEMCS-{sessionId:N}-";
+            var sessionRulePrefix = FirewallRuleModel.SessionNamePrefix(sessionId);
             var currentInstalledRules = _firewall.GetRulesByGroup(FirewallRuleModel.SpemcsRuleGroup)
                 .Where(r => r.Name.StartsWith(sessionRulePrefix, StringComparison.OrdinalIgnoreCase))
                 .ToList();
@@ -886,6 +886,40 @@ public sealed class EnforcementStateMachine : IEnforcementStateMachine
     /// the fail-closed behaviour: it is strictly better for activation to abort than to install a
     /// machine-wide allowlist.
     /// </exception>
+    /// <remarks>
+    /// <para>
+    /// WHY THERE IS NO DNS RULE HERE. Nothing below names port 53, and that is deliberate. Recursive
+    /// DNS is REQUIRED - every allowed destination is a name the backend resolved, and the management
+    /// channel is reached by name in production - but the traffic originates in svchost.exe hosting
+    /// the Dnscache service, not in the browser. Under profile-level
+    /// <c>DefaultOutboundAction=Block</c> it is already permitted by the Windows built-in rule
+    /// "Core Networking - DNS (UDP-Out)", which is scoped to that service. A SPEMCS :53 rule would at
+    /// best duplicate a narrower existing scope and at worst open :53 to every process on the
+    /// machine, handing back the exact allowlist-isolation property requirements 4 and 5 buy. SPEMCS
+    /// creates no DNS rule and modifies no built-in rule. The browser is separately denied its own
+    /// resolver - DoH and the embedded stub - by <c>BrowserDnsPolicy</c>; the full required-versus-
+    /// denied model is written out at the <c>DisableSecureDns</c> call site in <c>AgentWorker</c>.
+    /// </para>
+    /// <para>
+    /// WHY THIS IS WHAT CONTAINS 6to4, TEREDO AND ISATAP (REQUIREMENT 7). All three transition
+    /// mechanisms carry IPv6 inside IPv4 using IP protocol 41 (Teredo instead uses UDP to a Teredo
+    /// server, which is still an off-box destination). Every rule this method produces is either
+    /// <see cref="FirewallProtocol.TCP"/> or <see cref="FirewallProtocol.UDP"/>, except the two
+    /// loopback rules - which are <see cref="FirewallProtocol.Any"/> but pin BOTH local and remote
+    /// addresses to loopback, so they cannot carry a tunnel off the machine. No rule here names
+    /// protocol 41, and no rule names a 6to4 relay, Teredo server, or ISATAP router address. Under
+    /// default-deny, an unnamed protocol is a denied protocol.
+    /// </para>
+    /// <para>
+    /// That ordering matters for how the validator's job is read.
+    /// <c>PolicyDestinationValidator</c> refusing <c>2002::/16</c>, <c>2001::/32</c> and ISATAP
+    /// interface identifiers is defence in depth and policy hygiene - it stops a transition-mechanism
+    /// destination ever entering a trusted policy. It is NOT the control that stops the tunnel, which
+    /// is why the ISATAP predicate can afford to be exact (prefix pinned to /96) and accept a /95
+    /// spanning the marker rather than risk a false positive that would cancel an exam. The tunnel is
+    /// stopped here, by the absence of a protocol-41 allow rule.
+    /// </para>
+    /// </remarks>
     public static List<FirewallRuleModel> BuildSessionRules(
         Guid sessionId,
         ValidatedPolicy policy,
@@ -1010,7 +1044,7 @@ public sealed class EnforcementStateMachine : IEnforcementStateMachine
 
         try
         {
-            var sessionRulePrefix = $"SPEMCS-{sessionId:N}-";
+            var sessionRulePrefix = FirewallRuleModel.SessionNamePrefix(sessionId);
 
             var scopedImageNames = _firewall.GetRulesByGroup(FirewallRuleModel.SpemcsRuleGroup)
                 .Where(r => r.Name.StartsWith(sessionRulePrefix, StringComparison.OrdinalIgnoreCase)

@@ -1,0 +1,267 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1350 980" width="1350" height="980" style="background:#0d1117; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
+  <defs>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="3" stdDeviation="4" flood-color="#000" flood-opacity="0.5" />
+    </filter>
+    <marker id="arrow" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 8 5 L 0 9 z" fill="#388bfd" />
+    </marker>
+    <linearGradient id="stepGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#161b22" />
+      <stop offset="100%" stop-color="#21262d" />
+    </linearGradient>
+  </defs>
+
+  <!-- Title -->
+  <rect x="0" y="0" width="1350" height="60" fill="#161b22" />
+  <text x="30" y="38" fill="#58a6ff" font-size="22" font-weight="700">How SPEMCS Works: End-to-End Operational Lifecycle Story</text>
+  <text x="730" y="38" fill="#8b949e" font-size="13">15 Verified Sequential Stages from PC Boot to Final Audit Report</text>
+  <rect x="1200" y="18" width="120" height="26" rx="13" fill="#238636" />
+  <text x="1215" y="35" fill="#ffffff" font-size="11" font-weight="600">VERIFIED CODE</text>
+
+  <!-- GRID OF 15 STAGES: 5 COLUMNS x 3 ROWS -->
+  
+  <!-- ROW 1: Stages 1 to 5 (Device Boot & Enrollment) -->
+  <!-- Stage 1 -->
+  <g transform="translate(30, 80)">
+    <rect x="0" y="0" width="240" height="150" rx="8" fill="url(#stepGrad)" stroke="#30363d" stroke-width="1.5" filter="url(#shadow)" />
+    <rect x="10" y="10" width="28" height="28" rx="14" fill="#1f6feb" />
+    <text x="20" y="28" fill="#ffffff" font-size="12" font-weight="700" text-anchor="middle">1</text>
+    <text x="48" y="28" fill="#f0f6fc" font-size="13" font-weight="700">Lab PC Starts</text>
+    <text x="12" y="58" fill="#8b949e" font-size="10">Candidate turns on lab machine.</text>
+    <text x="12" y="74" fill="#8b949e" font-size="10">Windows OS boots, launches SCM.</text>
+    <text x="12" y="90" fill="#79c0ff" font-size="10">Location: Lab Workstation</text>
+    <text x="12" y="106" fill="#8b949e" font-size="9">OS: Windows 10/11 x64</text>
+    <text x="12" y="122" fill="#7ee787" font-size="9">Status: Clean baseline state</text>
+  </g>
+
+  <!-- Stage 2 -->
+  <g transform="translate(295, 80)">
+    <rect x="0" y="0" width="240" height="150" rx="8" fill="url(#stepGrad)" stroke="#388bfd" stroke-width="1.5" filter="url(#shadow)" />
+    <rect x="10" y="10" width="28" height="28" rx="14" fill="#1f6feb" />
+    <text x="20" y="28" fill="#ffffff" font-size="12" font-weight="700" text-anchor="middle">2</text>
+    <text x="48" y="28" fill="#58a6ff" font-size="13" font-weight="700">Agent Service Starts</text>
+    <text x="12" y="58" fill="#8b949e" font-size="10">Service Control Manager starts</text>
+    <text x="12" y="74" fill="#58a6ff" font-size="10">Spemcs.Agent.Service.exe</text>
+    <text x="12" y="90" fill="#7ee787" font-size="10">Runs as: NT AUTHORITY\SYSTEM</text>
+    <text x="12" y="106" fill="#8b949e" font-size="9">Session: Isolated Session 0</text>
+    <text x="12" y="122" fill="#e3b341" font-size="9">Scans sqlite journal for crash recovery</text>
+  </g>
+
+  <!-- Stage 3 -->
+  <g transform="translate(560, 80)">
+    <rect x="0" y="0" width="240" height="150" rx="8" fill="url(#stepGrad)" stroke="#30363d" stroke-width="1.5" filter="url(#shadow)" />
+    <rect x="10" y="10" width="28" height="28" rx="14" fill="#1f6feb" />
+    <text x="20" y="28" fill="#ffffff" font-size="12" font-weight="700" text-anchor="middle">3</text>
+    <text x="48" y="28" fill="#f0f6fc" font-size="13" font-weight="700">Named Pipe &amp; UI Launch</text>
+    <text x="12" y="58" fill="#8b949e" font-size="10">ControlPipeWorker opens pipe:</text>
+    <text x="12" y="74" fill="#d29922" font-size="10">\\.\pipe\spemcs-control-v1</text>
+    <text x="12" y="90" fill="#8b949e" font-size="10">InteractiveSessionUiLauncher</text>
+    <text x="12" y="106" fill="#8b949e" font-size="9">calls CreateProcessAsUserW()</text>
+    <text x="12" y="122" fill="#7ee787" font-size="9">Spemcs.Agent.UI launches in desktop</text>
+  </g>
+
+  <!-- Stage 4 -->
+  <g transform="translate(825, 80)">
+    <rect x="0" y="0" width="240" height="150" rx="8" fill="url(#stepGrad)" stroke="#388bfd" stroke-width="1.5" filter="url(#shadow)" />
+    <rect x="10" y="10" width="28" height="28" rx="14" fill="#1f6feb" />
+    <text x="20" y="28" fill="#ffffff" font-size="12" font-weight="700" text-anchor="middle">4</text>
+    <text x="48" y="28" fill="#58a6ff" font-size="13" font-weight="700">Device Enrollment</text>
+    <text x="12" y="58" fill="#8b949e" font-size="10">Presents X-Enrollment-Key to</text>
+    <text x="12" y="74" fill="#58a6ff" font-size="10">POST /api/v1/devices/register</text>
+    <text x="12" y="90" fill="#7ee787" font-size="10">Receives: Device HMAC Token</text>
+    <text x="12" y="106" fill="#8b949e" font-size="9">Token bound to hardware UUID</text>
+    <text x="12" y="122" fill="#8b949e" font-size="9">Durable in credential store</text>
+  </g>
+
+  <!-- Stage 5 -->
+  <g transform="translate(1090, 80)">
+    <rect x="0" y="0" width="230" height="150" rx="8" fill="url(#stepGrad)" stroke="#30363d" stroke-width="1.5" filter="url(#shadow)" />
+    <rect x="10" y="10" width="28" height="28" rx="14" fill="#1f6feb" />
+    <text x="20" y="28" fill="#ffffff" font-size="12" font-weight="700" text-anchor="middle">5</text>
+    <text x="48" y="28" fill="#f0f6fc" font-size="13" font-weight="700">Exam Assigned</text>
+    <text x="12" y="58" fill="#8b949e" font-size="10">Admin schedules exam in dashboard.</text>
+    <text x="12" y="74" fill="#8b949e" font-size="10">Device mapped via exam_devices.</text>
+    <text x="12" y="90" fill="#58a6ff" font-size="10">Vendor profile selected</text>
+    <text x="12" y="106" fill="#8b949e" font-size="9">Network enforcement = true</text>
+    <text x="12" y="122" fill="#7ee787" font-size="9">State: PENDING in DB</text>
+  </g>
+
+  <!-- ROW 2: Stages 6 to 10 (Compilation, Signing, Lockdown, Monitoring) -->
+  <!-- Stage 6 -->
+  <g transform="translate(30, 270)">
+    <rect x="0" y="0" width="240" height="150" rx="8" fill="url(#stepGrad)" stroke="#a371f7" stroke-width="1.5" filter="url(#shadow)" />
+    <rect x="10" y="10" width="28" height="28" rx="14" fill="#a371f7" />
+    <text x="20" y="28" fill="#ffffff" font-size="12" font-weight="700" text-anchor="middle">6</text>
+    <text x="48" y="28" fill="#a371f7" font-size="13" font-weight="700">Policy Compiled</text>
+    <text x="12" y="58" fill="#8b949e" font-size="10">PolicyCompiler aggregates:</text>
+    <text x="12" y="74" fill="#8b949e" font-size="10">• Approved browser binary path</text>
+    <text x="12" y="90" fill="#8b949e" font-size="10">• Allowed vendor domain &amp; IP CIDRs</text>
+    <text x="12" y="106" fill="#8b949e" font-size="9">• Backend management server IP</text>
+    <text x="12" y="122" fill="#7ee787" font-size="9">Schema: Version 2.0 (Strict)</text>
+  </g>
+
+  <!-- Stage 7 -->
+  <g transform="translate(295, 270)">
+    <rect x="0" y="0" width="240" height="150" rx="8" fill="url(#stepGrad)" stroke="#a371f7" stroke-width="1.5" filter="url(#shadow)" />
+    <rect x="10" y="10" width="28" height="28" rx="14" fill="#a371f7" />
+    <text x="20" y="28" fill="#ffffff" font-size="12" font-weight="700" text-anchor="middle">7</text>
+    <text x="48" y="28" fill="#a371f7" font-size="13" font-weight="700">RSA-PSS Signed</text>
+    <text x="12" y="58" fill="#8b949e" font-size="10">Canonical JSON (RFC 8785)</text>
+    <text x="12" y="74" fill="#8b949e" font-size="10">PolicySigner signs with active key:</text>
+    <text x="12" y="90" fill="#a371f7" font-size="10">RSA-2048 | PSS SHA-256 / MGF1</text>
+    <text x="12" y="106" fill="#8b949e" font-size="9">Key ID embedded into policy</text>
+    <text x="12" y="122" fill="#7ee787" font-size="9">Saved to network_policies table</text>
+  </g>
+
+  <!-- Stage 8 -->
+  <g transform="translate(560, 270)">
+    <rect x="0" y="0" width="240" height="150" rx="8" fill="url(#stepGrad)" stroke="#388bfd" stroke-width="1.5" filter="url(#shadow)" />
+    <rect x="10" y="10" width="28" height="28" rx="14" fill="#1f6feb" />
+    <text x="20" y="28" fill="#ffffff" font-size="12" font-weight="700" text-anchor="middle">8</text>
+    <text x="48" y="28" fill="#58a6ff" font-size="13" font-weight="700">Policy Delivered</text>
+    <text x="12" y="58" fill="#8b949e" font-size="10">Agent fetches /api/policies/distribute</text>
+    <text x="12" y="74" fill="#8b949e" font-size="10">PolicyReceiver verifies signature:</text>
+    <text x="12" y="90" fill="#7ee787" font-size="10">Signature verified against TrustedKeyStore</text>
+    <text x="12" y="106" fill="#8b949e" font-size="9">Checks monotonic version &amp; timestamp</text>
+    <text x="12" y="122" fill="#8b949e" font-size="9">Refuses any tampered byte</text>
+  </g>
+
+  <!-- Stage 9 -->
+  <g transform="translate(825, 270)">
+    <rect x="0" y="0" width="240" height="150" rx="8" fill="url(#stepGrad)" stroke="#238636" stroke-width="1.5" filter="url(#shadow)" />
+    <rect x="10" y="10" width="28" height="28" rx="14" fill="#238636" />
+    <text x="20" y="28" fill="#ffffff" font-size="12" font-weight="700" text-anchor="middle">9</text>
+    <text x="48" y="28" fill="#3fb950" font-size="13" font-weight="700">Firewall Lockdown</text>
+    <text x="12" y="58" fill="#8b949e" font-size="10">WindowsFirewallAdapter (COM):</text>
+    <text x="12" y="74" fill="#f85149" font-size="10">Default Outbound = BLOCK (All 3 Profiles)</text>
+    <text x="12" y="90" fill="#7ee787" font-size="10">Scoped allow: browser -> vendor CIDRs</text>
+    <text x="12" y="106" fill="#8b949e" font-size="9">DNS DoH disabled via HKLM registry</text>
+    <text x="12" y="122" fill="#e3b341" font-size="9">Baseline backed up in SQLite journal</text>
+  </g>
+
+  <!-- Stage 10 -->
+  <g transform="translate(1090, 270)">
+    <rect x="0" y="0" width="230" height="150" rx="8" fill="url(#stepGrad)" stroke="#30363d" stroke-width="1.5" filter="url(#shadow)" />
+    <rect x="10" y="10" width="28" height="28" rx="14" fill="#1f6feb" />
+    <text x="20" y="28" fill="#ffffff" font-size="12" font-weight="700" text-anchor="middle">10</text>
+    <text x="48" y="28" fill="#f0f6fc" font-size="13" font-weight="700">Process / Net Monitor</text>
+    <text x="12" y="58" fill="#8b949e" font-size="10">WMI / ETW monitors spawn events.</text>
+    <text x="12" y="74" fill="#8b949e" font-size="10">NetworkCollector polls sockets.</text>
+    <text x="12" y="90" fill="#7ee787" font-size="10">Latency: &lt;50ms detection</text>
+    <text x="12" y="106" fill="#8b949e" font-size="9">Student enters Roll Number in UI</text>
+    <text x="12" y="122" fill="#8b949e" font-size="9">Active exam session established</text>
+  </g>
+
+  <!-- ROW 3: Stages 11 to 15 (Telemetry, Violation, Proctor, Teardown, Report) -->
+  <!-- Stage 11 -->
+  <g transform="translate(30, 460)">
+    <rect x="0" y="0" width="240" height="150" rx="8" fill="url(#stepGrad)" stroke="#d29922" stroke-width="1.5" filter="url(#shadow)" />
+    <rect x="10" y="10" width="28" height="28" rx="14" fill="#d29922" />
+    <text x="20" y="28" fill="#000000" font-size="12" font-weight="700" text-anchor="middle">11</text>
+    <text x="48" y="28" fill="#d29922" font-size="13" font-weight="700">Telemetry Stream</text>
+    <text x="12" y="58" fill="#8b949e" font-size="10">Candidate launches unauthorized tool</text>
+    <text x="12" y="74" fill="#f85149" font-size="10">(e.g. AnyDesk / Discord / VM).</text>
+    <text x="12" y="90" fill="#8b949e" font-size="10">Agent intercepts in Session 0.</text>
+    <text x="12" y="106" fill="#58a6ff" font-size="9">POST /api/v1/events (require_device)</text>
+    <text x="12" y="122" fill="#8b949e" font-size="9">Stored in events table</text>
+  </g>
+
+  <!-- Stage 12 -->
+  <g transform="translate(295, 460)">
+    <rect x="0" y="0" width="240" height="150" rx="8" fill="url(#stepGrad)" stroke="#f85149" stroke-width="1.5" filter="url(#shadow)" />
+    <rect x="10" y="10" width="28" height="28" rx="14" fill="#f85149" />
+    <text x="20" y="28" fill="#ffffff" font-size="12" font-weight="700" text-anchor="middle">12</text>
+    <text x="48" y="28" fill="#f85149" font-size="13" font-weight="700">Alert Generation</text>
+    <text x="12" y="58" fill="#8b949e" font-size="10">EventService processes classification.</text>
+    <text x="12" y="74" fill="#f85149" font-size="10">Creates alert in alerts table.</text>
+    <text x="12" y="90" fill="#e3b341" font-size="10">Severity: HIGH / CRITICAL</text>
+    <text x="12" y="106" fill="#8b949e" font-size="9">Broadcast to RealtimeManager</text>
+    <text x="12" y="122" fill="#8b949e" font-size="9">WSS: /api/v1/ws/dashboard</text>
+  </g>
+
+  <!-- Stage 13 -->
+  <g transform="translate(560, 460)">
+    <rect x="0" y="0" width="240" height="150" rx="8" fill="url(#stepGrad)" stroke="#d29922" stroke-width="1.5" filter="url(#shadow)" />
+    <rect x="10" y="10" width="28" height="28" rx="14" fill="#d29922" />
+    <text x="20" y="28" fill="#000000" font-size="12" font-weight="700" text-anchor="middle">13</text>
+    <text x="48" y="28" fill="#d29922" font-size="13" font-weight="700">Proctor Triage</text>
+    <text x="12" y="58" fill="#8b949e" font-size="10">Proctor sees live red pulse on</text>
+    <text x="12" y="74" fill="#d29922" font-size="10">LiveMonitorPage / AlertsPage.</text>
+    <text x="12" y="90" fill="#8b949e" font-size="10">Inspects student roll number &amp; PID.</text>
+    <text x="12" y="106" fill="#7ee787" font-size="9">Proctor clicks "Resolve" or calls student</text>
+    <text x="12" y="122" fill="#8b949e" font-size="9">Logged to audit_logs table</text>
+  </g>
+
+  <!-- Stage 14 -->
+  <g transform="translate(825, 460)">
+    <rect x="0" y="0" width="240" height="150" rx="8" fill="url(#stepGrad)" stroke="#238636" stroke-width="1.5" filter="url(#shadow)" />
+    <rect x="10" y="10" width="28" height="28" rx="14" fill="#238636" />
+    <text x="20" y="28" fill="#ffffff" font-size="12" font-weight="700" text-anchor="middle">14</text>
+    <text x="48" y="28" fill="#3fb950" font-size="13" font-weight="700">Exam Stops &amp; Rollback</text>
+    <text x="12" y="58" fill="#8b949e" font-size="10">Admin clicks "Stop Exam".</text>
+    <text x="12" y="74" fill="#8b949e" font-size="10">Deactivate signal sent to agent.</text>
+    <text x="12" y="90" fill="#7ee787" font-size="10">SqliteRollbackJournal executes:</text>
+    <text x="12" y="106" fill="#8b949e" font-size="9">Sweeps &amp; deletes all SPEMCS rules</text>
+    <text x="12" y="122" fill="#7ee787" font-size="9">Restores default outbound allow</text>
+  </g>
+
+  <!-- Stage 15 -->
+  <g transform="translate(1090, 460)">
+    <rect x="0" y="0" width="230" height="150" rx="8" fill="url(#stepGrad)" stroke="#388bfd" stroke-width="1.5" filter="url(#shadow)" />
+    <rect x="10" y="10" width="28" height="28" rx="14" fill="#1f6feb" />
+    <text x="20" y="28" fill="#ffffff" font-size="12" font-weight="700" text-anchor="middle">15</text>
+    <text x="48" y="28" fill="#58a6ff" font-size="13" font-weight="700">Report Generated</text>
+    <text x="12" y="58" fill="#8b949e" font-size="10">ReportService aggregates data:</text>
+    <text x="12" y="74" fill="#8b949e" font-size="10">• Total alerts &amp; violations count</text>
+    <text x="12" y="90" fill="#8b949e" font-size="10">• Student &amp; device timeline</text>
+    <text x="12" y="106" fill="#7ee787" font-size="9">Exportable as CSV &amp; PDF</text>
+    <text x="12" y="122" fill="#8b949e" font-size="9">Permanent exam integrity audit record</text>
+  </g>
+
+  <!-- SUMMARY CALLOUT CARD AT BOTTOM -->
+  <g transform="translate(30, 650)">
+    <rect x="0" y="0" width="1290" height="290" rx="10" fill="#161b22" stroke="#30363d" stroke-width="2" />
+    <rect x="0" y="0" width="1290" height="35" rx="10" fill="#21262d" />
+    <text x="20" y="23" fill="#f0f6fc" font-size="14" font-weight="700">Architectural Guarantees &amp; Security Principles Across the Lifecycle</text>
+
+    <g transform="translate(25, 55)">
+      <rect x="0" y="0" width="380" height="210" rx="8" fill="#0d1117" stroke="#388bfd" />
+      <text x="15" y="25" fill="#58a6ff" font-size="12" font-weight="700">1. Cryptographic Zero-Trust</text>
+      <text x="15" y="48" fill="#8b949e" font-size="11">• Policy cannot be tampered: RSA-PSS signed</text>
+      <text x="15" y="66" fill="#8b949e" font-size="11">• Device cannot be spoofed: HMAC UUID token</text>
+      <text x="15" y="84" fill="#8b949e" font-size="11">• Replay blocked: monotonic policy versions</text>
+      <text x="15" y="102" fill="#8b949e" font-size="11">• Inverted timing resistance: hmac.compare_digest</text>
+      <text x="15" y="120" fill="#8b949e" font-size="11">• Key rotation without reboot or policy drop</text>
+      <text x="15" y="138" fill="#8b949e" font-size="11">• Canonical JSON RFC 8785 guarantees byte match</text>
+      <text x="15" y="156" fill="#7ee787" font-size="10">Verified: test_signing_key_lifecycle.py (74 tests)</text>
+      <text x="15" y="172" fill="#7ee787" font-size="10">Verified: PolicyDistributionTests.cs (16 tests)</text>
+    </g>
+
+    <g transform="translate(435, 55)">
+      <rect x="0" y="0" width="390" height="210" rx="8" fill="#0d1117" stroke="#238636" />
+      <text x="15" y="25" fill="#3fb950" font-size="12" font-weight="700">2. Firewall &amp; DNS Lockdown Model</text>
+      <text x="15" y="48" fill="#8b949e" font-size="11">• Outbound Default = BLOCK across 3 profiles</text>
+      <text x="15" y="66" fill="#8b949e" font-size="11">• No Port 53 rule: rely on Windows Dnscache</text>
+      <text x="15" y="84" fill="#8b949e" font-size="11">• Browser DoH suppressed via HKLM policies</text>
+      <text x="15" y="102" fill="#8b949e" font-size="11">• Dynamic rules scoped to browser executable path</text>
+      <text x="15" y="120" fill="#8b949e" font-size="11">• Idempotent rollback sweeps only SPEMCS rules</text>
+      <text x="15" y="138" fill="#8b949e" font-size="11">• Pre-existing lab firewall rules preserved</text>
+      <text x="15" y="156" fill="#7ee787" font-size="10">Verified: WindowsFirewallAdapterIntegrationTests.cs</text>
+      <text x="15" y="172" fill="#7ee787" font-size="10">Verified: RollbackScopeTests.cs</text>
+    </g>
+
+    <g transform="translate(855, 55)">
+      <rect x="0" y="0" width="400" height="210" rx="8" fill="#0d1117" stroke="#e3b341" />
+      <text x="15" y="25" fill="#e3b341" font-size="12" font-weight="700">3. Crash Recovery &amp; Fault Tolerance</text>
+      <text x="15" y="48" fill="#8b949e" font-size="11">• Sudden machine reboot during active exam:</text>
+      <text x="25" y="66" fill="#8b949e" font-size="10">-> Agent starts before user logs in (Session 0)</text>
+      <text x="25" y="82" fill="#8b949e" font-size="10">-> Reads sqlite_rollback_journal.db</text>
+      <text x="25" y="98" fill="#8b949e" font-size="10">-> Sweeps orphaned rules if exam marked ended</text>
+      <text x="15" y="118" fill="#8b949e" font-size="11">• Backend WebSocket drop:</text>
+      <text x="25" y="134" fill="#8b949e" font-size="10">-> Auto-reconnects with exponential backoff</text>
+      <text x="25" y="150" fill="#8b949e" font-size="10">-> Local events buffered in agent queue</text>
+      <text x="15" y="170" fill="#7ee787" font-size="10">Verified: EventUploaderWorker.cs</text>
+    </g>
+  </g>
+</svg>

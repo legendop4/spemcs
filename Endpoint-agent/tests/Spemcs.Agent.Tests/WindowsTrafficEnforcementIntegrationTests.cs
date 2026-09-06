@@ -335,7 +335,7 @@ public sealed class WindowsTrafficEnforcementIntegrationTests : IDisposable
 
             // 9. Verify SPEMCS rules removed and unrelated rules untouched
             Assert.Empty(mockFirewall.Rules);
-            Assert.Equal(3, mockFirewall.UnrelatedRuleNames.Count);
+            Assert.Equal(MockFirewallAdapter.DefaultUnrelatedRuleNames, mockFirewall.UnrelatedRuleNames);
         }
         finally
         {

@@ -148,6 +148,33 @@ class NetworkPolicyRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class DevicePolicyStateRead(BaseModel):
+    """One workstation's network-enforcement state for one exam.
+
+    ``status`` is the endpoint lifecycle (see services/device_policy_state_service.py) and
+    ``armed`` is the derived answer the activation precondition actually uses. Both are published
+    because they are not the same question: a dashboard wants to distinguish APPLYING from
+    APPLIED, while "may this exam start" only cares whether the device is enforcing.
+    """
+
+    id: UUID
+    exam_id: UUID
+    device_id: UUID
+    policy_id: UUID
+    status: str
+    armed: bool
+    rules_installed: int
+    last_error: Optional[str] = None
+    applied_at: Optional[datetime] = None
+    updated_at: datetime
+    # Carried alongside the ids so an operator reading this does not have to join it against the
+    # device list by hand; the dashboard addresses endpoints by hardware_uuid.
+    device_name: Optional[str] = None
+    hardware_uuid: Optional[str] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 # ==============================================================================
 # Signing key lifecycle
 # ==============================================================================

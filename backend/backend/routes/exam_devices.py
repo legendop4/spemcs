@@ -5,10 +5,18 @@ from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy.orm import Session
 
 from backend.app.database import get_db
+from backend.app.dependencies import require_admin, require_staff
 from backend.models.exam import ExamDevice
 from backend.schemas.exam import ExamDeviceCreate, ExamDeviceRead, ExamDeviceUpdate
 
-router = APIRouter(prefix="/api/exam-devices", tags=["exam_devices"])
+# The exam-to-device assignment table decides which workstations a compiled network policy is
+# distributed to, so writing it changes which machines get locked down and which are left open.
+# Mutations are admin-only for that reason; reads are staff.
+router = APIRouter(
+    prefix="/api/exam-devices",
+    tags=["exam_devices"],
+    dependencies=[Depends(require_staff)],
+)
 
 
 def _as_dict(model: Any) -> dict:
@@ -29,7 +37,8 @@ def get_exam_device(id: UUID, db: Session = Depends(get_db)):
 
 
 @router.post("", response_model=ExamDeviceRead, status_code=status.HTTP_201_CREATED)
-def create_exam_device(payload: ExamDeviceCreate, db: Session = Depends(get_db)):
+def create_exam_device(payload: ExamDeviceCreate, db: Session = Depends(get_db),
+                       _admin=Depends(require_admin)):
     data = _as_dict(payload)
     if data.get("id") is None:
         data.pop("id", None)
@@ -41,7 +50,8 @@ def create_exam_device(payload: ExamDeviceCreate, db: Session = Depends(get_db))
 
 
 @router.put("/{id}", response_model=ExamDeviceRead)
-def update_exam_device(id: UUID, payload: ExamDeviceUpdate, db: Session = Depends(get_db)):
+def update_exam_device(id: UUID, payload: ExamDeviceUpdate, db: Session = Depends(get_db),
+                       _admin=Depends(require_admin)):
     exam_device = db.get(ExamDevice, id)
     if exam_device is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="ExamDevice not found")
@@ -53,7 +63,8 @@ def update_exam_device(id: UUID, payload: ExamDeviceUpdate, db: Session = Depend
 
 
 @router.delete("/{id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_exam_device(id: UUID, db: Session = Depends(get_db)):
+def delete_exam_device(id: UUID, db: Session = Depends(get_db),
+                       _admin=Depends(require_admin)):
     exam_device = db.get(ExamDevice, id)
     if exam_device is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="ExamDevice not found")

@@ -105,13 +105,59 @@ public enum EnforcementPhase
     Conflict
 }
 
+/// <summary>
+/// The pre-exam firewall state SPEMCS captures so it can put the machine back exactly as it found it.
+/// </summary>
+/// <remarks>
+/// <para>
+/// SCOPE - WHAT THIS DELIBERATELY DOES NOT CAPTURE. Older documentation implied a broad "firewall
+/// state" snapshot. It is not one, and it should not become one: a baseline must capture exactly the
+/// state its owner MUTATES, because restoring anything else means overwriting configuration that
+/// belongs to somebody else. The complete list of state SPEMCS writes is
+/// <see cref="IFirewallAdapter.SetDefaultOutboundAction"/> on the targeted profiles, plus rules it
+/// creates itself in the <see cref="FirewallRuleModel.SpemcsRuleGroup"/> group. That is all this
+/// record needs to carry, and it carries it.
+/// </para>
+/// <para>
+/// In particular INBOUND state is absent on purpose. SPEMCS never sets
+/// <c>DefaultInboundAction</c> - <see cref="WindowsFirewallAdapter"/> exposes no way to - and every
+/// rule it generates is <see cref="FirewallDirection.Outbound"/>; the only appearance of
+/// <see cref="FirewallDirection.Inbound"/> in the whole agent is the enum member itself. Capturing
+/// an inbound default would therefore add a value that rollback must either ignore (dead weight) or
+/// write back (a change SPEMCS has no mandate to make, and one that could reopen or close inbound
+/// paths an administrator set deliberately). <c>RollbackScopeTests</c> pins the absence of any
+/// inbound mutation so this stays true rather than merely being true today.
+/// </para>
+/// <para>
+/// <see cref="ActiveProfiles"/> is an OBSERVATION, not a restoration target. It records which
+/// profiles Windows reported as current when the baseline was taken, for diagnostics and for the
+/// loopback-coverage check in <c>NetworkEnforcer.LogAndVerifyRules</c>. Which profiles get restored
+/// is decided by <see cref="EnforcementSession.TargetProfiles"/> / <see cref="JournalRecord.TargetProfiles"/>
+/// instead, because the active set can change mid-exam - a laptop moving from a docked Domain
+/// network to Public - and rollback must undo what SPEMCS actually wrote, not what happens to be
+/// live at the moment it runs.
+/// </para>
+/// </remarks>
 public sealed record FirewallProfileBaseline(
     FirewallAction DomainDefaultOutbound,
     FirewallAction PrivateDefaultOutbound,
     FirewallAction PublicDefaultOutbound,
     FirewallProfiles ActiveProfiles,
     DateTimeOffset CapturedUtc
-);
+)
+{
+    /// <summary>
+    /// The captured default outbound action for a single profile, or <c>null</c> if
+    /// <paramref name="profile"/> does not name exactly one profile.
+    /// </summary>
+    public FirewallAction? ActionFor(FirewallProfiles profile) => profile switch
+    {
+        FirewallProfiles.Domain => DomainDefaultOutbound,
+        FirewallProfiles.Private => PrivateDefaultOutbound,
+        FirewallProfiles.Public => PublicDefaultOutbound,
+        _ => null
+    };
+}
 
 public sealed record FirewallRuleModel(
     string Name,
@@ -132,6 +178,64 @@ public sealed record FirewallRuleModel(
 )
 {
     public const string SpemcsRuleGroup = "SPEMCS_EXAM_LOCKDOWN";
+
+    /// <summary>
+    /// The literal prefix every SPEMCS-generated rule name begins with.
+    /// </summary>
+    public const string NamePrefix = "SPEMCS-";
+
+    /// <summary>Length of a GUID formatted with "N" - 32 hex digits, no dashes.</summary>
+    private const int SessionIdLength = 32;
+
+    /// <summary>
+    /// The name prefix that identifies rules owned by <paramref name="sessionId"/>.
+    /// </summary>
+    /// <remarks>
+    /// This is the ownership boundary rollback uses. It must never be shortened to
+    /// <see cref="NamePrefix"/>: a bare "SPEMCS-" match turns a single session's rollback into a
+    /// product-wide firewall cleanup, deleting a concurrently-active session's allow rules and
+    /// stranding that exam mid-flight.
+    /// </remarks>
+    public static string SessionNamePrefix(Guid sessionId) => $"{NamePrefix}{sessionId:N}-";
+
+    /// <summary>
+    /// Recovers the owning session from a SPEMCS rule name.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Used by orphan cleanup to attribute a rule found in the SPEMCS group to a session, so that
+    /// cleanup can consult the journal about whether that session is still live instead of deleting
+    /// every rule it can see. Attribution has to come from the name because
+    /// <see cref="IFirewallAdapter.GetRulesByGroup"/> reads back from Windows, which stores no
+    /// session field - <c>WindowsFirewallAdapter</c> fills <see cref="SessionId"/> with
+    /// <see cref="Guid.Empty"/> on every discovered rule.
+    /// </para>
+    /// <para>
+    /// Strict by design: the name must be exactly <c>SPEMCS-{32 hex}-{something}</c>. A name that
+    /// almost matches is reported as unattributable rather than being coerced to some nearby GUID,
+    /// because the caller's decision (delete / preserve) hinges on the answer.
+    /// </para>
+    /// </remarks>
+    public static bool TryParseSessionId(string? ruleName, out Guid sessionId)
+    {
+        sessionId = Guid.Empty;
+        if (string.IsNullOrWhiteSpace(ruleName)) return false;
+        if (!ruleName.StartsWith(NamePrefix, StringComparison.OrdinalIgnoreCase)) return false;
+
+        // Must be prefix + 32 hex digits + '-' + at least one more character, so a name that is
+        // nothing but the prefix and a GUID (no purpose segment) is not treated as SPEMCS-generated.
+        if (ruleName.Length < NamePrefix.Length + SessionIdLength + 2) return false;
+        if (ruleName[NamePrefix.Length + SessionIdLength] != '-') return false;
+
+        var candidate = ruleName.AsSpan(NamePrefix.Length, SessionIdLength);
+        foreach (var c in candidate)
+        {
+            var isHex = c is >= '0' and <= '9' or >= 'a' and <= 'f' or >= 'A' and <= 'F';
+            if (!isHex) return false;
+        }
+
+        return Guid.TryParseExact(candidate, "N", out sessionId);
+    }
 
     /// <summary>
     /// Produces the deterministic, session-scoped Windows Firewall rule name.
@@ -166,7 +270,7 @@ public sealed record FirewallRuleModel(
         if (string.Equals(purpose, "Mgmt", StringComparison.OrdinalIgnoreCase))
         {
             var cleanIp = remoteAddresses.Contains('/') ? remoteAddresses.Split('/')[0] : remoteAddresses;
-            return $"SPEMCS-{sessionId:N}-Mgmt-{cleanIp}-{remotePorts}";
+            return $"{SessionNamePrefix(sessionId)}Mgmt-{cleanIp}-{remotePorts}";
         }
 
         var protocolKey = protocol.HasValue ? protocol.Value.ToString() : "any";
@@ -177,7 +281,7 @@ public sealed record FirewallRuleModel(
         var rawKey = $"{sessionId:N}-{purpose}-{remoteAddresses}-{remotePorts}-{protocolKey}-{appKey}";
         var hashBytes = SHA256.HashData(Encoding.UTF8.GetBytes(rawKey));
         var hexHash = Convert.ToHexString(hashBytes)[..8];
-        return $"SPEMCS-{sessionId:N}-{purpose}-{hexHash}";
+        return $"{SessionNamePrefix(sessionId)}{purpose}-{hexHash}";
     }
 
     public static FirewallRuleModel CreateOutboundAllow(
@@ -219,7 +323,7 @@ public sealed record FirewallRuleModel(
         FirewallProfiles profiles = FirewallProfiles.All)
     {
         return new FirewallRuleModel(
-            Name: $"SPEMCS-{sessionId:N}-Loopback-IPv4",
+            Name: $"{SessionNamePrefix(sessionId)}Loopback-IPv4",
             Group: SpemcsRuleGroup,
             Direction: FirewallDirection.Outbound,
             Action: FirewallAction.Allow,
@@ -242,7 +346,7 @@ public sealed record FirewallRuleModel(
         FirewallProfiles profiles = FirewallProfiles.All)
     {
         return new FirewallRuleModel(
-            Name: $"SPEMCS-{sessionId:N}-Loopback-IPv6",
+            Name: $"{SessionNamePrefix(sessionId)}Loopback-IPv6",
             Group: SpemcsRuleGroup,
             Direction: FirewallDirection.Outbound,
             Action: FirewallAction.Allow,

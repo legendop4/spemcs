@@ -275,6 +275,51 @@ _ALWAYS_FORBIDDEN_V6: Tuple[Tuple[str, str], ...] = (
     ("2001::/32", "the Teredo tunnel range (requirement 7 contains transition mechanisms)"),
 )
 
+# ISATAP (RFC 5214) is the third IPv6 transition mechanism requirement 7 names, and it is the one
+# that CANNOT be a row in the table above: it has no assigned prefix. An ISATAP address is any
+# address whose interface identifier is the modified EUI-64 form `0000:5EFE:w.x.y.z` (embedded
+# IPv4 that is not globally unique) or `0200:5EFE:w.x.y.z` (globally unique), sitting under
+# whatever global or link-local prefix the ISATAP router advertises. So the marker is bytes 8-11
+# of the address, not a leading prefix, and it needs a predicate rather than a CIDR.
+_ISATAP_MARKER_FIRST_BYTES = (0x00, 0x02)
+_ISATAP_MARKER_OFFSET = 8
+# The marker occupies bits 64-95, so it is only DETERMINED once the prefix pins all of them.
+_ISATAP_PINNED_PREFIX = 96
+_ISATAP_REASON = (
+    "an ISATAP address, whose interface identifier tunnels IPv6 over IPv4 to a router the IPv4 "
+    "rules never inspect (requirement 7 contains transition mechanisms)"
+)
+
+
+def _is_isatap_network(network: Any) -> bool:
+    """True when EVERY address in `network` carries the ISATAP interface identifier.
+
+    Deliberately not an overlap test, unlike the forbidden table. Every IPv6 /64 contains
+    ISATAP-form addresses, so an overlap test would reject every ordinary IPv6 subnet - including
+    `2001:db8::/48` and `2606:4700::/32` - and a false positive here cancels an exam. Requiring the
+    prefix to pin bits 64-95 makes the test exact: it fires only on a range that is entirely
+    ISATAP, which is the only case where the policy author is naming tunnel space rather than a
+    subnet that happens to contain some.
+
+    What contains an ISATAP tunnel whose address the allowlist never names is a different layer:
+    ISATAP encapsulates IPv6 in IPv4 protocol 41, and under profile-level outbound default-deny no
+    SPEMCS allow rule names a protocol other than TCP or UDP, so the encapsulated packet has no
+    rule to match. That property is asserted separately against rule generation, because it - not
+    this predicate - is what actually stops the tunnel.
+    """
+    if getattr(network, "version", None) != 6:
+        return False
+    if network.prefixlen < _ISATAP_PINNED_PREFIX:
+        return False
+    packed = network.network_address.packed
+    offset = _ISATAP_MARKER_OFFSET
+    return (
+        packed[offset] in _ISATAP_MARKER_FIRST_BYTES
+        and packed[offset + 1] == 0x00
+        and packed[offset + 2] == 0x5E
+        and packed[offset + 3] == 0xFE
+    )
+
 # Refused only when a deployment opts out. On-premises examination servers on RFC 1918 space are
 # common and legitimate, so private ranges are permitted by default.
 _PRIVATE_V4 = ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")
@@ -360,6 +405,12 @@ def describe_unsafe_network(network: Any, policy: Optional[AddressPolicy] = None
     for cidr, reason in forbidden:
         if network.overlaps(ipaddress.ip_network(cidr)):
             return f"it overlaps {cidr}, which is {reason}"
+
+    # After the table, deliberately: the link-local ISATAP form (fe80::5efe:w.x.y.z) is already
+    # caught by fe80::/10, and reporting the more specific enclosing range keeps the operator-facing
+    # reason for those addresses unchanged.
+    if _is_isatap_network(network):
+        return f"it is {_ISATAP_REASON}"
 
     if not effective.allow_private:
         for cidr in private:

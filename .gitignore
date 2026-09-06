@@ -74,6 +74,7 @@ artifacts/
 TestResults/
 Endpoint-agent/installer/dist/
 Endpoint-agent/installer/obj/
+*.msi
 
 # Visual Studio
 .vs/

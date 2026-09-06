@@ -3,13 +3,35 @@
 import uuid
 import pytest
 from fastapi.testclient import TestClient
+from backend.app.dependencies import require_staff
 from backend.app.main import app
 from backend.app.database import SessionLocal
 from backend.models.lab import Lab
 from backend.models.device import Device
 from backend.models.lab_device import LabDevice
+from backend.models.user import User, UserRole
 
 client = TestClient(app)
+
+
+@pytest.fixture()
+def as_staff():
+    """Present an authenticated invigilator to the labs router.
+
+    ``/api/labs`` is staff-only: anonymous access to the lab list was a way to enumerate every
+    monitored room, and ``PATCH /{lab_id}/status`` was a one-request way to switch invigilation off
+    for one. This test asserts the LISTING behaviour, so it supplies an identity rather than
+    reopening the endpoint - overriding the gate here changes nothing about who the deployment
+    admits. Refusals are covered in test_auth_security.py.
+    """
+    staff = User()
+    staff.user_id = uuid.uuid4()
+    staff.username = "lab-registration-test"
+    staff.role = UserRole.PROCTOR.value
+    staff.is_active = True
+    app.dependency_overrides[require_staff] = lambda: staff
+    yield staff
+    app.dependency_overrides.pop(require_staff, None)
 
 
 @pytest.fixture(scope="module")
@@ -37,8 +59,14 @@ def setup_test_data():
         db.close()
 
 
-def test_get_labs_endpoint():
-    """Verify GET /api/labs returns a valid list of labs."""
+def test_get_labs_endpoint(as_staff, setup_test_data):
+    """Verify GET /api/labs returns a valid list of labs to an authenticated invigilator."""
+    # `setup_test_data` is requested for its side effect: it inserts the lab this assertion needs.
+    # Without it the test asserted `len(data) >= 1` against whatever happened to be in the
+    # database it was pointed at, which passed on the deployed instance and says nothing about the
+    # endpoint - a listing route that returns rows somebody else created is not evidence that this
+    # one works. Against the hermetic database (see conftest.py) the table starts empty, so the
+    # test now supplies its own row.
     response = client.get("/api/labs")
     assert response.status_code == 200
     data = response.json()

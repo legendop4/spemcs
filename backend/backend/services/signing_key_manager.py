@@ -260,6 +260,16 @@ class _KeyringLock:
     An abandoned lock (the holder was killed mid-write) is stolen once it is older than
     :data:`_LOCK_STALE_SECONDS`. Without that, one ``SIGKILL`` would wedge policy compilation
     permanently and the only recovery would be a manual file deletion nobody documents.
+
+    ``PermissionError`` is treated as contention, not as a hard failure, and that is a Windows
+    correctness requirement rather than defensive padding. ``DeleteFile`` on Windows only marks a
+    file delete-pending; until the last handle closes, the name still exists but cannot be opened,
+    and ``O_CREAT | O_EXCL`` against it raises ``EACCES`` where POSIX would raise ``EEXIST``. So the
+    ordinary case of one holder releasing the lock exactly as another tries to take it surfaces as a
+    permission error on Windows, and failing closed on it made every contended mutation a coin flip:
+    measured at roughly 1 in 25 attempts under six threads. A genuinely unwritable directory still
+    fails - it just fails at the deadline, with a message naming both possibilities, instead of on
+    the first attempt.
     """
 
     def __init__(self, path: Path, timeout: float = _LOCK_TIMEOUT_SECONDS):
@@ -287,6 +297,18 @@ class _KeyringLock:
                         f"{self._path}. Another process may be holding it; remove the file only if "
                         "no backend process is running."
                     )
+                time.sleep(0.05)
+            except PermissionError as exc:
+                # Windows delete-pending, or a directory this process cannot write. Indistinguishable
+                # here, so retry: the first resolves within milliseconds and the second still fails
+                # at the deadline.
+                if time.monotonic() >= deadline:
+                    raise SigningKeyUnavailableError(
+                        f"Timed out after {self._timeout:.0f}s acquiring the signing key lock at "
+                        f"{self._path}: {exc.strerror or exc}. Either another process is releasing "
+                        "it continuously, or this process cannot write to the key directory - check "
+                        "its ownership and permissions."
+                    ) from exc
                 time.sleep(0.05)
             except OSError as exc:
                 raise SigningKeyUnavailableError(

@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy.orm import Session
 
 from backend.app.database import get_db
+from backend.app.dependencies import require_admin, require_staff
 from backend.models.alert import Alert
 from backend.models.event import Event
 from backend.models.device import Device
@@ -12,7 +13,17 @@ from backend.models.exam import Exam
 from backend.models.session import ExamSession
 from backend.schemas.alert import AlertCreate, AlertRead, AlertReadDetailed, AlertUpdate
 
-router = APIRouter(prefix="/api/alerts", tags=["alerts"])
+# Authentication is declared on the ROUTER, not per endpoint, so that an endpoint added to this
+# file later cannot be anonymous by omission - which is how all five of these came to be reachable
+# without credentials in the first place. Alerts name a candidate and the rule they broke, so an
+# unauthenticated read here disclosed the whole invigilation record for every exam.
+#
+# require_staff is the floor for the whole file; destructive operations add require_admin below.
+router = APIRouter(
+    prefix="/api/alerts",
+    tags=["alerts"],
+    dependencies=[Depends(require_staff)],
+)
 
 
 def _as_dict(model: Any) -> dict:
@@ -150,7 +161,14 @@ def update_alert(alert_id: UUID, payload: AlertUpdate, db: Session = Depends(get
 
 
 @router.delete("/{alert_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_alert(alert_id: UUID, db: Session = Depends(get_db)):
+def delete_alert(
+    alert_id: UUID,
+    db: Session = Depends(get_db),
+    _admin=Depends(require_admin),
+):
+    """Delete an alert. Administrators only - an alert is invigilation evidence, and a proctor
+    being able to erase the record of a violation they were supervising is the one authorization
+    boundary in this file that matters after the fact."""
     alert = db.get(Alert, alert_id)
     if alert is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Alert not found")
