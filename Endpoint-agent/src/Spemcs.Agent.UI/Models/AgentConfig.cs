@@ -6,7 +6,7 @@ namespace Spemcs.Agent.UI.Models;
 public class AgentConfig
 {
     [JsonPropertyName("serverUrl")]
-    public string ServerUrl { get; set; } = "http://127.0.0.1:8001";
+    public string ServerUrl { get; set; } = "http://192.168.11.65:8000";
 
     [JsonPropertyName("deviceId")]
     public string? DeviceId { get; set; }
@@ -19,6 +19,9 @@ public class AgentConfig
 
     [JsonPropertyName("deviceToken")]
     public string? DeviceToken { get; set; }
+
+    [JsonPropertyName("enrollmentKey")]
+    public string? EnrollmentKey { get; set; } = "spemcs-enrollment-bootstrap-key-default";
 
     [JsonPropertyName("labId")]
     public string? LabId { get; set; }

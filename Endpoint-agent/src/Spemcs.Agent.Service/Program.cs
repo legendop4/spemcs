@@ -19,9 +19,10 @@ builder.Services.AddSingleton<IFirewallAdapter, WindowsFirewallAdapter>();
 builder.Services.AddSingleton<IRollbackJournal>(_ => new SqliteRollbackJournal(root));
 builder.Services.AddSingleton<INetworkEnforcer, NetworkEnforcer>();
 
-// Resolve backend URL from config.json, appsettings, or default 8002
+// Resolve backend URL with strict priority: config.json > env var > appsettings > compiled default.
+// See ServiceConfigResolver for the precedence documentation and the :8000 bug this replaced.
 var configPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "Spemcs", "Endpoint Agent", "config.json");
-string backendUrl = "http://127.0.0.1:8002/";
+string? configJsonServerUrl = null;
 
 // Provisional approved browser, used only until a signed policy binds one (see
 // IApprovedBrowserContext). The value is NOT security-relevant on its own - the firewall allowlist
@@ -46,7 +47,7 @@ if (File.Exists(configPath))
         using var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(configPath));
         if (doc.RootElement.TryGetProperty("serverUrl", out var sProp) && !string.IsNullOrWhiteSpace(sProp.GetString()))
         {
-            backendUrl = sProp.GetString()!.TrimEnd('/') + "/";
+            configJsonServerUrl = sProp.GetString();
         }
 
         if (doc.RootElement.TryGetProperty("enrollmentKey", out var eProp)
@@ -77,11 +78,12 @@ if (File.Exists(configPath))
     }
     catch { }
 }
-if (string.IsNullOrWhiteSpace(backendUrl) || backendUrl.Contains(":8000"))
-{
-    backendUrl = builder.Configuration["BackendApiUrl"] ?? "http://127.0.0.1:8002/";
-}
-if (!backendUrl.EndsWith("/")) backendUrl += "/";
+
+var resolved = ServiceConfigResolver.Resolve(
+    configJsonServerUrl: configJsonServerUrl,
+    environmentUrl: Environment.GetEnvironmentVariable("SPEMCS_BACKEND_URL"),
+    appsettingsUrl: builder.Configuration["BackendApiUrl"]);
+var backendUrl = resolved.ResolvedUrl;
 
 if (string.IsNullOrWhiteSpace(enrollmentKey))
 {
@@ -137,4 +139,7 @@ builder.Services.AddHttpClient<IEventPublisher, BackendEventPublisher>(c => c.Ba
 builder.Services.AddSingleton<AgentWorker>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<AgentWorker>());
 builder.Services.AddHostedService<ControlPipeWorker>();
-await builder.Build().RunAsync();
+var host = builder.Build();
+var startupLogger = host.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Spemcs.Agent.Service.Startup");
+resolved.LogResolution(startupLogger);
+await host.RunAsync();

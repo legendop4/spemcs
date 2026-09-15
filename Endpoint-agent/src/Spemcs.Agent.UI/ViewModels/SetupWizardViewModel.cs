@@ -18,7 +18,7 @@ public class SetupWizardViewModel : ViewModelBase
     private readonly IStartupService _startupService;
     private readonly Func<string?> _enrollmentKeyResolver;
 
-    private string _serverUrl = "http://127.0.0.1:8001";
+    private string _serverUrl = "http://192.168.11.65:8000";
     private LabDto? _selectedLab;
     private string _pcNumber = "01";
     private string _workstationIdentifier = string.Empty;

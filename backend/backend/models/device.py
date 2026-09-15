@@ -26,7 +26,7 @@ class Device(Base):
     device_name = Column(String(100), nullable=False)  # e.g. "TechTower:Lab-03:PC-012"
     building_name = Column(String(50), nullable=True)
     lab_name = Column(String(50), nullable=True)
-    pc_number = Column(String(10), nullable=True)
+    pc_number = Column(String(50), nullable=True)
     registered_ip = Column(String(50), nullable=True)
     status = Column(String(20), default=DeviceStatus.OFFLINE.value, nullable=False)
     last_seen = Column(DateTime, nullable=True)

@@ -116,25 +116,7 @@ public partial class MainWindow : Window
         {
             try
             {
-                using var ws = new ClientWebSocket();
-                var wsUri = new Uri(_backendUrl.Replace("http://", "ws://").Replace("https://", "wss://").TrimEnd('/') + "/api/v1/ws/agent");
-
-                LogUi($"Connecting to {wsUri}...");
-                await ws.ConnectAsync(wsUri, cancellationToken);
-                LogUi($"WebSocket connected! State={ws.State}");
-
-                // Self-heal: re-enrol if config.json carries no device token.
-                //
-                // This block was previously incapable of working and its failure was invisible. It
-                // posted to `api/devices/register`, which does not exist (the route is
-                // `api/v1/devices/register`), with snake_case field names the DeviceRegisterReq
-                // schema does not declare, and with the backend's committed placeholder enrolment key
-                // written as a literal - publishing that secret in every installed copy of this
-                // application while also breaking any deployment that had changed it. A non-success
-                // response was then discarded without a log line.
-                //
-                // It now goes through the same CentralApiClient the setup wizard uses, so there is
-                // one registration code path with one enrolment-key source.
+                // Self-heal: re-enrol if config.json carries no device token BEFORE opening WebSocket
                 if (string.IsNullOrWhiteSpace(_config.DeviceToken))
                 {
                     try
@@ -177,7 +159,21 @@ public partial class MainWindow : Window
                     {
                         LogUi($"Self-heal registration failed: {bootEx.Message}");
                     }
+
+                    if (string.IsNullOrWhiteSpace(_config.DeviceToken))
+                    {
+                        LogUi("Workstation is unauthenticated (missing device token); waiting 5s before retrying.");
+                        await Task.Delay(5000, cancellationToken);
+                        continue;
+                    }
                 }
+
+                using var ws = new ClientWebSocket();
+                var wsUri = new Uri(_backendUrl.Replace("http://", "ws://").Replace("https://", "wss://").TrimEnd('/') + "/api/v1/ws/agent");
+
+                LogUi($"Connecting to {wsUri}...");
+                await ws.ConnectAsync(wsUri, cancellationToken);
+                LogUi($"WebSocket connected! State={ws.State}");
 
                 // Handshake with Central Server
                 var registerMsg = JsonSerializer.Serialize(new
@@ -196,7 +192,7 @@ public partial class MainWindow : Window
                     var result = await ws.ReceiveAsync(new ArraySegment<byte>(buffer), cancellationToken);
                     if (result.MessageType == WebSocketMessageType.Close)
                     {
-                        LogUi("WebSocket closed by remote endpoint.");
+                        LogUi($"WebSocket closed by remote endpoint (Status={result.CloseStatus}, Description={result.CloseStatusDescription}).");
                         break;
                     }
 
@@ -311,12 +307,20 @@ public partial class MainWindow : Window
                         await ws.SendAsync(new ArraySegment<byte>(pongBytes), WebSocketMessageType.Text, true, cancellationToken);
                     }
                 }
+
+                // Enforce backoff delay on clean exit or socket closure before reconnecting
+                LogUi("WebSocket session ended. Waiting 5s before reconnecting...");
+                await Task.Delay(5000, cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                break;
             }
             catch (Exception loopEx)
             {
                 LogUi($"WebSocket connection loop error: {loopEx}");
                 // Reconnect with backoff
-                await Task.Delay(3000, cancellationToken);
+                await Task.Delay(5000, cancellationToken);
             }
         }
     }

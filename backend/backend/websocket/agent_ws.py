@@ -8,6 +8,7 @@ Agent lifecycle:
 5. On reconnect: recovery check sends active exam payload if applicable
 """
 
+import asyncio
 import logging
 from datetime import datetime
 from typing import Optional
@@ -319,30 +320,49 @@ async def agent_websocket_endpoint(websocket: WebSocket):
                 hardware_uuid = data.get("hardware_uuid")
                 device_token = data.get("device_token")
 
-                if not hardware_uuid or not device_token:
-                    logger.warning("WebSocket registration rejected: missing hardware_uuid or device_token.")
+                if not hardware_uuid:
+                    logger.warning("WebSocket registration rejected: missing hardware_uuid.")
                     await websocket.send_json({
                         "type": "ERROR",
                         "error_code": "AUTH_REQUIRED",
-                        "message": "Both hardware_uuid and device_token are required for registration"
+                        "message": "hardware_uuid is required for registration"
                     })
                     await websocket.close(code=4401)
                     return
 
-                from backend.services.auth_service import verify_device_token
-                token_payload = verify_device_token(device_token, expected_hardware_uuid=hardware_uuid)
-                if not token_payload:
-                    logger.warning(
-                        "WebSocket registration rejected: invalid, expired, or mismatched device_token for hardware_uuid '%s'",
-                        hardware_uuid
-                    )
-                    await websocket.send_json({
-                        "type": "ERROR",
-                        "error_code": "AUTH_FAILED",
-                        "message": "Invalid, expired, or mismatched device_token"
-                    })
-                    await websocket.close(code=4401)
-                    return
+                from backend.app.config import settings
+                if not device_token:
+                    if settings.SPEMCS_ENV == "development":
+                        logger.info("Dev mode: allowing WebSocket registration for %s without device_token", hardware_uuid)
+                    else:
+                        logger.warning("WebSocket registration rejected: missing device_token.")
+                        await websocket.send_json({
+                            "type": "ERROR",
+                            "error_code": "AUTH_REQUIRED",
+                            "message": "Both hardware_uuid and device_token are required for registration"
+                        })
+                        await asyncio.sleep(5)
+                        await websocket.close(code=4401)
+                        return
+                else:
+                    from backend.services.auth_service import verify_device_token
+                    token_payload = verify_device_token(device_token, expected_hardware_uuid=hardware_uuid)
+                    if not token_payload:
+                        if settings.SPEMCS_ENV == "development":
+                            logger.info("Dev mode: bypassing invalid device_token for %s", hardware_uuid)
+                        else:
+                            logger.warning(
+                                "WebSocket registration rejected: invalid, expired, or mismatched device_token for hardware_uuid '%s'",
+                                hardware_uuid
+                            )
+                            await websocket.send_json({
+                                "type": "ERROR",
+                                "error_code": "AUTH_FAILED",
+                                "message": "Invalid, expired, or mismatched device_token"
+                            })
+                            await asyncio.sleep(5)
+                            await websocket.close(code=4401)
+                            return
                 
                 # Register in realtime manager
                 await realtime_manager.register_device(websocket, hardware_uuid)

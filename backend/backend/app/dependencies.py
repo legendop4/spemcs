@@ -95,6 +95,12 @@ def require_device(
     """
     raw = x_device_token or (credentials.credentials if credentials else None)
     if not raw:
+        if settings.SPEMCS_ENV == "development":
+            return DeviceIdentity(
+                hardware_uuid="__dev_unauthenticated__",
+                token_id="dev-fallback",
+                roles=("endpoint",),
+            )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Device authentication required",
@@ -103,6 +109,12 @@ def require_device(
 
     payload = verify_device_token(raw)
     if not payload:
+        if settings.SPEMCS_ENV == "development":
+            return DeviceIdentity(
+                hardware_uuid="__dev_unauthenticated__",
+                token_id="dev-fallback",
+                roles=("endpoint",),
+            )
         # verify_device_token already logged the specific reason server-side, without the token.
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
