@@ -85,7 +85,10 @@ $requiredFiles = @(
     'System.Diagnostics.EventLog.dll',
     'System.Diagnostics.EventLog.Messages.dll',
     'e_sqlite3.dll',
-    'config.template.json'
+    'coreclr.dll',
+    'hostfxr.dll',
+    'config.template.json',
+    'config.json'
 )
 foreach ($req in $requiredFiles) {
     $matchCount = ($files | Where-Object { $_ -eq $req }).Count

@@ -65,10 +65,11 @@ def calculate_risk_score(events: List[Event]) -> dict:
             rule_applied = f"Unauthorized Process ({ev.process_name})"
             unauthorized_count += 1
 
-        # 4. Focus change / window switch (+10)
-        elif "FOCUS" in event_type:
-            event_points = 10
-            rule_applied = "Focus Lost / Window Switch"
+        # 4. Tab switch / Focus change / window switch (+20)
+        elif any(kw in event_type for kw in ["FOCUS", "TAB", "WINDOW"]):
+            event_points = 20
+            rule_applied = "Tab Switch / Focus Lost"
+            unauthorized_count += 1
 
         # 5. Device Disconnect / Agent Interruption (+50)
         elif "DISCONNECT" in event_type or "AGENT_STOPPED" in event_type:

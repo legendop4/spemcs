@@ -72,9 +72,11 @@ pnpm-debug.log*
 publish/
 artifacts/
 TestResults/
-Endpoint-agent/installer/dist/
 Endpoint-agent/installer/obj/
+Endpoint-agent/installer/dist/*
+!Endpoint-agent/installer/dist/Spemcs.Agent.Setup.msi
 *.msi
+!Endpoint-agent/installer/dist/Spemcs.Agent.Setup.msi
 
 # Visual Studio
 .vs/
@@ -94,8 +96,12 @@ openapi.json
 database/test_alerts.py
 
 # ── IDE / Editor ─────────────────────────────────────────────
+.claude/
 .vscode/*
 !.vscode/extensions.json
+
+# Local agent config
+Endpoint-agent/installer/data/config.json
 !.vscode/settings.json
 .idea/
 *.swp

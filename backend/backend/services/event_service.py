@@ -5,7 +5,7 @@ No fallback auto-registrations or arbitrary exam matching.
 
 import logging
 import uuid as uuid_mod
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 from uuid import UUID
 
@@ -47,26 +47,46 @@ def ingest_event(
     except (ValueError, AttributeError, TypeError):
         raise HTTPException(status_code=400, detail="Invalid event_id UUID format")
 
-    # Check cache for active exam. If no active exam, discard immediately.
+    # Check cache or database for active exam.
     from backend.websocket.manager import realtime_manager
-    if not realtime_manager.get_active_exam_for_device(device_name):
-        logger.info(f"No active exam for device {device_name}, ignoring event {event_id}")
-        dummy_event = Event(
-            event_id=parsed_event_uuid,
-            device_name=device_name,
-            event_type=event_type,
-            process_name=process_name,
-            pid=process_id,
-            timestamp=datetime.utcnow(),
+    active_exam_id = realtime_manager.get_active_exam_for_device(device_name)
+    if not active_exam_id:
+        # Fallback to DB check in case in-memory cache missed it
+        exam_match = (
+            db.query(Exam)
+            .join(ExamDevice, ExamDevice.exam_id == Exam.exam_id)
+            .join(Device, Device.device_id == ExamDevice.device_id)
+            .filter(
+                (Device.device_name == device_name) | (Device.hardware_uuid == device_name),
+                Exam.status == ExamStatus.ACTIVE.value,
+            )
+            .first()
         )
-        return dummy_event, None
+        if exam_match:
+            active_exam_id = str(exam_match.exam_id)
+            realtime_manager.set_exam_active(active_exam_id, [device_name])
+        else:
+            logger.info(f"No active exam for device {device_name}, ignoring event {event_id}")
+            dummy_event = Event(
+                event_id=parsed_event_uuid,
+                device_name=device_name,
+                event_type=event_type,
+                process_name=process_name,
+                pid=process_id,
+                timestamp=datetime.utcnow(),
+            )
+            return dummy_event, None
 
-    # Early discard check: if the event is not from WindowServer, we only allow real violation types
-    # (like BLOCKED_PROCESS or AGENT_STOPPED) or unapproved/prohibited process events.
+    # Check if this is a security violation event (tab switch, window switch, focus loss, unapproved app)
+    ev_upper = (event_type or "").upper()
+    is_violation = any(kw in ev_upper for kw in [
+        "BLOCKED", "AGENT_STOPPED", "DISCONNECT", "TAB", "FOCUS", "WINDOW",
+        "UNAUTHORIZED", "SUSPICIOUS", "PROHIBITED", "ANOMALY", "BURST", "EGRESS"
+    ])
+
     if "windowserver" not in str(device_name).lower():
         proc_lower = (process_name or "").lower()
-        # For remote lab PCs, we only look for remote desktop and AI assistant tools to prevent
-        # background browser helper processes (Edge/Chrome/Firefox update/render processes) from flooding the DB.
+        # For remote lab PCs, we also flag remote desktop and AI assistant tools
         is_prohibited = any(kw in proc_lower for kw in [
             "dwagent", "dwagsvc", "dwrcs", "anydesk", "teamviewer", "rustdesk",
             "ultraviewer", "parsec", "splashtop", "ammyy", "supremo", "vnc", "screenconnect",
@@ -74,7 +94,7 @@ def ingest_event(
         ])
         
         # Discard background noise (allowed sessions, safe apps, standard process opens/closes)
-        if event_type not in ("BLOCKED_PROCESS", "AGENT_STOPPED") and not is_prohibited:
+        if not is_violation and not is_prohibited:
             event = Event(
                 event_id=parsed_event_uuid,
                 device_name=device_name,
@@ -179,6 +199,7 @@ def ingest_event(
         proc_lower = (process_name or "").lower()
         reason_lower = (reason or "").lower()
 
+        ev_upper = (event_type or "").upper()
         if any(kw in proc_lower or kw in reason_lower for kw in [
             "dwagent", "dwagsvc", "dwrcs", "anydesk", "teamviewer", "rustdesk",
             "ultraviewer", "parsec", "splashtop", "ammyy", "supremo", "vnc", "screenconnect"
@@ -188,19 +209,41 @@ def ingest_event(
             "chatgpt", "claude", "codex", "copilot", "gemini", "discord", "telegram"
         ]):
             severity = "high"
+        elif any(kw in ev_upper for kw in ["TAB", "FOCUS", "WINDOW"]):
+            severity = "high"
         elif event_type in ("AGENT_STOPPED", "DEVICE_DISCONNECTED"):
             severity = "high"
 
-        alert = Alert(
-            event_id=event.event_id,
-            exam_id=exam.exam_id if exam else None,
-            device_id=device.device_id,
-            severity=severity,
-            message=f"{severity.upper()}: {reason or process_name}",
-            status="open",
+        alert_msg = reason or f"{event_type}: {process_name}"
+        if any(kw in ev_upper for kw in ["TAB", "FOCUS", "WINDOW"]) and not reason:
+            alert_msg = f"Candidate switched tab / lost window focus ({process_name})"
+
+        # Alert deduplication: avoid duplicate alerts for identical device, event type, and process within 15 seconds
+        recent_alert = (
+            db.query(Alert)
+            .join(Event, Event.event_id == Alert.event_id)
+            .filter(
+                Alert.device_id == device.device_id,
+                Alert.status == "open",
+                Event.process_name == process_name,
+                Event.event_type == event_type,
+                Alert.created_at >= datetime.utcnow() - timedelta(seconds=15),
+            )
+            .first()
         )
-        db.add(alert)
-        db.flush()
+        if not recent_alert:
+            alert = Alert(
+                event_id=event.event_id,
+                exam_id=exam.exam_id if exam else None,
+                device_id=device.device_id,
+                severity=severity,
+                message=f"{severity.upper()}: {alert_msg}",
+                status="open",
+            )
+            db.add(alert)
+            db.flush()
+        else:
+            alert = recent_alert
 
     db.commit()
     db.refresh(event)

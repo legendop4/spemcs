@@ -199,13 +199,44 @@
                      Type="string" />
     </Component>
 
-    <!-- Empty config.json template — no URL, no secret; the wizard fills it in. -->
+    <!-- Preconfigured config.json and machine-level environment variables for automatic enrollment -->
     <ComponentGroup Id="FirstRunData" Directory="CONFIGFOLDER">
-      <Component Id="ConfigTemplateComponent"
+      <Component Id="ConfigFileComponent"
                  Guid="B3A2E1C0-2F41-4D4B-9C7A-1E5A0D3C4B62">
+        <File Id="ConfigFile"
+              Source="..\installer\data\config.json"
+              Name="config.json"
+              KeyPath="yes" />
+      </Component>
+      <Component Id="ConfigTemplateComponent"
+                 Guid="E4F1B8A0-7C32-4D9A-8E15-2A9C0D3E4F71">
         <File Id="ConfigTemplateFile"
               Source="..\installer\data\config.template.json"
+              Name="config.template.json"
               KeyPath="yes" />
+      </Component>
+      <Component Id="EnrollmentEnvironmentComponent"
+                 Guid="8F1E93D4-9C72-4B1A-9872-C081977BEA55">
+        <Environment Id="EnvEnrollmentKey"
+                     Name="SPEMCS_ENROLLMENT_KEY"
+                     Value="spemcs-enrollment-bootstrap-key-default"
+                     Permanent="no"
+                     System="yes"
+                     Action="set"
+                     Part="all" />
+        <Environment Id="EnvBackendUrl"
+                     Name="SPEMCS_BACKEND_URL"
+                     Value="http://192.168.11.65:8000"
+                     Permanent="no"
+                     System="yes"
+                     Action="set"
+                     Part="all" />
+        <RegistryValue Root="HKLM"
+                       Key="Software\SPEMCS\EndpointAgent"
+                       Name="EnvironmentConfigured"
+                       Type="integer"
+                       Value="1"
+                       KeyPath="yes" />
       </Component>
     </ComponentGroup>
 

@@ -5,6 +5,7 @@ from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status, BackgroundTasks
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from backend.app.database import get_db
@@ -35,11 +36,20 @@ def _as_dict(model: Any) -> dict:
     return model.model_dump(exclude_unset=True) if hasattr(model, "model_dump") else model.dict(exclude_unset=True)
 
 
-def _enrich_exam(db: Session, exam: Exam) -> dict:
+def _enrich_exam(
+    db: Session,
+    exam: Exam,
+    device_count: int | None = None,
+    alert_count: int | None = None,
+    session_count: int | None = None,
+) -> dict:
     """Add computed counts to exam response."""
-    device_count = db.query(ExamDevice).filter(ExamDevice.exam_id == exam.exam_id).count()
-    alert_count = db.query(Alert).filter(Alert.exam_id == exam.exam_id).count()
-    session_count = db.query(ExamSession).filter(ExamSession.exam_id == exam.exam_id).count()
+    if device_count is None:
+        device_count = db.query(ExamDevice).filter(ExamDevice.exam_id == exam.exam_id).count()
+    if alert_count is None:
+        alert_count = db.query(Alert).filter(Alert.exam_id == exam.exam_id).count()
+    if session_count is None:
+        session_count = db.query(ExamSession).filter(ExamSession.exam_id == exam.exam_id).count()
     
     data = {
         "exam_id": exam.exam_id,
@@ -67,7 +77,37 @@ def list_exams(
     _user=Depends(require_role(["admin", "proctor"])),
 ):
     exams = db.query(Exam).order_by(Exam.created_at.desc()).offset(skip).limit(limit).all()
-    return [_enrich_exam(db, e) for e in exams]
+    if not exams:
+        return []
+    exam_ids = [e.exam_id for e in exams]
+    device_counts = dict(
+        db.query(ExamDevice.exam_id, func.count(ExamDevice.id))
+        .filter(ExamDevice.exam_id.in_(exam_ids))
+        .group_by(ExamDevice.exam_id)
+        .all()
+    )
+    alert_counts = dict(
+        db.query(Alert.exam_id, func.count(Alert.alert_id))
+        .filter(Alert.exam_id.in_(exam_ids))
+        .group_by(Alert.exam_id)
+        .all()
+    )
+    session_counts = dict(
+        db.query(ExamSession.exam_id, func.count(ExamSession.session_id))
+        .filter(ExamSession.exam_id.in_(exam_ids))
+        .group_by(ExamSession.exam_id)
+        .all()
+    )
+    return [
+        _enrich_exam(
+            db,
+            e,
+            device_count=device_counts.get(e.exam_id, 0),
+            alert_count=alert_counts.get(e.exam_id, 0),
+            session_count=session_counts.get(e.exam_id, 0),
+        )
+        for e in exams
+    ]
 
 
 @router.get("/{exam_id}")

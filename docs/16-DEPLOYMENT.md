@@ -149,7 +149,7 @@ server {
 
 ### System Requirements
 - **OS**: Windows 10 or 11 Pro / Enterprise (x64)
-- **Runtime**: Microsoft .NET 8 Runtime (Windows Desktop & Console)
+- **Runtime**: Self-contained `win-x64` package (no separate .NET runtime required on endpoints when using `Spemcs.Agent.Setup.msi`; .NET 8 runtime engine is bundled)
 - **Privilege**: Local Administrator during installation; runs as `NT AUTHORITY\SYSTEM` post-install
 
 ---

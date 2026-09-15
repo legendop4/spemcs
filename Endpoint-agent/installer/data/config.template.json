@@ -1,6 +1,6 @@
 {
-  "serverUrl": "",
-  "enrollmentKey": "",
-  "approvedBrowser": "",
+  "serverUrl": "http://192.168.11.65:8000",
+  "enrollmentKey": "spemcs-enrollment-bootstrap-key-default",
+  "approvedBrowser": "chrome",
   "deviceToken": ""
 }

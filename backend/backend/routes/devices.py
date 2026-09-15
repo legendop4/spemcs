@@ -30,12 +30,23 @@ def list_devices(
     db: Session = Depends(get_db),
     _user=Depends(require_role(["admin", "proctor"])),
 ):
-    from backend.services.risk_service import get_device_risk_score
+    from collections import defaultdict
+    from backend.models.event import Event
+    from backend.services.risk_service import calculate_risk_score
 
     devices = db.query(Device).order_by(Device.building_name, Device.lab_name, Device.device_name).offset(skip).limit(limit).all()
+    if not devices:
+        return []
+
+    device_ids = [d.device_id for d in devices]
+    all_events = db.query(Event).filter(Event.device_id.in_(device_ids)).all()
+    events_by_device = defaultdict(list)
+    for ev in all_events:
+        events_by_device[ev.device_id].append(ev)
+
     results = []
     for d in devices:
-        risk_info = get_device_risk_score(db, d.device_id)
+        risk_info = calculate_risk_score(events_by_device.get(d.device_id, []))
         d_dict = {
             "device_id": d.device_id,
             "device_name": d.device_name,

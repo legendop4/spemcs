@@ -30,8 +30,11 @@ public static class EnrollmentKeyProvider
     /// <summary>Property name read from the agent's machine-wide config.json.</summary>
     public const string ConfigPropertyName = "enrollmentKey";
 
+    /// <summary>Default bootstrap enrollment key matching the backend configuration.</summary>
+    public const string DefaultBootstrapKey = "spemcs-enrollment-bootstrap-key-default";
+
     /// <summary>
-    /// Returns the configured enrolment key, or <see langword="null"/> when none is configured.
+    /// Returns the configured enrolment key, or the default bootstrap key if unconfigured.
     /// </summary>
     /// <param name="configPath">
     /// Optional explicit path to config.json. When null the standard machine-wide location under
@@ -46,7 +49,12 @@ public static class EnrollmentKeyProvider
         }
 
         var fromEnvironment = Environment.GetEnvironmentVariable(EnvironmentVariableName);
-        return string.IsNullOrWhiteSpace(fromEnvironment) ? null : fromEnvironment;
+        if (!string.IsNullOrWhiteSpace(fromEnvironment))
+        {
+            return fromEnvironment;
+        }
+
+        return DefaultBootstrapKey;
     }
 
     /// <summary>The machine-wide config.json path the service also reads.</summary>

@@ -55,8 +55,9 @@ public partial class App : Application
         var isSetupFlag = e.Args.Any(a => string.Equals(a, "--setup", StringComparison.OrdinalIgnoreCase));
         var config = configService.Load();
 
-        // 2. Setup Wizard if not registered or --setup requested
-        if (isSetupFlag || config == null || !config.Registered || !config.IsValid())
+        // 2. Setup Wizard if not registered, --setup requested, or missing credentials without self-healing key
+        var canSelfHeal = !string.IsNullOrWhiteSpace(config?.DeviceToken) || !string.IsNullOrWhiteSpace(EnrollmentKeyProvider.Resolve());
+        if (isSetupFlag || config == null || !config.Registered || !config.IsValid() || !canSelfHeal)
         {
             var wizard = new SetupWizardWindow();
             var result = wizard.ShowDialog();

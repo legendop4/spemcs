@@ -47,10 +47,11 @@ dotnet build Endpoint-agent/installer/Spemcs.Agent.Installer.wixproj -c Release
 powershell -ExecutionPolicy Bypass -File Endpoint-agent/installer/verify-msi.ps1
 ```
 
-It harvests `Endpoint-agent/publish/stage/` — Service and UI published into **one** directory, so
-the shared `Spemcs.Agent.Core`/`.Ipc` assemblies are carried once. That directory is `.gitignore`d
-(`Endpoint-agent/.gitignore:16`), so it must exist before the installer will build; there is no
-script that creates it.
+It harvests `Endpoint-agent/publish/stage/` — Service and UI published into **one** self-contained
+directory (`win-x64`), so the shared runtime, CoreCLR, WPF presentation engine, and shared
+`Spemcs.Agent.Core`/`.Ipc` assemblies are carried together. The automated builder
+`Endpoint-agent/build-msi.ps1` publishes both projects self-contained, compiles the WiX installer,
+and verifies the package tables via `verify-msi.ps1`.
 
 Four things about this project are easy to get wrong:
 
@@ -64,13 +65,10 @@ Four things about this project are easy to get wrong:
   as part of the literal path and fails with `WIX8601`.
 - **Do not hand-write `File/@ShortName`.** WiX generates 8.3 names itself; a literal `SERVICE~1.EXE`
   is `WIX0026` (not 8.3-compliant) and `UI~1.EXE` is `WIX1044` (ambiguous `~n`).
-- **`*.pdb` and `packages.lock.json` are excluded, but `runtimes/**` is NOT.** An earlier build
-  mistakenly excluded `runtimes/**` to shrink the MSI from 11 MB to 1.9 MB, but this broke
-  the Windows Service at launch with .NET Runtime Event 1026 (`System.IO.FileNotFoundException:
-  Could not load file or assembly System.ServiceProcess.ServiceController`), because the .NET
-  runtime dependency resolution (`Spemcs.Agent.Service.deps.json`) resolves `System.ServiceProcess.ServiceController`
-  and `System.Diagnostics.EventLog` via `runtimes/win/lib/net8.0/`. The MSI preserves the full
-  publish runtime payload (~11 MB / 72 files).
+- **The MSI is built self-contained (`win-x64`).** It bundles `coreclr.dll`, `hostfxr.dll`,
+  and the full .NET 8 runtime engine (~63 MB MSI / ~530 files in package) so it installs and starts
+  cleanly on any fresh Windows PC without requiring .NET 8 to be pre-installed. `verify-msi.ps1`
+  checks for the presence of `coreclr.dll` and `hostfxr.dll` in addition to the service and UI binaries.
 
 `ServiceInstall` must name the service **`SPEMCS Endpoint Agent`**, byte-identical to
 `Program.cs:11`'s `AddWindowsService`, or the registered service cannot attach to its host (error
