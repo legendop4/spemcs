@@ -12,6 +12,8 @@ import {
   Activity,
   Wifi,
   Terminal,
+  Building2,
+  FileCode,
 } from 'lucide-react';
 import React from 'react';
 
@@ -78,6 +80,101 @@ export function DashboardPage() {
             {summary?.devices_online || 0} endpoints online
           </div>
         </div>
+      </div>
+
+      {/* Quick Operator Actions */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '16px' }}>
+        <button
+          onClick={() => navigate('/labs')}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '12px',
+            padding: '16px',
+            textAlign: 'left',
+            background: 'var(--color-surface)',
+            border: '1px solid var(--color-border)',
+            borderRadius: '8px',
+            cursor: 'pointer',
+          }}
+        >
+          <div style={{ padding: '8px', background: 'rgba(216, 148, 0, 0.1)', borderRadius: '6px', color: '#D89400' }}>
+            <Building2 size={20} />
+          </div>
+          <div>
+            <div style={{ fontSize: '13px', fontWeight: 600, color: 'var(--color-text-primary)' }}>Lab Management</div>
+            <div style={{ fontSize: '11px', color: 'var(--color-text-muted)' }}>Configure rooms & seats</div>
+          </div>
+        </button>
+
+        <button
+          onClick={() => navigate('/policies')}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '12px',
+            padding: '16px',
+            textAlign: 'left',
+            background: 'var(--color-surface)',
+            border: '1px solid var(--color-border)',
+            borderRadius: '8px',
+            cursor: 'pointer',
+          }}
+        >
+          <div style={{ padding: '8px', background: 'rgba(30, 110, 235, 0.1)', borderRadius: '6px', color: '#2563EB' }}>
+            <FileCode size={20} />
+          </div>
+          <div>
+            <div style={{ fontSize: '13px', fontWeight: 600, color: 'var(--color-text-primary)' }}>Policies & Vendors</div>
+            <div style={{ fontSize: '11px', color: 'var(--color-text-muted)' }}>Cryptographic policy builder</div>
+          </div>
+        </button>
+
+        <button
+          onClick={() => navigate('/devices')}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '12px',
+            padding: '16px',
+            textAlign: 'left',
+            background: 'var(--color-surface)',
+            border: '1px solid var(--color-border)',
+            borderRadius: '8px',
+            cursor: 'pointer',
+          }}
+        >
+          <div style={{ padding: '8px', background: 'rgba(16, 185, 129, 0.1)', borderRadius: '6px', color: '#10B981' }}>
+            <Monitor size={20} />
+          </div>
+          <div>
+            <div style={{ fontSize: '13px', fontWeight: 600, color: 'var(--color-text-primary)' }}>Workstation Fleet</div>
+            <div style={{ fontSize: '11px', color: 'var(--color-text-muted)' }}>Register & inspect endpoints</div>
+          </div>
+        </button>
+
+        <button
+          onClick={() => navigate('/exam-shield')}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '12px',
+            padding: '16px',
+            textAlign: 'left',
+            background: 'var(--color-surface)',
+            border: '1px solid var(--color-border)',
+            borderRadius: '8px',
+            cursor: 'pointer',
+          }}
+        >
+          <div style={{ padding: '8px', background: 'rgba(168, 85, 247, 0.1)', borderRadius: '6px', color: '#8B5CF6' }}>
+            <ShieldCheck size={20} />
+          </div>
+          <div>
+            <div style={{ fontSize: '13px', fontWeight: 600, color: 'var(--color-text-primary)' }}>Exam Wizard & Shield</div>
+            <div style={{ fontSize: '11px', color: 'var(--color-text-muted)' }}>Launch & monitor exams</div>
+          </div>
+        </button>
       </div>
 
       {/* Stat Cards */}

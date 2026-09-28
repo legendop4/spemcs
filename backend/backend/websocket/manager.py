@@ -19,6 +19,8 @@ class ConnectionInfo:
     ws: WebSocket
     connected_at: datetime = field(default_factory=datetime.utcnow)
     hardware_uuid: Optional[str] = None  # set for device agents
+    device_name: Optional[str] = None
+    device_id: Optional[str] = None
     client_type: str = "unknown"  # 'agent' or 'dashboard'
     subscribed_exams: Set[str] = field(default_factory=set)
     last_pong: datetime = field(default_factory=datetime.utcnow)
@@ -87,44 +89,84 @@ class RealtimeManager:
     
     # --- Device Agent Management ---
     
-    async def register_device(self, ws: WebSocket, hardware_uuid: str) -> None:
-        """Register a device agent connection by its hardware UUID."""
+    async def register_device(
+        self,
+        ws: WebSocket,
+        hardware_uuid: str,
+        device_name: Optional[str] = None,
+        device_id: Optional[str] = None,
+    ) -> None:
+        """Register a device agent connection by its hardware UUID and enrolled identity."""
         async with self._lock:
-            # If this UUID already has a connection, close the old one
-            old_ws = self._device_connections.get(hardware_uuid)
-            if old_ws and old_ws != ws:
-                logger.warning(f"Device {hardware_uuid} reconnected, closing old connection")
+            # 1. Clean up any previous registration keys tied to this specific WebSocket
+            prev_info = self._connection_meta.get(ws)
+            if prev_info:
+                if prev_info.hardware_uuid and self._device_connections.get(prev_info.hardware_uuid) == ws:
+                    del self._device_connections[prev_info.hardware_uuid]
+                if prev_info.device_name and self._device_connections.get(prev_info.device_name) == ws:
+                    del self._device_connections[prev_info.device_name]
+                if prev_info.device_id and self._device_connections.get(prev_info.device_id) == ws:
+                    del self._device_connections[prev_info.device_id]
+
+            # 2. Check for any OLD sockets that belonged to this hardware_uuid, device_name, or device_id
+            keys_to_check = [k for k in (hardware_uuid, device_name, device_id) if k]
+            old_sockets: Set[WebSocket] = set()
+            for key in keys_to_check:
+                old_ws = self._device_connections.get(key)
+                if old_ws and old_ws != ws:
+                    old_sockets.add(old_ws)
+
+            for old_ws in old_sockets:
+                logger.warning(f"Device reconnected with identity {keys_to_check}; closing old connection")
                 await self._safe_close(old_ws, reason="Replaced by new connection")
-                self._cleanup_connection(old_ws)
-            
+                self._cleanup_connection_under_lock(old_ws)
+
+            # 3. Associate keys with this active socket
             self._device_connections[hardware_uuid] = ws
-            
-            # Update or create connection info
-            if ws in self._connection_meta:
-                self._connection_meta[ws].hardware_uuid = hardware_uuid
-                self._connection_meta[ws].client_type = "agent"
-            else:
-                self._connection_meta[ws] = ConnectionInfo(
-                    ws=ws, hardware_uuid=hardware_uuid, client_type="agent"
-                )
+            if device_name:
+                self._device_connections[device_name] = ws
+            if device_id:
+                self._device_connections[str(device_id)] = ws
+
+            # Also cache device_id mapping
+            if device_id:
+                self._device_id_map[hardware_uuid] = str(device_id)
+                if device_name:
+                    self._device_id_map[device_name] = str(device_id)
+
+            # 4. Update or create ConnectionInfo
+            self._connection_meta[ws] = ConnectionInfo(
+                ws=ws,
+                hardware_uuid=hardware_uuid,
+                device_name=device_name,
+                device_id=str(device_id) if device_id else None,
+                client_type="agent",
+            )
         
-        logger.info(f"Device registered: {hardware_uuid}")
+        logger.info(f"Device registered: {hardware_uuid} (device_name={device_name}, device_id={device_id})")
     
     async def unregister_device(self, ws: WebSocket) -> Optional[str]:
-        """Unregister a device agent. Returns the hardware_uuid if found."""
+        """Unregister a device agent. Socket-aware: only removes entries if they still point to ws."""
         async with self._lock:
             info = self._connection_meta.get(ws)
-            if not info or not info.hardware_uuid:
-                self._cleanup_connection(ws)
+            if not info:
+                self._cleanup_connection_under_lock(ws)
                 return None
             
             hw_uuid = info.hardware_uuid
-            if self._device_connections.get(hw_uuid) == ws:
+            dev_name = info.device_name
+            dev_id = info.device_id
+
+            if hw_uuid and self._device_connections.get(hw_uuid) == ws:
                 del self._device_connections[hw_uuid]
-            
-            self._cleanup_connection(ws)
+            if dev_name and self._device_connections.get(dev_name) == ws:
+                del self._device_connections[dev_name]
+            if dev_id and self._device_connections.get(dev_id) == ws:
+                del self._device_connections[dev_id]
+
+            self._cleanup_connection_under_lock(ws)
         
-        logger.info(f"Device unregistered: {hw_uuid}")
+        logger.info(f"Device unregistered: {hw_uuid} (device_name={dev_name})")
         return hw_uuid
     
     # --- Dashboard Connection Management ---
@@ -182,20 +224,91 @@ class RealtimeManager:
                 info.subscribed_exams.discard(exam_id)
     
     # --- Targeted Messaging ---
+
+    async def resolve_device_connection(self, target_identifier: str) -> Optional[WebSocket]:
+        """Resolve a target identifier to an active WebSocket connection.
+        
+        Strict resolution order:
+        1. Exact connected hardware_uuid
+        2. Exact connected enrolled device identity (device_name or device_id)
+        3. Authenticated enrollment-transition alias only when provably the same enrolled device (same device_id)
+        
+        If ambiguity exists or target is not connected, returns None.
+        NEVER uses client IP for identity resolution.
+        """
+        async with self._lock:
+            # Step 1: Exact connected hardware_uuid match
+            for ws, info in self._connection_meta.items():
+                if info.hardware_uuid and info.hardware_uuid == target_identifier:
+                    return ws
+            
+            ws = self._device_connections.get(target_identifier)
+            if ws and ws in self._connection_meta:
+                info = self._connection_meta[ws]
+                if info.hardware_uuid == target_identifier:
+                    return ws
+
+            # Step 2: Exact connected enrolled device identity (device_name or device_id)
+            name_or_id_matches = []
+            for ws, info in self._connection_meta.items():
+                if (info.device_name and info.device_name == target_identifier) or \
+                   (info.device_id and info.device_id == target_identifier):
+                    name_or_id_matches.append(ws)
+
+            if len(name_or_id_matches) == 1:
+                return name_or_id_matches[0]
+            elif len(name_or_id_matches) > 1:
+                logger.warning(
+                    f"Ambiguous device resolution for '{target_identifier}': {len(name_or_id_matches)} matching connections. Refusing to guess."
+                )
+                return None
+
+            # Step 3: Authenticated enrollment-transition alias only when provably the same enrolled device.
+            mapped_device_id = self._device_id_map.get(target_identifier)
+            if not mapped_device_id:
+                try:
+                    from backend.app.database import SessionLocal
+                    from backend.models.device import Device
+                    db = SessionLocal()
+                    dev = db.query(Device).filter(
+                        (Device.hardware_uuid == target_identifier) | (Device.device_name == target_identifier)
+                    ).first()
+                    if dev:
+                        mapped_device_id = str(dev.device_id)
+                        self._device_id_map[target_identifier] = mapped_device_id
+                    db.close()
+                except Exception:
+                    pass
+
+            if mapped_device_id:
+                alias_matches = []
+                for ws, info in self._connection_meta.items():
+                    if info.device_id and info.device_id == mapped_device_id:
+                        alias_matches.append(ws)
+                if len(alias_matches) == 1:
+                    logger.info(f"Resolved '{target_identifier}' via provable enrolled device_id alias: {mapped_device_id}")
+                    return alias_matches[0]
+                elif len(alias_matches) > 1:
+                    logger.warning(
+                        f"Ambiguous alias resolution for '{target_identifier}' (device_id={mapped_device_id}): {len(alias_matches)} connections."
+                    )
+                    return None
+
+            return None
     
     async def send_to_device(self, hardware_uuid: str, payload: dict) -> bool:
-        """Send a targeted message to a specific device by hardware UUID.
+        """Send a targeted message to a specific device by hardware_uuid, device_name, or device_id.
         Returns True if the message was sent successfully."""
-        ws = self._device_connections.get(hardware_uuid)
+        ws = await self.resolve_device_connection(hardware_uuid)
         if not ws:
-            logger.warning(f"Cannot send to device {hardware_uuid}: not connected")
+            logger.warning(f"Cannot send to device '{hardware_uuid}': not connected or identity unresolved")
             return False
         
         try:
             await ws.send_json(payload)
             return True
         except Exception as e:
-            logger.error(f"Failed to send to device {hardware_uuid}: {e}")
+            logger.error(f"Failed to send to device '{hardware_uuid}': {e}")
             await self.unregister_device(ws)
             return False
 
@@ -208,6 +321,7 @@ class RealtimeManager:
     ) -> bool:
         """Send a signed network policy to a specific device over WebSocket."""
         payload = {
+            "action": message_type,
             "message_type": message_type,
             "protocol_version": 1,
             "raw_policy_json": raw_policy_json,
@@ -273,12 +387,28 @@ class RealtimeManager:
     # --- Presence Queries ---
     
     def get_online_devices(self) -> set[str]:
-        """Return set of hardware_uuids currently connected."""
-        return set(self._device_connections.keys())
+        """Return set of hardware_uuids and device_names currently connected."""
+        result = set()
+        for info in self._connection_meta.values():
+            if info.hardware_uuid:
+                result.add(info.hardware_uuid)
+            if info.device_name:
+                result.add(info.device_name)
+        return result
     
-    def is_device_online(self, hardware_uuid: str) -> bool:
+    def is_device_online(self, identifier: str) -> bool:
         """Check if a specific device is currently connected."""
-        return hardware_uuid in self._device_connections
+        if identifier in self._device_connections:
+            return True
+        for info in self._connection_meta.values():
+            if info.hardware_uuid == identifier or info.device_name == identifier or info.device_id == identifier:
+                return True
+        mapped_id = self._device_id_map.get(identifier)
+        if mapped_id:
+            for info in self._connection_meta.values():
+                if info.device_id == mapped_id:
+                    return True
+        return False
     
     def get_dashboard_count(self) -> int:
         """Return number of connected dashboard clients."""
@@ -286,7 +416,7 @@ class RealtimeManager:
     
     def get_device_count(self) -> int:
         """Return number of connected device agents."""
-        return len(self._device_connections)
+        return sum(1 for info in self._connection_meta.values() if info.client_type == "agent")
     
     def get_exam_room_count(self, exam_id: str) -> int:
         """Return number of dashboard clients watching a specific exam."""
@@ -319,10 +449,17 @@ class RealtimeManager:
     
     # --- Internal Helpers ---
     
-    def _cleanup_connection(self, ws: WebSocket) -> None:
-        """Remove all traces of a WebSocket connection (must be called under lock)."""
+    def _cleanup_connection_under_lock(self, ws: WebSocket) -> None:
+        """Remove WebSocket from all mappings under lock."""
+        keys_to_remove = [k for k, v in self._device_connections.items() if v == ws]
+        for k in keys_to_remove:
+            del self._device_connections[k]
         self._connection_meta.pop(ws, None)
         self._dashboard_connections.discard(ws)
+
+    def _cleanup_connection(self, ws: WebSocket) -> None:
+        """Remove all traces of a WebSocket connection (must be called under lock)."""
+        self._cleanup_connection_under_lock(ws)
     
     async def _safe_close(self, ws: WebSocket, reason: str = "Connection closed") -> None:
         """Safely close a WebSocket connection."""

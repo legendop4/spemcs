@@ -1,6 +1,7 @@
 namespace Spemcs.Agent.Core;
 
 using System.Threading.Channels;
+using Microsoft.Extensions.Logging;
 
 // ── Classification model ──────────────────────────────────────────────
 
@@ -262,16 +263,13 @@ public sealed class AgentStateMachine
     private readonly IAgentStore _store;
     private readonly Action<StateTransition>? _transitionLog;
 
-    public AgentState State { get; private set; }
-    public AgentSession? Session { get; private set; }
+    public AgentState State => _store.LoadSnapshot().State;
+    public AgentSession? Session => _store.LoadSnapshot().Session;
 
     public AgentStateMachine(IAgentStore store, Action<StateTransition>? transitionLog = null)
     {
         _store = store;
         _transitionLog = transitionLog;
-        var snapshot = store.LoadSnapshot();
-        State = snapshot.State;
-        Session = snapshot.Session;
     }
 
     /// <summary>
@@ -286,40 +284,41 @@ public sealed class AgentStateMachine
     {
         if (State != AgentState.Idle)
         {
-            Session = null;
-            Transition(AgentState.Idle, "RESET_EXAM");
+            Transition(AgentState.Idle, "RESET_EXAM", null);
         }
         if (_store.LoadSnapshot().Registration is null) return Reject("START_EXAM", "Device registration is required.");
-        Session = new AgentSession(Guid.NewGuid().ToString("N"), null, DateTimeOffset.UtcNow, approvedBrowser);
-        Transition(AgentState.PreCompliance, "START_EXAM");
+        var session = new AgentSession(Guid.NewGuid().ToString("N"), null, DateTimeOffset.UtcNow, approvedBrowser);
+        Transition(AgentState.PreCompliance, "START_EXAM", session);
         return true;
     }
 
     public bool ComplianceSatisfied()
     {
-        if (State != AgentState.PreCompliance || Session is null)
+        var snap = _store.LoadSnapshot();
+        if (snap.State != AgentState.PreCompliance || snap.Session is null)
             return Reject("COMPLIANCE_SATISFIED", "Pre-compliance is not active.");
-        Transition(AgentState.StudentVerification, "COMPLIANCE_SATISFIED");
+        Transition(AgentState.StudentVerification, "COMPLIANCE_SATISFIED", snap.Session);
         return true;
     }
 
     public bool VerifyStudent(string rollNumber)
     {
-        if (State != AgentState.StudentVerification || Session is null)
+        var snap = _store.LoadSnapshot();
+        if (snap.State != AgentState.StudentVerification || snap.Session is null)
             return Reject("STUDENT_VERIFICATION", "Student verification is not active.");
         if (string.IsNullOrWhiteSpace(rollNumber))
             return Reject("STUDENT_VERIFICATION", "Roll number is required.");
-        Session = Session with { StudentRollNumber = rollNumber.Trim() };
-        Transition(AgentState.Monitoring, "STUDENT_VERIFICATION");
+        var updated = snap.Session with { StudentRollNumber = rollNumber.Trim() };
+        Transition(AgentState.Monitoring, "STUDENT_VERIFICATION", updated);
         return true;
     }
 
     public bool StopExam()
     {
-        if (State is not (AgentState.PreCompliance or AgentState.StudentVerification or AgentState.Monitoring))
+        var snap = _store.LoadSnapshot();
+        if (snap.State is not (AgentState.PreCompliance or AgentState.StudentVerification or AgentState.Monitoring))
             return Reject("STOP_EXAM", "No active exam session exists.");
-        Session = null;
-        Transition(AgentState.Idle, "STOP_EXAM");
+        Transition(AgentState.Idle, "STOP_EXAM", null);
         return true;
     }
 
@@ -327,15 +326,15 @@ public sealed class AgentStateMachine
 
     private bool Reject(string @event, string reason)
     {
-        _transitionLog?.Invoke(new StateTransition(State, State, @event, reason, DateTimeOffset.UtcNow));
+        var current = State;
+        _transitionLog?.Invoke(new StateTransition(current, current, @event, reason, DateTimeOffset.UtcNow));
         return false;
     }
 
-    private void Transition(AgentState state, string @event)
+    private void Transition(AgentState state, string @event, AgentSession? session)
     {
         var from = State;
-        State = state;
-        _store.SaveState(State, Session);
+        _store.SaveState(state, session);
         _transitionLog?.Invoke(new StateTransition(from, state, @event, null, DateTimeOffset.UtcNow));
     }
 }
@@ -346,21 +345,37 @@ public sealed class RegistrationCoordinator
     private readonly IAgentStore _store;
     private readonly IExamUiGateway _ui;
     private readonly IRegistrationService _regService;
+    private readonly Func<bool>? _isCredentialValid;
 
-    public RegistrationCoordinator(IAgentStore store, IExamUiGateway ui, IRegistrationService? regService = null)
+    public RegistrationCoordinator(
+        IAgentStore store,
+        IExamUiGateway ui,
+        IRegistrationService? regService = null,
+        Func<bool>? isCredentialValid = null)
     {
         _store = store;
         _ui = ui;
         _regService = regService ?? new LocalMockRegistrationService();
+        _isCredentialValid = isCredentialValid;
     }
 
     public async Task<bool> EnsureRegisteredAsync(string ipAddress, CancellationToken cancellationToken)
     {
         var snapshot = _store.LoadSnapshot();
-        if (snapshot.Registration is not null) return true;
+        bool hasValidStoredReg = snapshot.Registration is not null &&
+                                 snapshot.Registration.DeviceId != Guid.Empty &&
+                                 (_isCredentialValid == null || _isCredentialValid());
+
+        if (hasValidStoredReg) return true;
 
         var registration = await _ui.RequestRegistrationAsync(ipAddress, cancellationToken);
         if (registration is null) return false;
+
+        if (registration.DeviceId != Guid.Empty)
+        {
+            _store.SaveRegistration(registration);
+            return true;
+        }
 
         var registeredDevice = await _regService.RegisterDeviceAsync(registration.DeviceName, registration.IpAddress, cancellationToken);
         _store.SaveRegistration(registeredDevice);
@@ -379,13 +394,9 @@ public sealed class ExamPipeline
     private readonly ISessionService _sessionService;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly IApprovedBrowserContext _approvedBrowser;
+    private readonly bool _ownsMonitor;
+    private readonly Microsoft.Extensions.Logging.ILogger? _log;
 
-    /// <param name="approvedBrowser">
-    /// Shared approved-browser context. Required, not defaulted: a hardcoded Chrome default here is
-    /// what previously let the pipeline record one browser while enforcement scoped rules to
-    /// another. Callers with no policy in play can pass
-    /// <see cref="ApprovedBrowserContext.ForFamily"/>.
-    /// </param>
     public ExamPipeline(
         AgentStateMachine machine,
         PreComplianceEngine compliance,
@@ -393,7 +404,9 @@ public sealed class ExamPipeline
         IExamUiGateway ui,
         IApprovedBrowserContext approvedBrowser,
         IAgentStore? store = null,
-        ISessionService? sessionService = null)
+        ISessionService? sessionService = null,
+        bool ownsMonitor = false,
+        Microsoft.Extensions.Logging.ILogger? log = null)
     {
         _machine = machine;
         _compliance = compliance;
@@ -402,6 +415,8 @@ public sealed class ExamPipeline
         _store = store ?? new NullAgentStore();
         _sessionService = sessionService ?? new LocalMockSessionService();
         _approvedBrowser = approvedBrowser ?? throw new ArgumentNullException(nameof(approvedBrowser));
+        _ownsMonitor = ownsMonitor;
+        _log = log;
     }
 
     public AgentState State => _machine.State;
@@ -457,17 +472,26 @@ public sealed class ExamPipeline
                 return false;
             }
 
+            _log?.LogInformation("[STUDENT_ROLL_NUMBER_ENTERED] Student roll number entered: {RollNumber}", rollNumber);
+
             // 7. Register session with backend service abstraction
             await _sessionService.StartExamSessionAsync(_machine.Session!.SessionId, approvedBrowser, cancellationToken);
             await _sessionService.RegisterStudentAsync(_machine.Session!.SessionId, rollNumber, cancellationToken);
 
-            // 8. Exit UI & start continuous monitoring
+            _log?.LogInformation("[STUDENT_SESSION_ACTIVE] Student session active: SessionId={SessionId}, RollNumber={RollNumber}",
+                _machine.Session?.SessionId, rollNumber);
+
+            // 8. Exit UI & start continuous monitoring if owned
             await _ui.NotifySessionStartedAsync(cancellationToken);
-            _monitor.Start();
+            if (_ownsMonitor && !_monitor.IsRunning)
+            {
+                _monitor.Start();
+            }
             return true;
         }
-        catch
+        catch (Exception ex)
         {
+            _log?.LogError(ex, "[EXAM_PIPELINE_FAILED] Exam pipeline failed during startup: {Type}: {Message}", ex.GetType().Name, ex.Message);
             _machine.StopExam();
             await _ui.NotifySessionStoppedAsync(cancellationToken);
             return false;
@@ -483,7 +507,10 @@ public sealed class ExamPipeline
         await _gate.WaitAsync(cancellationToken);
         try
         {
-            _monitor.Stop();
+            if (_ownsMonitor)
+            {
+                _monitor.Stop();
+            }
             var stopped = _machine.StopExam();
             await _ui.NotifySessionStoppedAsync(cancellationToken);
             return stopped;

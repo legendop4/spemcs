@@ -160,8 +160,32 @@ def _resolve_policy_identity(
     return None, None
 
 
-def _update_device_presence(hardware_uuid: str, online: bool) -> None:
+def _lookup_enrolled_device(hardware_uuid: str, device_name: Optional[str] = None) -> Optional[dict]:
+    """Look up an enrolled device record by hardware_uuid or device_name (synchronous)."""
+    db = SessionLocal()
+    try:
+        dev = None
+        if hardware_uuid:
+            dev = db.query(Device).filter(Device.hardware_uuid == hardware_uuid).first()
+        if not dev and device_name:
+            dev = db.query(Device).filter(Device.device_name == device_name).first()
+        if dev:
+            return {
+                "device_id": str(dev.device_id),
+                "device_name": dev.device_name,
+                "hardware_uuid": dev.hardware_uuid,
+            }
+        return None
+    except Exception as e:
+        logger.error(f"Error looking up enrolled device: {e}")
+        return None
+    finally:
+        db.close()
+
+
+def _update_device_presence(hardware_uuid: str, online: bool, client_ip: Optional[str] = None) -> None:
     """Update device status and last_seen in the database (synchronous).
+    Client IP is strictly for diagnostic/audit recording, never used for policy routing.
     Auto-registers device and its lab if they do not exist in the database."""
     db = SessionLocal()
     try:
@@ -169,11 +193,15 @@ def _update_device_presence(hardware_uuid: str, online: bool) -> None:
         if device:
             device.status = DeviceStatus.ONLINE.value if online else DeviceStatus.OFFLINE.value
             device.last_seen = datetime.utcnow()
+            if client_ip:
+                device.registered_ip = client_ip
             db.commit()
             
-            # Cache mapping in memory just in case
+            # Cache mapping in memory
             from backend.websocket.manager import realtime_manager
             realtime_manager.register_device_id(hardware_uuid, str(device.device_id))
+            if device.device_name:
+                realtime_manager.register_device_id(device.device_name, str(device.device_id))
         elif online:
             # Parse hierarchy from hardware_uuid (splitting by either ':' or '-')
             import re
@@ -310,6 +338,9 @@ async def agent_websocket_endpoint(websocket: WebSocket):
     """WebSocket endpoint for device agent connections."""
     await websocket.accept()
     hardware_uuid = None
+    effective_hw_uuid = None
+    resolved_device_name = None
+    resolved_device_id = None
     
     try:
         while True:
@@ -319,6 +350,7 @@ async def agent_websocket_endpoint(websocket: WebSocket):
             if action == "REGISTER":
                 hardware_uuid = data.get("hardware_uuid")
                 device_token = data.get("device_token")
+                device_name = data.get("device_name")
 
                 if not hardware_uuid:
                     logger.warning("WebSocket registration rejected: missing hardware_uuid.")
@@ -364,17 +396,32 @@ async def agent_websocket_endpoint(websocket: WebSocket):
                             await websocket.close(code=4401)
                             return
                 
-                # Register in realtime manager
-                await realtime_manager.register_device(websocket, hardware_uuid)
+                # Resolve enrolled device from DB (device_id, device_name, hardware_uuid)
+                enrolled_info = await run_in_threadpool(_lookup_enrolled_device, hardware_uuid, device_name)
+                resolved_device_id = enrolled_info["device_id"] if enrolled_info else None
+                resolved_device_name = enrolled_info["device_name"] if enrolled_info else device_name
+                effective_hw_uuid = (enrolled_info["hardware_uuid"] if enrolled_info and enrolled_info.get("hardware_uuid") else None) or hardware_uuid
+
+                # Register in realtime manager with full enrolled identity
+                await realtime_manager.register_device(
+                    ws=websocket,
+                    hardware_uuid=effective_hw_uuid,
+                    device_name=resolved_device_name,
+                    device_id=resolved_device_id,
+                )
                 
+                # Client IP recorded for diagnostic/audit purposes only (never for policy routing)
+                client_ip = websocket.client.host if websocket.client else None
+
                 # Update DB presence in threadpool
-                await run_in_threadpool(_update_device_presence, hardware_uuid, True)
+                await run_in_threadpool(_update_device_presence, effective_hw_uuid, True, client_ip)
                 
                 # Notify dashboard of device coming online
                 await realtime_manager.broadcast_to_dashboard({
                     "type": "DEVICE_STATUS_CHANGE",
                     "payload": {
-                        "hardware_uuid": hardware_uuid,
+                        "hardware_uuid": effective_hw_uuid,
+                        "device_name": resolved_device_name,
                         "status": "online",
                         "timestamp": datetime.utcnow().isoformat(),
                     }
@@ -383,15 +430,32 @@ async def agent_websocket_endpoint(websocket: WebSocket):
                 # Send registration acknowledgment
                 await websocket.send_json({
                     "type": "REGISTERED",
-                    "hardware_uuid": hardware_uuid,
+                    "device_id": str(resolved_device_id or ""),
+                    "hardware_uuid": effective_hw_uuid,
+                    "device_name": resolved_device_name,
                     "timestamp": datetime.utcnow().isoformat(),
                 })
                 
                 # Recovery check: resend exam payload if device was in active exam (run in threadpool)
-                recovery = await run_in_threadpool(_get_recovery_payload, hardware_uuid)
+                recovery = await run_in_threadpool(_get_recovery_payload, effective_hw_uuid)
                 if recovery:
-                    logger.info(f"Recovery: resending exam payload to {hardware_uuid}")
+                    logger.info(f"Recovery: resending exam payload to {effective_hw_uuid}")
                     await websocket.send_json(recovery)
+                else:
+                    # If device is not assigned to any active exam on the server, ensure it is reconciled
+                    # to clean Idle state so leftover local enforcement sessions from ended exams or offline
+                    # periods are cleared gracefully.
+                    import secrets
+                    import uuid
+                    logger.info(f"Reconciling idle device {effective_hw_uuid} on connect (no active exam)")
+                    await websocket.send_json({
+                        "action": "STOP_EXAM_MODE",
+                        "command_id": str(uuid.uuid4()),
+                        "nonce": secrets.token_hex(16),
+                        "issued_at_utc": datetime.utcnow().isoformat() + "Z",
+                        "exam_id": "",
+                        "exam_name": "",
+                    })
             
             elif action == "HEARTBEAT_PONG":
                 # Device responding to our ping
@@ -488,15 +552,17 @@ async def agent_websocket_endpoint(websocket: WebSocket):
         logger.error(f"Agent WebSocket error for {hardware_uuid}: {e}")
     finally:
         # Clean up
-        if hardware_uuid:
+        active_id = effective_hw_uuid or hardware_uuid
+        if active_id:
             await realtime_manager.unregister_device(websocket)
-            await run_in_threadpool(_update_device_presence, hardware_uuid, False)
+            await run_in_threadpool(_update_device_presence, active_id, False)
             
             # Notify dashboard of device going offline
             await realtime_manager.broadcast_to_dashboard({
                 "type": "DEVICE_STATUS_CHANGE",
                 "payload": {
-                    "hardware_uuid": hardware_uuid,
+                    "hardware_uuid": active_id,
+                    "device_name": resolved_device_name,
                     "status": "offline",
                     "timestamp": datetime.utcnow().isoformat(),
                 }

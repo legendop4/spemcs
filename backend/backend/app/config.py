@@ -51,6 +51,30 @@ class Settings(BaseSettings):
     DEVICE_TOKEN_SECRET: str = "dev-device-token-secret-change-in-production"
     ENROLLMENT_BOOTSTRAP_KEY: str = "spemcs-enrollment-bootstrap-key-default"
 
+    # ── Management Server Control Plane (M3/M8/M9) ───────────────
+    # The central backend address advertised in compiled policies for endpoint connectivity & heartbeat.
+    MANAGEMENT_SERVER_IP: str = Field(
+        default="192.168.11.65",
+        validation_alias=AliasChoices("MANAGEMENT_SERVER_IP", "SPEMCS_MANAGEMENT_SERVER_IP"),
+    )
+    MANAGEMENT_SERVER_PORT: int = Field(
+        default=8000,
+        validation_alias=AliasChoices("MANAGEMENT_SERVER_PORT", "SPEMCS_MANAGEMENT_SERVER_PORT"),
+    )
+    MANAGEMENT_SERVER_USE_TLS: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("MANAGEMENT_SERVER_USE_TLS", "SPEMCS_MANAGEMENT_SERVER_USE_TLS"),
+    )
+
+    def get_management_server_dict(self) -> dict:
+        """Returns the configured management server dictionary for policy compilation."""
+        ips = [ip.strip() for ip in self.MANAGEMENT_SERVER_IP.split(",") if ip.strip()]
+        return {
+            "ip_addresses": ips if ips else ["192.168.11.65"],
+            "port": self.MANAGEMENT_SERVER_PORT,
+            "use_tls": self.MANAGEMENT_SERVER_USE_TLS,
+        }
+
     # ── Policy signing key material ──────────────────────────────
     # Directory holding the RSA policy-signing keyring. The private key is generated ONCE and
     # reused, so restarting the backend does not invalidate policies that were already compiled

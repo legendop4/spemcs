@@ -395,4 +395,93 @@ public sealed class EnforcementStateMachineUnitTests : IDisposable
         Assert.Equal(FirewallAction.Allow, _firewall.GetBaseline().PublicDefaultOutbound);
         Assert.Equal(FirewallAction.Allow, _firewall.GetBaseline().DomainDefaultOutbound);
     }
+
+    [Fact]
+    public async Task ActivateAsync_FailsClosed_WhenActiveFirewallProfileIsDisabled()
+    {
+        var sessionId = Guid.NewGuid();
+        var msg = CreateValidMessage();
+
+        // Simulate disabled Public profile when Public is active
+        _firewall.PublicProfileEnabled = false;
+
+        var actResult = await _machine.ActivateAsync(sessionId, msg, PythonExamId, currentTimeUtc: ValidEvalTime);
+        Assert.False(actResult.Success);
+        Assert.Equal(EnforcementState.Failed, actResult.State);
+        Assert.Contains("disabled on this endpoint", actResult.FailureReason);
+        Assert.Empty(_firewall.Rules);
+        Assert.Equal(FirewallAction.Allow, _firewall.GetBaseline().PrivateDefaultOutbound);
+    }
+
+    [Fact]
+    public async Task Case1_ActivateAsync_FailsClosed_WhenFirewallEnabledIsFalse()
+    {
+        var sessionId = Guid.NewGuid();
+        var msg = CreateValidMessage();
+
+        // All firewall profiles disabled at OS level
+        _firewall.DomainProfileEnabled = false;
+        _firewall.PrivateProfileEnabled = false;
+        _firewall.PublicProfileEnabled = false;
+
+        var actResult = await _machine.ActivateAsync(sessionId, msg, PythonExamId, currentTimeUtc: ValidEvalTime);
+
+        // -> ActivateAsync MUST fail
+        Assert.False(actResult.Success);
+        Assert.Contains("disabled on this endpoint", actResult.FailureReason);
+
+        // -> state must NOT become Active
+        Assert.Equal(EnforcementState.Failed, actResult.State);
+        Assert.Equal(EnforcementState.Failed, _machine.CurrentState);
+
+        // -> no SPEMCS firewall rules installed
+        Assert.Empty(_firewall.Rules);
+
+        // -> no DefaultOutboundAction mutation
+        var baseline = _firewall.GetBaseline();
+        Assert.Equal(FirewallAction.Allow, baseline.DomainDefaultOutbound);
+        Assert.Equal(FirewallAction.Allow, baseline.PrivateDefaultOutbound);
+        Assert.Equal(FirewallAction.Allow, baseline.PublicDefaultOutbound);
+    }
+
+    [Fact]
+    public async Task Case1_ActivateAsync_FailsClosed_WhenActiveProfilesIsNoneAndTargetDisabled()
+    {
+        var sessionId = Guid.NewGuid();
+        var msg = CreateValidMessage();
+
+        // No active profiles identified by NLA, and target profiles are disabled
+        _firewall.ActiveProfiles = FirewallProfiles.None;
+        _firewall.PublicProfileEnabled = false;
+
+        var actResult = await _machine.ActivateAsync(sessionId, msg, PythonExamId, currentTimeUtc: ValidEvalTime);
+
+        Assert.False(actResult.Success);
+        Assert.Equal(EnforcementState.Failed, actResult.State);
+        Assert.Equal(EnforcementState.Failed, _machine.CurrentState);
+        Assert.Empty(_firewall.Rules);
+        var baseline = _firewall.GetBaseline();
+        Assert.Equal(FirewallAction.Allow, baseline.PublicDefaultOutbound);
+    }
+
+    [Fact]
+    public async Task Case2_ActivateAsync_ProceedsNormally_WhenFirewallEnabledIsTrue()
+    {
+        var sessionId = Guid.NewGuid();
+        var msg = CreateValidMessage();
+
+        // All firewall profiles enabled
+        _firewall.DomainProfileEnabled = true;
+        _firewall.PrivateProfileEnabled = true;
+        _firewall.PublicProfileEnabled = true;
+
+        var actResult = await _machine.ActivateAsync(sessionId, msg, PythonExamId, currentTimeUtc: ValidEvalTime);
+
+        // -> activation may proceed normally
+        Assert.True(actResult.Success);
+        Assert.Equal(EnforcementState.Active, actResult.State);
+        Assert.Equal(EnforcementState.Active, _machine.CurrentState);
+        Assert.NotEmpty(_firewall.Rules);
+        Assert.Equal(FirewallAction.Block, _firewall.PublicDefaultOutbound);
+    }
 }

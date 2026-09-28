@@ -37,7 +37,7 @@ async def send_exam_launch(
     results = await realtime_manager.send_to_exam_devices(hardware_uuids, payload)
     
     sent_count = sum(1 for v in results.values() if v)
-    logger.info(f"LAUNCH_EXAM_MODE sent to {sent_count}/{len(hardware_uuids)} devices")
+    logger.info(f"[LAUNCH_EXAM_MODE_SENT] LAUNCH_EXAM_MODE sent to {sent_count}/{len(hardware_uuids)} devices for exam {exam.exam_id}")
     
     return results
 

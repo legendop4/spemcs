@@ -89,7 +89,32 @@ def register_device(
             .first()
         )
         if existing_device_in_lab:
-            raise ValueError(f"PC number '{effective_pc}' is already registered in lab '{target_lab.lab_name}'.")
+            logger.info(
+                f"Eradicating previous registration for seat '{effective_pc}' in lab '{target_lab.lab_name}' "
+                f"(previous UUID {existing_device_in_lab.hardware_uuid}) to reassign to incoming installation {hardware_uuid}."
+            )
+            db.query(LabDevice).filter(
+                LabDevice.lab_id == target_lab.lab_id,
+                LabDevice.device_id == existing_device_in_lab.device_id,
+            ).delete()
+            existing_device_in_lab.status = DeviceStatus.OFFLINE.value
+            existing_device_in_lab.pc_number = None
+            if existing_device_in_lab.device_name == device_name:
+                existing_device_in_lab.device_name = f"{existing_device_in_lab.device_name}-retired-{existing_device_in_lab.device_id.hex[:6]}"
+            db.flush()
+
+    # Clean up any stale duplicate device records that have the same device_name but different hardware_uuid
+    stale_devices = (
+        db.query(Device)
+        .filter(Device.device_name == device_name, Device.hardware_uuid != hardware_uuid)
+        .all()
+    )
+    for stale in stale_devices:
+        logger.info(f"Unlisting stale device record {stale.device_id} ({stale.device_name}, old UUID {stale.hardware_uuid})")
+        db.query(LabDevice).filter(LabDevice.device_id == stale.device_id).delete()
+        stale.device_name = f"{stale.device_name}-retired-{stale.device_id.hex[:6]}"
+        stale.status = DeviceStatus.OFFLINE.value
+        db.flush()
 
     # Check if device already exists by hardware_uuid
     device = db.query(Device).filter(Device.hardware_uuid == hardware_uuid).first()
@@ -250,3 +275,33 @@ def get_device_tree(db: Session) -> list[dict]:
 def get_online_devices(db: Session) -> list[Device]:
     """Get all devices currently marked as online."""
     return db.query(Device).filter(Device.status == DeviceStatus.ONLINE.value).all()
+
+
+def purge_device_registration(
+    db: Session,
+    hardware_uuid: Optional[str] = None,
+    device_name: Optional[str] = None,
+    ip_address: Optional[str] = None,
+) -> int:
+    """Completely eradicates previous device registrations matching any provided identifier."""
+    from sqlalchemy import or_
+    filters = []
+    if hardware_uuid:
+        filters.append(Device.hardware_uuid == hardware_uuid)
+    if device_name:
+        filters.append(Device.device_name == device_name)
+    if ip_address:
+        filters.append(Device.registered_ip == ip_address)
+        
+    if not filters:
+        return 0
+        
+    matching_devices = db.query(Device).filter(or_(*filters)).all()
+    count = len(matching_devices)
+    for dev in matching_devices:
+        logger.info(f"Purging previous device registration from database: {dev.device_name} (UUID: {dev.hardware_uuid}, ID: {dev.device_id})")
+        db.query(LabDevice).filter(LabDevice.device_id == dev.device_id).delete()
+        db.delete(dev)
+    db.commit()
+    return count
+

@@ -24,9 +24,18 @@ class LabRead(LabBase):
 
 
 class LabUpdate(BaseModel):
+    building_id: Optional[str] = None
+    lab_name: Optional[str] = None
+    description: Optional[str] = None
+    capacity: Optional[int] = None
     spemcs_enabled: Optional[bool] = None
+    status: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class LabAssignDevices(BaseModel):
+    device_ids: list[UUID]
 
 
 class LabCreate(BaseModel):

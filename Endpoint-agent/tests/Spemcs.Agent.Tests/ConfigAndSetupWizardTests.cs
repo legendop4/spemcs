@@ -26,6 +26,7 @@ public class ConfigAndSetupWizardTests
             {
                 ServerUrl = "http://192.168.1.100:8000",
                 DeviceId = Guid.NewGuid().ToString(),
+                DeviceToken = "valid-test-token-12345",
                 DeviceName = "Lab101-PC01",
                 HardwareUuid = "HW-UUID-TEST-01",
                 LabId = Guid.NewGuid().ToString(),

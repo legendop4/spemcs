@@ -4,6 +4,7 @@
 # ============================================================
 
 # ── Secrets & Environment ────────────────────────────────────
+.env*
 .env
 .env.local
 .env.*.local
@@ -134,6 +135,7 @@ logs/
 agent_binaries/
 scratch/
 Endpoint-agent/extracted/
+Endpoint-agent/scripts/*.json
 out
 out*.txt
 

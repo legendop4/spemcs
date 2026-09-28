@@ -1,5 +1,6 @@
 """Policy and VendorProfile management endpoints."""
 
+from datetime import datetime, timezone
 import logging
 from typing import List, Optional
 from uuid import UUID
@@ -8,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from backend.app.database import get_db
+from backend.models.device import Device
 from backend.schemas.policy import (
     DevicePolicyStateRead,
     NetworkPolicyRead,
@@ -109,6 +111,7 @@ def _record_distribution_state(
 
 
 @router.get("/signing-key/public", response_model=SigningKeyRead)
+@router.get("/signing-key", response_model=SigningKeyRead, include_in_schema=False)
 def get_signing_public_key(keys: SigningKeyManager = Depends(signing_keys)):
     """Export the ACTIVE signing public key for an agent's trusted key store.
 
@@ -282,14 +285,18 @@ def compile_exam_policy(
     if payload is None:
         payload = PolicyCompileRequest()
 
+    from backend.app.config import settings
+
     now = datetime.now(timezone.utc)
-    mgmt = payload.management_server or {
-        "ip_addresses": ["127.0.0.1"],
-        "port": 8002,
-        "use_tls": False,
-    }
-    nb = payload.not_before or now
-    exp = payload.expires_at or (now + timedelta(hours=8))
+    mgmt = payload.management_server or settings.get_management_server_dict()
+    if payload.not_before:
+        nb = payload.not_before.astimezone(timezone.utc) if payload.not_before.tzinfo else payload.not_before.replace(tzinfo=timezone.utc)
+    else:
+        nb = now - timedelta(minutes=5)
+    if payload.expires_at:
+        exp = payload.expires_at.astimezone(timezone.utc) if payload.expires_at.tzinfo else payload.expires_at.replace(tzinfo=timezone.utc)
+    else:
+        exp = now + timedelta(hours=8)
 
     # Resolved before any database work: if the signing key is unusable, compiling and
     # persisting a policy row we cannot sign would leave an unusable policy behind for a later
@@ -303,7 +310,7 @@ def compile_exam_policy(
         policy = policy_service.compile_and_persist_exam_policy(
             db=db,
             exam_id=exam_id,
-            version=payload.version or 1,
+            version=payload.version,
             management_server=mgmt,
             not_before=nb,
             expires_at=exp,
@@ -355,6 +362,35 @@ async def distribute_policy_to_device(
     except PolicyCompilationError as err:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(err))
     raw_policy_json = canonicalize(payload_dict)
+
+    import asyncio
+    import secrets
+    import uuid
+
+    # If the endpoint is already in confirmed APPLIED state for this exact policy, skip redundant re-push
+    device = db.query(Device).filter(Device.hardware_uuid == device_hardware_uuid).first()
+    if device:
+        current_state = dps.get_state(db, exam_id, device.device_id)
+        if current_state and current_state.status == dps.STATUS_APPLIED and current_state.policy_id == policy.policy_id:
+            logger.info("Device %s is already in APPLIED state for policy %s; skipping redundant distribution", device_hardware_uuid, policy.policy_id)
+            return {
+                "status": "ALREADY_APPLIED",
+                "exam_id": str(exam_id),
+                "device_hardware_uuid": device_hardware_uuid,
+                "policy_id": str(policy.policy_id),
+                "version": policy.version,
+            }
+
+    # Reconcile endpoint: gracefully stop any prior local enforcement session before applying new policy
+    await realtime_manager.send_to_device(device_hardware_uuid, {
+        "action": "STOP_EXAM_MODE",
+        "command_id": str(uuid.uuid4()),
+        "nonce": secrets.token_hex(16),
+        "issued_at_utc": datetime.now(timezone.utc).isoformat(),
+        "exam_id": str(exam_id),
+        "exam_name": "",
+    })
+    await asyncio.sleep(0.1)
 
     sent = await realtime_manager.send_signed_policy_to_device(
         hardware_uuid=device_hardware_uuid,

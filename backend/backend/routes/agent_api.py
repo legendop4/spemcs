@@ -70,8 +70,9 @@ def _refuse_if_not_own_device(device: Device, claimed_uuid: Optional[str],
         if claimed in (device.hardware_uuid, device.device_name):
             continue
         logger.warning(
-            "Device %s attempted to act as a different device",
+            "Device %s attempted to act as a different device (claimed %r)",
             device.hardware_uuid,
+            claimed,
         )
         raise HTTPException(
             status_code=403,
@@ -95,12 +96,14 @@ class SessionStartReq(BaseModel):
     sessionId: Optional[str] = None
     hardwareUuid: Optional[str] = None
     deviceName: Optional[str] = None
+    studentRollNumber: Optional[str] = None
     approvedBrowser: str = "chrome"
 
 
 class StudentVerifyReq(BaseModel):
     sessionId: str
     rollNumber: str
+    password: Optional[str] = None
 
 
 class ViolationEventReq(BaseModel):
@@ -261,6 +264,25 @@ async def register_device(
     }
 
 
+@router.post("/devices/purge")
+async def purge_device(
+    req: DeviceRegisterReq,
+    db: Session = Depends(get_db),
+):
+    """Completely eradicates previous device registrations for this PC from database."""
+    expected_key = os.getenv("SPEMCS_ENROLLMENT_BOOTSTRAP_KEY", DEFAULT_ENROLLMENT_KEY)
+    if (req.enrollmentKey or "") != expected_key:
+        raise HTTPException(status_code=401, detail="Invalid enrollment bootstrap key")
+    
+    purged_count = device_service.purge_device_registration(
+        db=db,
+        hardware_uuid=req.hardwareUuid,
+        device_name=req.deviceName,
+        ip_address=req.ipAddress,
+    )
+    return {"status": "purged", "count": purged_count}
+
+
 @router.post("/sessions/start")
 async def start_session(
     req: SessionStartReq,
@@ -296,9 +318,29 @@ async def start_session(
             device_id=device.device_id,
             exam_id=exam.exam_id,
             session_id=session_uuid,
+            student_roll_number=req.studentRollNumber,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    
+    # If roll number was supplied with start, broadcast session started to proctor dashboards
+    if session.student_roll_number and session.student_roll_number != "PENDING":
+        exam_id_str = str(session.exam_id)
+        session_payload = {
+            "session_id": str(session.session_id),
+            "exam_id": exam_id_str,
+            "device_id": str(session.device_id),
+            "student_roll_number": session.student_roll_number,
+            "started_at": session.started_at.isoformat() if session.started_at else None,
+        }
+        await realtime_service.broadcast_session_started(
+            exam_id=exam_id_str,
+            session_data=session_payload,
+        )
+        await realtime_manager.broadcast_to_dashboard({
+            "type": "SESSION_STARTED",
+            "payload": session_payload,
+        })
     
     return {
         "status": "SessionStarted",
@@ -353,6 +395,11 @@ async def verify_student(
     roll = req.rollNumber.strip()
     if not roll:
         raise HTTPException(status_code=400, detail="Student roll number cannot be empty")
+    
+    if req.password is not None:
+        pwd = req.password.strip()
+        if len(pwd) < 4:
+            raise HTTPException(status_code=401, detail="Invalid student credentials")
     
     # Update session with student info
     try:

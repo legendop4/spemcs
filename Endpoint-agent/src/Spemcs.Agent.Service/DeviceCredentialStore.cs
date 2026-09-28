@@ -47,9 +47,13 @@ public sealed class DeviceCredentialStore
     /// outright when its own key is unset, and a client-side fallback would only turn a
     /// configuration error into a confusing 401.
     /// </param>
-    public DeviceCredentialStore(string? enrollmentKey)
+    public DeviceCredentialStore(string? enrollmentKey, string? initialDeviceToken = null)
     {
         EnrollmentKey = string.IsNullOrWhiteSpace(enrollmentKey) ? null : enrollmentKey;
+        if (!string.IsNullOrWhiteSpace(initialDeviceToken))
+        {
+            _deviceToken = initialDeviceToken;
+        }
     }
 
     /// <summary>
@@ -86,6 +90,26 @@ public sealed class DeviceCredentialStore
         lock (_gate)
         {
             _deviceToken = token;
+        }
+
+        try
+        {
+            var dir = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "Spemcs", "Logs");
+            System.IO.Directory.CreateDirectory(dir);
+            var file = System.IO.Path.Combine(dir, "agent_service.log");
+            System.IO.File.AppendAllText(file, $"[{DateTime.UtcNow:O}] [PID {Environment.ProcessId}] [CREDENTIAL_PERSISTED] enrolled=true, hasDeviceId=true, hasToken=true, pid={Environment.ProcessId}{Environment.NewLine}");
+        }
+        catch { }
+    }
+
+    /// <summary>
+    /// Clears the active device token when credentials become stale or revoked.
+    /// </summary>
+    public void ClearDeviceToken()
+    {
+        lock (_gate)
+        {
+            _deviceToken = null;
         }
     }
 }

@@ -4,16 +4,17 @@ import type { ButtonHTMLAttributes, ReactNode } from 'react';
 // that renders it was reachable only through an `as any` cast inside the component. The variant is
 // real - ExamShieldPage uses it for the "Stop" control on an active exam, where a filled danger
 // button next to "Live monitor" reads as the primary action.
-type Variant = 'primary' | 'secondary' | 'danger' | 'ghost' | 'outline-danger';
+type Variant = 'primary' | 'secondary' | 'danger' | 'ghost' | 'outline-danger' | 'outline';
 type Size = 'sm' | 'md' | 'lg';
 
 interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: Variant;
   size?: Size;
+  icon?: ReactNode;
   children: ReactNode;
 }
 
-export function Button({ variant = 'primary', size = 'md', children, className = '', ...props }: ButtonProps) {
+export function Button({ variant = 'primary', size = 'md', icon, children, className = '', ...props }: ButtonProps) {
   let bg = 'transparent';
   let color = 'inherit';
   let border = '1px solid transparent';
@@ -30,6 +31,10 @@ export function Button({ variant = 'primary', size = 'md', children, className =
   } else if (variant === 'danger') {
     bg = 'var(--color-danger)';
     color = '#ffffff';
+  } else if (variant === 'outline') {
+    bg = 'transparent';
+    color = 'var(--color-text-primary)';
+    border = '1px solid var(--color-border)';
   } else if (variant === 'ghost') {
     bg = 'transparent';
     color = 'var(--color-text-muted)';
@@ -56,6 +61,7 @@ export function Button({ variant = 'primary', size = 'md', children, className =
       }}
       {...props}
     >
+      {icon}
       {children}
     </button>
   );

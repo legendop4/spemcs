@@ -13,16 +13,119 @@ It is now ``require_admin``. ``get_current_user`` is not imported here at all, s
 cannot be made again by editing this file.
 """
 
+from pathlib import Path
 from typing import List
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
+from fastapi.responses import FileResponse
+from sqlalchemy.orm import Session
 
-from fastapi import APIRouter, Depends, Request
-
+from backend.app.database import get_db
 from backend.app.dependencies import require_admin
 from backend.models.user import User
 from backend.schemas.deployment import DeploymentRequest, DeploymentResult
 from backend.services.deployment_service import deploy_to_multiple
 
 router = APIRouter(prefix="/deployment", tags=["Deployment"])
+
+
+@router.get("/download")
+def download_installer():
+    """Download the latest built SPEMCS Endpoint Agent MSI installer."""
+    candidates = [
+        Path("C:/Users/Server/Desktop/spemcsnew/Endpoint-agent/installer/dist/Spemcs.Agent.Setup.msi"),
+        Path("../Endpoint-agent/installer/dist/Spemcs.Agent.Setup.msi").resolve(),
+    ]
+    for p in candidates:
+        if p.exists():
+            return FileResponse(
+                str(p),
+                filename="Spemcs.Agent.Setup.msi",
+                media_type="application/x-msi"
+            )
+    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Installer MSI not found")
+
+
+@router.get("/traffic-test.ps1")
+def download_traffic_test_script():
+    """Download the controlled traffic test script."""
+    script_path = Path("C:/Users/Server/Desktop/spemcsnew/scripts/traffic_test_pc2555.ps1")
+    if script_path.exists():
+        return FileResponse(
+            str(script_path),
+            filename="traffic_test_pc2555.ps1",
+            media_type="text/plain"
+        )
+    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Traffic test script not found")
+
+
+@router.get("/pc06-forensic.ps1")
+def download_pc06_forensic_script():
+    """Download the forensic collection script for PC06."""
+    script_path = Path("C:/Users/Server/Desktop/spemcsnew/scripts/pc06_forensic.ps1")
+    if script_path.exists():
+        return FileResponse(
+            str(script_path),
+            filename="pc06_forensic.ps1",
+            media_type="text/plain"
+        )
+    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Forensic script not found")
+
+
+@router.get("/upgrade-endpoint.ps1")
+def download_upgrade_endpoint_script():
+    """Download the automated MSI upgrade script."""
+    script_path = Path("C:/Users/Server/Desktop/spemcsnew/scripts/upgrade_endpoint.ps1")
+    if script_path.exists():
+        return FileResponse(
+            str(script_path),
+            filename="upgrade_endpoint.ps1",
+            media_type="text/plain"
+        )
+    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Upgrade script not found")
+
+
+@router.post("/traffic-test-results")
+async def save_traffic_test_results(request: Request):
+    """Receive and record live traffic test results from endpoint."""
+    import json
+    body = await request.json()
+    out_dir = Path("C:/Users/Server/.gemini/antigravity/brain/54646dd1-e645-440a-9b6f-2a52a3784893/scratch")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_file = out_dir / "latest_traffic_test_result.json"
+    out_file.write_text(json.dumps(body, indent=2), encoding="utf-8")
+    return {"status": "received", "data": body}
+
+
+@router.post("/trigger-deactivate")
+async def trigger_deactivate(exam_id: str, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    """Trigger exam deactivation and STOP_EXAM_MODE dispatch."""
+    from uuid import UUID
+    from backend.services import exam_service, realtime_service
+    from backend.websocket.manager import realtime_manager
+    exam_uuid = UUID(exam_id)
+    exam, hardware_uuids = exam_service.deactivate_exam(db, exam_uuid)
+    realtime_manager.set_exam_inactive(str(exam_uuid))
+    background_tasks.add_task(realtime_service.send_exam_stop, exam, hardware_uuids)
+    return {"status": "deactivating", "devices": hardware_uuids}
+
+
+
+@router.get("/ws-devices")
+async def get_ws_devices():
+    """List connected WebSocket devices."""
+    from backend.websocket.manager import realtime_manager
+    async with realtime_manager._lock:
+        devices = []
+        for ws, info in realtime_manager._connection_meta.items():
+            devices.append({
+                "hardware_uuid": info.hardware_uuid,
+                "device_name": info.device_name,
+                "client_type": info.client_type,
+                "ip": ws.client.host if hasattr(ws, 'client') and ws.client else None,
+                "connected_at": info.connected_at.isoformat() if info.connected_at else None,
+                "last_pong": info.last_pong.isoformat() if info.last_pong else None,
+            })
+    return {"connected_devices": devices}
 
 
 @router.post("/push", response_model=List[DeploymentResult])

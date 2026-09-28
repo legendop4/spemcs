@@ -1,6 +1,9 @@
 {
   "serverUrl": "http://192.168.11.65:8000",
+  "deviceName": "",
+  "hardwareUuid": "",
   "enrollmentKey": "spemcs-enrollment-bootstrap-key-default",
   "approvedBrowser": "chrome",
-  "deviceToken": ""
+  "deviceToken": "",
+  "registered": false
 }

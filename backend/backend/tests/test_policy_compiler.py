@@ -20,7 +20,8 @@ from fastapi.testclient import TestClient
 
 from backend.app.database import SessionLocal
 from backend.app.main import app
-from backend.models.exam import ApprovedBrowser, Exam
+from backend.models.device import Device
+from backend.models.exam import ApprovedBrowser, Exam, ExamDevice
 from backend.models.policy import VendorProfile
 from backend.services.canonical_json import canonicalize_to_bytes
 from backend.services.policy_compiler import (
@@ -615,3 +616,124 @@ def test_compile_endpoint_fails_loudly_when_a_domain_cannot_be_resolved(
 
     assert resp.status_code == 400, resp.text
     assert "lms.example.invalid" in resp.text
+
+
+def test_compile_endpoint_defaults_to_configured_management_server(
+    client: TestClient, db_session, admin_headers
+):
+    """Compiling without specifying management_server must use the configured settings."""
+    db, cleanup = db_session
+
+    profile = VendorProfile(
+        vendor_name=f"Config-Vendor-{uuid.uuid4().hex[:6]}",
+        required_domains=[],
+        approved_ip_ranges=["198.51.100.0/24"],
+        required_tcp_ports=[443],
+        required_udp_ports=[],
+    )
+    db.add(profile)
+    db.commit()
+    cleanup.append(profile)
+
+    exam = Exam(
+        exam_name=f"Config-Exam-{uuid.uuid4().hex[:6]}",
+        approved_browser=ApprovedBrowser.CHROME.value,
+        network_enforcement=True,
+        vendor_profile_id=profile.vendor_id,
+    )
+    db.add(exam)
+    db.commit()
+    cleanup.append(exam)
+
+    now = datetime.now(timezone.utc)
+    resp = client.post(
+        f"/api/policies/compile/{exam.exam_id}",
+        headers=admin_headers,
+        json={
+            "version": 1,
+            "not_before": (now - timedelta(minutes=5)).isoformat(),
+            "expires_at": (now + timedelta(hours=3)).isoformat(),
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    data = resp.json()
+    assert "management_server" in data
+    assert data["management_server"]["ip_addresses"] == ["192.168.11.65"]
+    assert data["management_server"]["port"] == 8000
+
+
+def test_compile_endpoint_rejects_loopback_management_server_when_exam_has_remote_workstations(
+    client: TestClient, db_session, admin_headers
+):
+    """Loopback management server must be rejected when an exam includes remote devices."""
+    db, cleanup = db_session
+
+    profile = VendorProfile(
+        vendor_name=f"Remote-Vendor-{uuid.uuid4().hex[:6]}",
+        required_domains=[],
+        approved_ip_ranges=["198.51.100.0/24"],
+        required_tcp_ports=[443],
+        required_udp_ports=[],
+    )
+    db.add(profile)
+    db.commit()
+    cleanup.append(profile)
+
+    exam = Exam(
+        exam_name=f"Remote-Exam-{uuid.uuid4().hex[:6]}",
+        approved_browser=ApprovedBrowser.CHROME.value,
+        network_enforcement=True,
+        vendor_profile_id=profile.vendor_id,
+    )
+    db.add(exam)
+    db.commit()
+    cleanup.append(exam)
+
+    # Assign a remote device (IP: 192.168.11.59)
+    device = Device(
+        hardware_uuid=f"TEST-REMOTE-UUID-{uuid.uuid4().hex[:8]}",
+        device_name="Lab:PC-Remote",
+        registered_ip="192.168.11.59",
+    )
+    db.add(device)
+    db.commit()
+    cleanup.append(device)
+
+    exam_device = ExamDevice(
+        exam_id=exam.exam_id,
+        device_id=device.device_id,
+    )
+    db.add(exam_device)
+    db.commit()
+    cleanup.append(exam_device)
+
+    now = datetime.now(timezone.utc)
+    # 1. Attempt compile with loopback management server
+    resp = client.post(
+        f"/api/policies/compile/{exam.exam_id}",
+        headers=admin_headers,
+        json={
+            "version": 1,
+            "management_server": {"ip_addresses": ["127.0.0.1"], "port": 8000},
+            "not_before": (now - timedelta(minutes=5)).isoformat(),
+            "expires_at": (now + timedelta(hours=3)).isoformat(),
+        },
+    )
+    assert resp.status_code == 400, resp.text
+    assert "Management server cannot be loopback (127.0.0.1) when exam contains remote workstations." in resp.json()["detail"]
+
+    # 2. Attempt compile with valid remote management server (should succeed)
+    resp2 = client.post(
+        f"/api/policies/compile/{exam.exam_id}",
+        headers=admin_headers,
+        json={
+            "version": 1,
+            "management_server": {"ip_addresses": ["192.168.11.65"], "port": 8000},
+            "not_before": (now - timedelta(minutes=5)).isoformat(),
+            "expires_at": (now + timedelta(hours=3)).isoformat(),
+        },
+    )
+    assert resp2.status_code == 201, resp2.text
+    data = resp2.json()
+    assert data["management_server"]["ip_addresses"] == ["192.168.11.65"]
+    assert data["management_server"]["port"] == 8000

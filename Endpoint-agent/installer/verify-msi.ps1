@@ -34,6 +34,49 @@ Invoke-MsiQuery 'SELECT `Name`,`DisplayName`,`StartType`,`ServiceType`,`ErrorCon
 Write-Output '=== ServiceControl (Name | Event | Wait) ==='
 Invoke-MsiQuery 'SELECT `Name`,`Event`,`Wait` FROM `ServiceControl`' 3
 
+# Automated ServiceControl Lifecycle Semantics Assertion
+$scView = $db.GetType().InvokeMember('OpenView', 'InvokeMethod', $null, $db, @("SELECT `Name`,`Event`,`Wait` FROM `ServiceControl` WHERE `Name` = 'SPEMCS Endpoint Agent'"))
+$scView.GetType().InvokeMember('Execute', 'InvokeMethod', $null, $scView, $null)
+$scRec = $scView.GetType().InvokeMember('Fetch', 'InvokeMethod', $null, $scView, $null)
+if ($null -eq $scRec) {
+    throw "CRITICAL DEFECT: ServiceControl entry for 'SPEMCS Endpoint Agent' missing from MSI!"
+}
+$scEvent = [int]($scRec.GetType().InvokeMember('StringData', 'GetProperty', $null, $scRec, @(2)))
+Write-Output "  ServiceControl Event value: $scEvent (0x$($scEvent.ToString('X2')))"
+
+# 1. Install behavior starts service (bit 0x01)
+$startsOnInstall = ($scEvent -band 1) -ne 0
+Write-Output "  1. Starts on install (bit 0x01): $startsOnInstall"
+if (-not $startsOnInstall) { throw "CRITICAL DEFECT: ServiceControl does NOT start service on install!" }
+
+# 2. Uninstall behavior stops service (bit 0x20)
+$stopsOnUninstall = ($scEvent -band 32) -ne 0
+Write-Output "  2. Stops on uninstall (bit 0x20): $stopsOnUninstall"
+if (-not $stopsOnUninstall) { throw "CRITICAL DEFECT: ServiceControl does NOT stop service on uninstall!" }
+
+# 3. Uninstall behavior removes service (bit 0x80)
+$removesOnUninstall = ($scEvent -band 128) -ne 0
+Write-Output "  3. Removes service on uninstall (bit 0x80): $removesOnUninstall"
+if (-not $removesOnUninstall) { throw "CRITICAL DEFECT: ServiceControl does NOT remove service on uninstall!" }
+
+# 4. Uninstall does NOT start service (bit 0x10 MUST NOT be set)
+$startsOnUninstall = ($scEvent -band 16) -ne 0
+Write-Output "  4. Starts on uninstall (bit 0x10): $startsOnUninstall (Expected: False)"
+if ($startsOnUninstall) { throw "CRITICAL DEFECT: ServiceControl has bit 0x10 set! It attempts to start service on uninstall!" }
+
+# 5. InstallExecuteSequence StartServices condition must exclude REMOVE="ALL"
+$iesView = $db.GetType().InvokeMember('OpenView', 'InvokeMethod', $null, $db, @("SELECT `Action`,`Condition` FROM `InstallExecuteSequence` WHERE `Action` = 'StartServices'"))
+$iesView.GetType().InvokeMember('Execute', 'InvokeMethod', $null, $iesView, $null)
+$iesRec = $iesView.GetType().InvokeMember('Fetch', 'InvokeMethod', $null, $iesView, $null)
+if ($null -eq $iesRec) { throw "CRITICAL DEFECT: StartServices missing from InstallExecuteSequence!" }
+$iesCond = $iesRec.GetType().InvokeMember('StringData', 'GetProperty', $null, $iesRec, @(2))
+Write-Output "  5. StartServices Sequence Condition: '$iesCond'"
+if ($iesCond -notlike "*NOT REMOVE~=""ALL""*") {
+    throw "CRITICAL DEFECT: StartServices condition does not restrict REMOVE='ALL' ($iesCond)!"
+}
+Write-Output "  [OK] ServiceControl lifecycle and StartServices sequencing verified successfully."
+
+
 Write-Output '=== Wix4ServiceConfig (failure actions) ==='
 Invoke-MsiQuery 'SELECT `ServiceName`,`FirstFailureActionType`,`SecondFailureActionType`,`ThirdFailureActionType`,`ResetPeriodInDays` FROM `Wix4ServiceConfig`' 5
 

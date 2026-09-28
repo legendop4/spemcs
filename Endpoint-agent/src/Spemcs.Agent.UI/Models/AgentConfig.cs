@@ -53,10 +53,21 @@ public class AgentConfig
     [JsonPropertyName("approvedBrowser")]
     public string? ApprovedBrowser { get; set; }
 
+    [JsonIgnore]
+    public bool IsEnrolled => Registered &&
+                              !string.IsNullOrWhiteSpace(DeviceId) &&
+                              Guid.TryParse(DeviceId, out var gid) && gid != Guid.Empty &&
+                              !string.IsNullOrWhiteSpace(DeviceToken);
+
+    [JsonIgnore]
+    public bool IsLegacySchema => string.IsNullOrWhiteSpace(DeviceId) ||
+                                  string.IsNullOrWhiteSpace(DeviceToken) ||
+                                  !Registered;
+
     public bool IsValid()
     {
         return !string.IsNullOrWhiteSpace(ServerUrl) &&
                !string.IsNullOrWhiteSpace(DeviceName) &&
-               Registered;
+               IsEnrolled;
     }
 }

@@ -105,4 +105,99 @@ public sealed class ServiceConfigResolver
             "Resolved backend URL: {BackendUrl} (source: {Source})",
             ResolvedUrl, Source);
     }
+
+    /// <summary>
+    /// Reads config.json dynamically if present, falling back to environment, appsettings, or compiled default.
+    /// Safe to call concurrently at any point during service lifetime.
+    /// </summary>
+    public static string ResolveCurrentServerUrl(string? configPath = null, string? appsettingsUrl = null)
+    {
+        var path = configPath ?? Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+            "Spemcs", "Endpoint Agent", "config.json");
+
+        string? configUrl = null;
+        if (File.Exists(path))
+        {
+            try
+            {
+                using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+                using var doc = System.Text.Json.JsonDocument.Parse(fs);
+                if (doc.RootElement.TryGetProperty("serverUrl", out var sProp) &&
+                    !string.IsNullOrWhiteSpace(sProp.GetString()))
+                {
+                    configUrl = sProp.GetString();
+                }
+            }
+            catch { }
+        }
+
+        var envUrl = Environment.GetEnvironmentVariable("SPEMCS_BACKEND_URL");
+        return Resolve(configUrl, envUrl, appsettingsUrl).ResolvedUrl;
+    }
 }
+
+/// <summary>
+/// DelegatingHandler that dynamically resolves the configured backend server URL for outgoing requests.
+/// Allows services to adapt immediately when config.json is populated after enrollment without requiring a service restart.
+/// </summary>
+public sealed class DynamicBackendAddressHandler : DelegatingHandler
+{
+    private readonly string? _customConfigPath;
+    private readonly string? _initialBackendUrl;
+
+    public DynamicBackendAddressHandler(string? customConfigPath = null, string? initialBackendUrl = null)
+    {
+        _customConfigPath = customConfigPath;
+        _initialBackendUrl = initialBackendUrl;
+    }
+
+    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    {
+        if (request.RequestUri != null)
+        {
+            var currentTargetUrl = ServiceConfigResolver.ResolveCurrentServerUrl(_customConfigPath);
+            if (Uri.TryCreate(currentTargetUrl, UriKind.Absolute, out var targetBaseUri))
+            {
+                if (!request.RequestUri.IsAbsoluteUri)
+                {
+                    request.RequestUri = new Uri(targetBaseUri, request.RequestUri);
+                }
+                else
+                {
+                    var currentUri = request.RequestUri;
+                    bool isLoopback = false;
+                    if (currentUri.HostNameType == UriHostNameType.Dns && currentUri.Host.Equals("localhost", StringComparison.OrdinalIgnoreCase))
+                    {
+                        isLoopback = true;
+                    }
+                    else if (System.Net.IPAddress.TryParse(currentUri.Host, out var ip) && System.Net.IPAddress.IsLoopback(ip))
+                    {
+                        isLoopback = true;
+                    }
+
+                    bool matchesInitial = _initialBackendUrl != null
+                        && Uri.TryCreate(_initialBackendUrl, UriKind.Absolute, out var initUri)
+                        && currentUri.Host.Equals(initUri.Host, StringComparison.OrdinalIgnoreCase)
+                        && currentUri.Port == initUri.Port;
+
+                    bool matchesTarget = currentUri.Host.Equals(targetBaseUri.Host, StringComparison.OrdinalIgnoreCase);
+
+                    if (isLoopback || matchesInitial || matchesTarget)
+                    {
+                        var builder = new UriBuilder(currentUri)
+                        {
+                            Scheme = targetBaseUri.Scheme,
+                            Host = targetBaseUri.Host,
+                            Port = targetBaseUri.Port
+                        };
+                        request.RequestUri = builder.Uri;
+                    }
+                }
+            }
+        }
+
+        return base.SendAsync(request, cancellationToken);
+    }
+}
+

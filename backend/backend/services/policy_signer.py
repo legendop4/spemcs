@@ -228,7 +228,16 @@ def create_canonical_payload(
     """
     def _format_utc(dt: datetime | str) -> str:
         if isinstance(dt, str):
-            return dt
+            s = dt.strip()
+            if s.endswith("Z"):
+                s = s[:-1] + "+00:00"
+            try:
+                parsed = datetime.fromisoformat(s)
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=timezone.utc)
+                return parsed.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            except Exception:
+                return dt
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
         return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")

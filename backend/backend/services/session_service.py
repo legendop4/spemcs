@@ -20,6 +20,7 @@ def start_session(
     device_id: UUID,
     exam_id: UUID,
     session_id: Optional[UUID] = None,
+    student_roll_number: Optional[str] = None,
 ) -> ExamSession:
     """Create a new exam session for a device.
     Validates that the device is assigned to the exam and the exam is active."""
@@ -52,33 +53,60 @@ def start_session(
         db.add(exam_device)
         db.commit()
     
-    # Check for existing active session on this device for this exam
-    existing = (
+    # Enforce single active session invariant per device with idempotent lifecycle handling:
+    # 1. Query any active sessions currently recorded for this device
+    active_device_sessions = (
         db.query(ExamSession)
         .filter(
             ExamSession.device_id == device_id,
-            ExamSession.exam_id == exam_id,
             ExamSession.status == "active",
         )
-        .first()
+        .all()
     )
-    if existing:
-        logger.info(f"Returning existing active session {existing.session_id}")
-        return existing
+
+    for active_sess in active_device_sessions:
+        if active_sess.exam_id == exam_id:
+            # Rule 2: Existing session belongs to the SAME active exam -> reuse it idempotently
+            logger.info(f"Reusing existing active session {active_sess.session_id} for exam {exam_id} on device {device_id}")
+            if student_roll_number and (active_sess.student_roll_number == "PENDING" or not active_sess.student_roll_number):
+                active_sess.student_roll_number = student_roll_number.strip()
+                db.commit()
+                db.refresh(active_sess)
+            return active_sess
+        else:
+            # Session belongs to a DIFFERENT exam. Check whether the other exam has ended/stopped
+            other_exam = db.query(Exam).filter(Exam.exam_id == active_sess.exam_id).first()
+            if not other_exam or other_exam.status in (ExamStatus.STOPPED.value, ExamStatus.COMPLETED.value):
+                # Rule 3: Belongs to an ENDED/DEACTIVATED/FAILED exam -> safely reconcile to terminal status
+                logger.info(
+                    f"Reconciling stale active session {active_sess.session_id} on device {device_id} from ended exam {active_sess.exam_id}"
+                )
+                active_sess.status = "completed"
+                active_sess.ended_at = datetime.utcnow()
+                db.commit()
+            elif other_exam.status == ExamStatus.ACTIVE.value:
+                # Rule 4: Genuinely active in another ongoing exam -> keep safety block and report real conflict
+                dev_obj = db.query(Device).filter(Device.device_id == device_id).first()
+                dev_name = dev_obj.device_name if dev_obj else str(device_id)
+                raise ValueError(
+                    f"Device '{dev_name}' already has an active exam session ({active_sess.session_id}) "
+                    f"in active exam '{other_exam.exam_name}'"
+                )
     
     # Create session
+    roll = student_roll_number.strip() if student_roll_number and student_roll_number.strip() else "PENDING"
     session = ExamSession(
         session_id=session_id or uuid.uuid4(),
         exam_id=exam_id,
         device_id=device_id,
-        student_roll_number="PENDING",  # Will be set on verify
+        student_roll_number=roll,
         status="active",
     )
     db.add(session)
     db.commit()
     db.refresh(session)
     
-    logger.info(f"Session started: {session.session_id} (exam={exam_id}, device={device_id})")
+    logger.info(f"Session started: {session.session_id} (exam={exam_id}, device={device_id}, roll={roll})")
     return session
 
 

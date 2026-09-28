@@ -132,16 +132,26 @@ public sealed class EnforcementStateMachine : IEnforcementStateMachine
             // -----------------------------------------------------------------
             if (_state == EnforcementState.Active && _currentSession is not null)
             {
-                if (_currentSession.SessionId == sessionId && _currentSession.ExamId == expectedExamId)
+                if (_currentSession.SessionId == sessionId)
                 {
                     _logger.LogInformation("Idempotent activation: Session {SessionId} is already ACTIVE.", sessionId);
                     return new EnforcementActivationResult(true, sessionId, EnforcementState.Active);
                 }
 
-                _logger.LogWarning("Activation rejected: conflicting active session {ActiveSession} already in progress.",
-                    _currentSession.SessionId);
-                return new EnforcementActivationResult(false, sessionId, _state,
-                    $"Another session '{_currentSession.SessionId}' is already active.");
+                var nowUtc = currentTimeUtc ?? DateTimeOffset.UtcNow;
+                if (nowUtc >= _currentSession.ExpiresAtUtc)
+                {
+                    _logger.LogWarning("Existing session {ExistingSession} for Exam {ExamId} has expired. Performing automatic rollback before new activation.",
+                        _currentSession.SessionId, _currentSession.ExamId);
+                    await DeactivateCoreAsync(_currentSession.SessionId, "Expired session automatically cleaned up", cancellationToken).ConfigureAwait(false);
+                }
+                else
+                {
+                    _logger.LogWarning("Activation rejected: conflicting active session {ActiveSession} already in progress.",
+                        _currentSession.SessionId);
+                    return new EnforcementActivationResult(false, sessionId, _state,
+                        $"Another session '{_currentSession.SessionId}' is already active.");
+                }
             }
 
             // Transition: POLICY_PENDING
@@ -282,6 +292,58 @@ public sealed class EnforcementStateMachine : IEnforcementStateMachine
             }
 
             // -----------------------------------------------------------------
+            // Precondition 5: Validate Active Firewall Profiles are Enabled (Phase 5 Health Check)
+            // -----------------------------------------------------------------
+            var preEnforcementBaseline = _firewall.GetBaseline();
+            var profilesToCheck = (preEnforcementBaseline.ActiveProfiles != FirewallProfiles.None)
+                ? (targetProfiles & preEnforcementBaseline.ActiveProfiles)
+                : targetProfiles;
+
+            if (profilesToCheck == FirewallProfiles.None)
+            {
+                profilesToCheck = targetProfiles;
+            }
+
+            if (!_firewall.IsProfileEnabled(profilesToCheck))
+            {
+                var profileError = $"Windows Firewall profile(s) are disabled on this endpoint ({profilesToCheck}); network lockdown cannot enforce packet filtering.";
+                _logger.LogError("Activation aborted: {Error}", profileError);
+                _approvedBrowser?.ReleaseSignedPolicy(sessionId);
+                _state = EnforcementState.Failed;
+                _journal.SaveEnforcementState(new DurableEnforcementRecord(
+                    SessionId: sessionId,
+                    ExamId: expectedExamId,
+                    PolicyId: policy.PolicyId,
+                    PolicyVersion: policy.Version,
+                    State: EnforcementState.Failed,
+                    ActivationUtc: DateTimeOffset.UtcNow,
+                    ExpiresAtUtc: DateTimeOffset.UtcNow,
+                    LastTransitionUtc: DateTimeOffset.UtcNow,
+                    FailureReason: profileError
+                ));
+                return new EnforcementActivationResult(false, sessionId, EnforcementState.Failed, profileError);
+            }
+
+            // -----------------------------------------------------------------
+            // Precondition 6: Enforce Machine-Wide Browser DNS Policy (BuiltInDnsClientEnabled=0, DnsOverHttpsMode="off")
+            // -----------------------------------------------------------------
+            try
+            {
+                if (BrowserPolicyEnforcer.DisableSecureDns(out var dnsPolicyStatus))
+                {
+                    _logger.LogInformation("Machine-wide browser Secure DNS policy enforced: {Status}", dnsPolicyStatus);
+                }
+                else
+                {
+                    _logger.LogWarning("Machine-wide browser Secure DNS policy warning: {Status}", dnsPolicyStatus);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to apply machine-wide browser Secure DNS policy before activation.");
+            }
+
+            // -----------------------------------------------------------------
             // Step 3: Persist Activation Intent (PREPARING)
             // -----------------------------------------------------------------
             _state = EnforcementState.Preparing;
@@ -381,59 +443,87 @@ public sealed class EnforcementStateMachine : IEnforcementStateMachine
         await _gate.WaitAsync(cancellationToken);
         try
         {
-            _logger.LogInformation("Deactivation requested for Session: {SessionId}, Reason: {Reason}", sessionId, reason);
-
-            _state = EnforcementState.Stopping;
-            _journal.UpdateEnforcementState(sessionId, EnforcementState.Stopping);
-
-            _state = EnforcementState.RollingBack;
-            _journal.UpdateEnforcementState(sessionId, EnforcementState.RollingBack);
-
-            var rollbackResult = await _enforcer.RemoveEnforcementAsync(sessionId, cancellationToken);
-
-            if (rollbackResult.ConflictDetected)
-            {
-                _logger.LogWarning("Deactivation detected external administrative/GPO conflict.");
-                _state = EnforcementState.Conflict;
-                _journal.UpdateEnforcementState(sessionId, EnforcementState.Conflict,
-                    failureReason: "External configuration conflict detected during rollback.",
-                    conflictDetected: true);
-
-                // Released even though rollback did not fully complete. The exam is over either way,
-                // and holding the binding would only prevent the NEXT session from starting; the
-                // conflict itself is recorded durably for an operator to act on.
-                ReleaseApprovedBrowserBinding(sessionId, "deactivation hit an external configuration conflict");
-
-                return new EnforcementDeactivationResult(
-                    Success: false,
-                    SessionId: sessionId,
-                    State: EnforcementState.Conflict,
-                    RollbackCompleted: false,
-                    ConflictDetected: true,
-                    FailureReason: rollbackResult.ErrorMessage
-                );
-            }
-
-            _state = EnforcementState.RolledBack;
-            _journal.UpdateEnforcementState(sessionId, EnforcementState.RolledBack, rollbackCompleted: true);
-
-            _state = EnforcementState.Idle;
-            _currentSession = null;
-            ReleaseApprovedBrowserBinding(sessionId, reason);
-
-            _logger.LogInformation("Deactivation complete. Endpoint returned to IDLE for Session: {SessionId}", sessionId);
-            return new EnforcementDeactivationResult(
-                Success: true,
-                SessionId: sessionId,
-                State: EnforcementState.Idle,
-                RollbackCompleted: true,
-                ConflictDetected: false
-            );
+            return await DeactivateCoreAsync(sessionId, reason, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
             _gate.Release();
         }
+    }
+
+    private async Task<EnforcementDeactivationResult> DeactivateCoreAsync(
+        Guid sessionId,
+        string reason,
+        CancellationToken cancellationToken)
+    {
+        _logger.LogInformation("Deactivation requested for Session: {SessionId}, Reason: {Reason}", sessionId, reason);
+
+        _state = EnforcementState.Stopping;
+        _journal.UpdateEnforcementState(sessionId, EnforcementState.Stopping);
+
+        _state = EnforcementState.RollingBack;
+        _journal.UpdateEnforcementState(sessionId, EnforcementState.RollingBack);
+
+        var rollbackResult = await _enforcer.RemoveEnforcementAsync(sessionId, cancellationToken);
+
+        if (rollbackResult.ConflictDetected)
+        {
+            _logger.LogWarning("Deactivation detected external administrative/GPO conflict: {Error}", rollbackResult.ErrorMessage);
+            _state = EnforcementState.Conflict;
+            _journal.UpdateEnforcementState(sessionId, EnforcementState.Conflict,
+                failureReason: rollbackResult.ErrorMessage ?? "External configuration conflict detected during rollback.",
+                conflictDetected: true);
+
+            // Released even though rollback did not fully complete. The exam is over either way,
+            // and holding the binding would only prevent the NEXT session from starting; the
+            // conflict itself is recorded durably for an operator to act on.
+            ReleaseApprovedBrowserBinding(sessionId, "deactivation hit an external configuration conflict");
+
+            return new EnforcementDeactivationResult(
+                Success: false,
+                SessionId: sessionId,
+                State: EnforcementState.Conflict,
+                RollbackCompleted: false,
+                ConflictDetected: true,
+                FailureReason: rollbackResult.ErrorMessage
+            );
+        }
+
+        if (!rollbackResult.Success)
+        {
+            _logger.LogError("Deactivation rollback failed for Session: {SessionId}: {Error}", sessionId, rollbackResult.ErrorMessage);
+            _state = EnforcementState.Failed;
+            _journal.UpdateEnforcementState(sessionId, EnforcementState.Failed,
+                failureReason: rollbackResult.ErrorMessage ?? "Rollback failed to restore baseline or remove all attributable rules.",
+                rollbackCompleted: false);
+
+            ReleaseApprovedBrowserBinding(sessionId, "deactivation rollback failed");
+
+            return new EnforcementDeactivationResult(
+                Success: false,
+                SessionId: sessionId,
+                State: EnforcementState.Failed,
+                RollbackCompleted: false,
+                ConflictDetected: false,
+                FailureReason: rollbackResult.ErrorMessage
+            );
+        }
+
+        _state = EnforcementState.RolledBack;
+        _journal.UpdateEnforcementState(sessionId, EnforcementState.RolledBack, rollbackCompleted: true);
+
+        _state = EnforcementState.Idle;
+        _currentSession = null;
+        ReleaseApprovedBrowserBinding(sessionId, reason);
+
+        _logger.LogInformation("Deactivation complete. Endpoint returned to IDLE for Session: {SessionId}", sessionId);
+        return new EnforcementDeactivationResult(
+            Success: true,
+            SessionId: sessionId,
+            State: EnforcementState.Idle,
+            RollbackCompleted: true,
+            ConflictDetected: false
+        );
     }
 
     public async Task CheckExpiryAsync(DateTimeOffset? currentTimeUtc = null, CancellationToken cancellationToken = default)

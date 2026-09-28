@@ -14,7 +14,7 @@ from backend.models.exam import Exam, ExamDevice
 from backend.models.alert import Alert
 from backend.models.session import ExamSession
 from backend.schemas.exam import ExamCreate, ExamRead, ExamUpdate
-from backend.services import enforcement_readiness, exam_service, realtime_service
+from backend.services import device_policy_state_service as dps, enforcement_readiness, exam_service, realtime_service
 from backend.services.auth_service import require_role
 
 logger = logging.getLogger(__name__)
@@ -123,12 +123,17 @@ def get_exam(
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
-def create_exam(
+async def create_exam(
     payload: ExamCreate,
     db: Session = Depends(get_db),
     _user=Depends(require_role(["admin"])),
 ):
-    """Create an exam with optional device assignments."""
+    """Create an exam with optional device assignments.
+    
+    If network enforcement is enabled with a vendor profile, automatically compiles,
+    signs, and distributes the policy to online assigned workstations to complete
+    the activation readiness workflow without manual intervention.
+    """
     exam = exam_service.create_exam(
         db=db,
         exam_name=payload.exam_name,
@@ -138,6 +143,46 @@ def create_exam(
         network_enforcement=payload.network_enforcement,
         vendor_profile_id=payload.vendor_profile_id,
     )
+
+    if exam.network_enforcement and exam.vendor_profile_id:
+        try:
+            from datetime import datetime, timedelta, timezone
+            from backend.app.config import settings
+            from backend.models.device import Device
+            from backend.services import policy_service
+            from backend.services.signing_key_manager import get_signing_key_manager
+            from backend.websocket.manager import realtime_manager
+            from backend.services.canonical_json import canonicalize
+
+            now = datetime.now(timezone.utc)
+            signer = get_signing_key_manager().active_signer()
+            policy = policy_service.compile_and_persist_exam_policy(
+                db=db,
+                exam_id=exam.exam_id,
+                version=1,
+                management_server=settings.get_management_server_dict(),
+                not_before=now - timedelta(minutes=5),
+                expires_at=now + timedelta(hours=8),
+                signer=signer,
+                vendor_profile_id=exam.vendor_profile_id,
+                approved_browser=exam.approved_browser,
+            )
+
+            # Initialize device policy states for assigned devices as PENDING distribution
+            if payload.device_ids:
+                assigned_devs = db.query(Device).filter(Device.device_id.in_(payload.device_ids)).all()
+                for dev in assigned_devs:
+                    dps.record_state(
+                        db,
+                        exam_id=exam.exam_id,
+                        device_id=dev.device_id,
+                        policy_id=policy.policy_id,
+                        status=dps.STATUS_PENDING,
+                        last_error="Pending policy distribution",
+                    )
+        except Exception as e:
+            logger.warning("Automatic policy compilation/distribution for exam %s deferred: %s", exam.exam_id, e)
+
     return _enrich_exam(db, exam)
 
 
@@ -167,6 +212,17 @@ def delete_exam(
     exam = db.get(Exam, exam_id)
     if exam is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Exam not found")
+    from backend.models.report import Report
+    from backend.models.policy import DevicePolicyState, NetworkPolicy
+    from backend.models.session import ExamSession
+    from backend.models.alert import Alert
+    from backend.models.exam import ExamDevice
+    db.query(Report).filter(Report.exam_id == exam_id).delete()
+    db.query(DevicePolicyState).filter(DevicePolicyState.exam_id == exam_id).delete()
+    db.query(NetworkPolicy).filter(NetworkPolicy.exam_id == exam_id).delete()
+    db.query(Alert).filter(Alert.exam_id == exam_id).delete()
+    db.query(ExamSession).filter(ExamSession.exam_id == exam_id).delete()
+    db.query(ExamDevice).filter(ExamDevice.exam_id == exam_id).delete()
     db.delete(exam)
     db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -214,6 +270,18 @@ async def activate_exam(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Exam not found")
 
     readiness = enforcement_readiness.evaluate_exam_readiness(db, exam)
+    if not readiness.ready and bool(getattr(exam, "network_enforcement", False)):
+        states = dps.get_states_for_exam(db, exam_id)
+        has_applying = any(s.status == dps.STATUS_APPLYING for s in states)
+        if has_applying:
+            import asyncio
+            for _ in range(10):
+                await asyncio.sleep(0.3)
+                db.expire_all()
+                readiness = enforcement_readiness.evaluate_exam_readiness(db, exam)
+                if readiness.ready:
+                    break
+
     if not readiness.ready:
         detail = readiness.to_dict()
         detail["unarmed_devices"] = enforcement_readiness.describe_unarmed_devices(db, readiness)

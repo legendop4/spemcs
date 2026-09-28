@@ -11,6 +11,7 @@ interface ConfirmDialogProps {
   confirmLabel?: string;
   cancelLabel?: string;
   danger?: boolean;
+  variant?: 'danger' | 'primary' | string;
 }
 
 export function ConfirmDialog({
@@ -22,7 +23,9 @@ export function ConfirmDialog({
   confirmLabel = 'Confirm',
   cancelLabel = 'Cancel',
   danger = true,
+  variant,
 }: ConfirmDialogProps) {
+  const isDanger = variant ? variant === 'danger' : danger;
   return (
     <Modal
       open={open}
@@ -35,7 +38,7 @@ export function ConfirmDialog({
             {cancelLabel}
           </Button>
           <Button
-            variant={danger ? 'danger' : 'primary'}
+            variant={isDanger ? 'danger' : 'primary'}
             onClick={() => {
               onConfirm();
               onClose();

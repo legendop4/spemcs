@@ -300,7 +300,7 @@ def test_revision_history_is_linear_and_head_is_reachable():
     heads = script.get_heads()
 
     assert len(heads) == 1, f"Expected a single head, found: {heads}"
-    assert [r.revision for r in script.walk_revisions()] == ["0002", "0001"]
+    assert [r.revision for r in script.walk_revisions()] == ["0003", "0002", "0001"]
 
 
 def test_alembic_ini_carries_no_database_url():

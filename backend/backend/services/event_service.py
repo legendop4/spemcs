@@ -79,15 +79,17 @@ def ingest_event(
 
     # Check if this is a security violation event (tab switch, window switch, focus loss, unapproved app)
     ev_upper = (event_type or "").upper()
-    is_violation = any(kw in ev_upper for kw in [
+    reason_upper = (reason or "").upper()
+    is_violation = any(kw in ev_upper or kw in reason_upper for kw in [
         "BLOCKED", "AGENT_STOPPED", "DISCONNECT", "TAB", "FOCUS", "WINDOW",
         "UNAUTHORIZED", "SUSPICIOUS", "PROHIBITED", "ANOMALY", "BURST", "EGRESS"
     ])
 
     if "windowserver" not in str(device_name).lower():
         proc_lower = (process_name or "").lower()
+        reason_lower = (reason or "").lower()
         # For remote lab PCs, we also flag remote desktop and AI assistant tools
-        is_prohibited = any(kw in proc_lower for kw in [
+        is_prohibited = any(kw in proc_lower or kw in reason_lower for kw in [
             "dwagent", "dwagsvc", "dwrcs", "anydesk", "teamviewer", "rustdesk",
             "ultraviewer", "parsec", "splashtop", "ammyy", "supremo", "vnc", "screenconnect",
             "chatgpt", "claude", "codex", "copilot", "gemini", "discord", "telegram"

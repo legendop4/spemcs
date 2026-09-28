@@ -6,14 +6,18 @@ Exposes:
 - Cryptographic signing & verification layer
 """
 
+import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
+import ipaddress
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from backend.models.exam import Exam
+from backend.models.device import Device
+from backend.models.exam import Exam, ExamDevice
 from backend.models.policy import NetworkPolicy, VendorProfile
 from backend.schemas.policy import VendorProfileCreate, VendorProfileUpdate
 
@@ -60,6 +64,8 @@ from .policy_signer import (
     load_public_key_pem,
     normalize_approved_browser,
 )
+
+logger = logging.getLogger(__name__)
 
 # ==============================================================================
 # VendorProfile CRUD Operations
@@ -120,17 +126,30 @@ def delete_vendor_profile(db: Session, vendor_id: UUID) -> bool:
     return True
 
 
+def _is_loopback_ip(ip_str: str) -> bool:
+    """True if the given IP/hostname is loopback."""
+    if not ip_str:
+        return False
+    clean = ip_str.strip().lower()
+    if clean in ("127.0.0.1", "::1", "localhost"):
+        return True
+    try:
+        return ipaddress.ip_address(clean).is_loopback
+    except ValueError:
+        return False
+
+
 # ==============================================================================
 # Policy Compilation & Signing Service
 # ==============================================================================
 def compile_and_persist_exam_policy(
     db: Session,
     exam_id: UUID,
-    version: int,
-    management_server: Dict[str, Any],
-    not_before: datetime,
-    expires_at: datetime,
-    signer: PolicySigner,
+    version: Optional[int] = None,
+    management_server: Dict[str, Any] = None,
+    not_before: Optional[datetime] = None,
+    expires_at: Optional[datetime] = None,
+    signer: Any = None,
     vendor_profile_id: Optional[UUID] = None,
     resolved_destinations: Optional[List[Dict[str, Any]]] = None,
     approved_browser: Optional[str] = None,
@@ -158,6 +177,25 @@ def compile_and_persist_exam_policy(
     if not exam:
         raise PolicyCompilationError(f"Exam {exam_id} not found")
 
+    # 1b. Remote workstation check: if exam has remote devices assigned, loopback-only
+    # management server would cause endpoints to fail closed with ManagementUnreachable.
+    exam_devices = (
+        db.query(Device)
+        .join(ExamDevice, ExamDevice.device_id == Device.device_id)
+        .filter(ExamDevice.exam_id == exam_id)
+        .all()
+    )
+    has_remote_devices = any(
+        dev.registered_ip and not _is_loopback_ip(dev.registered_ip)
+        for dev in exam_devices
+    )
+    if has_remote_devices and management_server:
+        mgmt_ips = management_server.get("ip_addresses", [])
+        if mgmt_ips and all(_is_loopback_ip(ip) for ip in mgmt_ips):
+            raise PolicyCompilationError(
+                "Management server cannot be loopback (127.0.0.1) when exam contains remote workstations."
+            )
+
     # 2. Resolve VendorProfile
     vp = None
     target_vp_id = vendor_profile_id or exam.vendor_profile_id
@@ -173,6 +211,44 @@ def compile_and_persist_exam_policy(
         approved_browser if approved_browser is not None else exam.approved_browser
     )
 
+    # 2c. Resolve version and check idempotency
+    if version is None:
+        latest = get_latest_exam_policy(db, exam_id)
+        if latest is None:
+            target_version = 1
+        elif (
+            latest.vendor_profile_id == (vp.vendor_id if vp else None)
+            and latest.approved_browser == effective_browser
+        ):
+            logger.info(
+                "Reusing existing NetworkPolicy %s for exam %s version %d (idempotent)",
+                latest.policy_id, exam_id, latest.version,
+            )
+            return latest
+        else:
+            target_version = latest.version + 1
+    else:
+        target_version = version
+        existing_policy = (
+            db.query(NetworkPolicy)
+            .filter(NetworkPolicy.exam_id == exam_id, NetworkPolicy.version == target_version)
+            .first()
+        )
+        if existing_policy is not None:
+            if (
+                existing_policy.vendor_profile_id == (vp.vendor_id if vp else None)
+                and existing_policy.approved_browser == effective_browser
+            ):
+                logger.info(
+                    "Reusing existing NetworkPolicy %s for exam %s version %d (idempotent)",
+                    existing_policy.policy_id, exam_id, target_version,
+                )
+                return existing_policy
+            raise PolicyCompilationError(
+                f"Policy version {target_version} already exists for exam {exam_id} with different configuration. "
+                "Specify a new version to compile an updated policy."
+            )
+
     # 3. Generate new policy UUID
     policy_id = uuid.uuid4()
 
@@ -186,14 +262,17 @@ def compile_and_persist_exam_policy(
         requested_destinations=resolved_destinations,
     )
 
-    # 5. Compile Deterministic Policy Payload
+    # 5. Compile Deterministic Policy Payload (with 5-minute bounded clock-skew tolerance)
+    effective_not_before = not_before if not_before is not None else (datetime.now(timezone.utc) - timedelta(minutes=5))
+    effective_expires_at = expires_at if expires_at is not None else (effective_not_before + timedelta(hours=8))
+
     compiled_payload = compile_exam_policy(
         exam_id=exam_id,
-        version=version,
+        version=target_version,
         vendor_profile=vp,
         management_server=management_server,
-        not_before=not_before,
-        expires_at=expires_at,
+        not_before=effective_not_before,
+        expires_at=effective_expires_at,
         approved_browser=effective_browser,
         policy_id=policy_id,
         allowed_destinations=allowed_destinations,
@@ -210,20 +289,36 @@ def compile_and_persist_exam_policy(
     net_policy = NetworkPolicy(
         policy_id=policy_id,
         exam_id=exam_id,
-        version=version,
+        version=target_version,
         vendor_profile_id=vp.vendor_id if vp else None,
         approved_browser=compiled_payload["approved_browser"],
         allowed_destinations=compiled_payload["allowed_destinations"],
         management_server=compiled_payload["management_server"],
-        not_before=datetime.fromisoformat(compiled_payload["not_before"].replace("Z", "+00:00")),
-        expires_at=datetime.fromisoformat(compiled_payload["expires_at"].replace("Z", "+00:00")),
+        not_before=datetime.fromisoformat(compiled_payload["not_before"].replace("Z", "+00:00")).astimezone(timezone.utc).replace(tzinfo=None),
+        expires_at=datetime.fromisoformat(compiled_payload["expires_at"].replace("Z", "+00:00")).astimezone(timezone.utc).replace(tzinfo=None),
         key_id=compiled_payload["key_id"],
         schema_version=compiled_payload["schema_version"],
         signature=signature_b64,
     )
     db.add(net_policy)
-    db.commit()
-    db.refresh(net_policy)
+    try:
+        db.commit()
+        db.refresh(net_policy)
+        return net_policy
+    except IntegrityError:
+        db.rollback()
+        concurrent_policy = (
+            db.query(NetworkPolicy)
+            .filter(NetworkPolicy.exam_id == exam_id, NetworkPolicy.version == target_version)
+            .first()
+        )
+        if concurrent_policy:
+            logger.info(
+                "Concurrent insert detected; reusing existing NetworkPolicy %s for exam %s",
+                concurrent_policy.policy_id, exam_id,
+            )
+            return concurrent_policy
+        raise
 
     return net_policy
 

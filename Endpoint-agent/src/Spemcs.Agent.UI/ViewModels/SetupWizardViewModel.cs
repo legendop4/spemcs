@@ -278,7 +278,9 @@ public class SetupWizardViewModel : ViewModelBase
                 return;
             }
 
-            // Persist configuration locally
+            MainWindow.LogUi($"[REGISTRATION_SUCCESS] enrolled=true, hasDeviceId={!string.IsNullOrWhiteSpace(res.DeviceId)}, hasToken={!string.IsNullOrWhiteSpace(res.DeviceToken)}, configPath={_configService.ConfigFilePath}, pid={Environment.ProcessId}");
+
+            var existingConfig = _configService.Load();
             var config = new AgentConfig
             {
                 ServerUrl = ServerUrl.Trim().TrimEnd('/'),
@@ -286,6 +288,8 @@ public class SetupWizardViewModel : ViewModelBase
                 DeviceName = res.DeviceName,
                 HardwareUuid = res.HardwareUuid ?? hwUuid,
                 DeviceToken = res.DeviceToken,
+                EnrollmentKey = !string.IsNullOrWhiteSpace(existingConfig?.EnrollmentKey) ? existingConfig.EnrollmentKey : enrollmentKey,
+                ApprovedBrowser = existingConfig?.ApprovedBrowser,
                 LabId = SelectedLab.LabId.ToString(),
                 LabCode = SelectedLab.BuildingId,
                 LabName = SelectedLab.LabName,

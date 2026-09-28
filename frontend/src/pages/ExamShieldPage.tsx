@@ -19,6 +19,7 @@ import {
   CheckCircle2,
   Cpu,
 } from 'lucide-react';
+import { ExamWizardModal } from '@/components/ui/ExamWizardModal';
 import * as api from '@/services/api';
 
 export function ExamShieldPage() {
@@ -39,6 +40,7 @@ export function ExamShieldPage() {
   // Launch progression states
   const [launchingId, setLaunchingId] = useState<string | null>(null);
   const [launchStatus, setLaunchStatus] = useState<Record<string, string>>({});
+  const [wizardModalOpen, setWizardModalOpen] = useState(false);
 
   // Create exam modal
   const [createModalOpen, setCreateModalOpen] = useState(false);
@@ -184,6 +186,22 @@ export function ExamShieldPage() {
         } else if (successCount > 0) {
           showToast(`Policy distributed to ${successCount} online device(s)`, 'info');
         }
+
+        // Bounded polling for endpoint enforcement acknowledgement
+        if (successCount > 0) {
+          setLaunchStatus(prev => ({ ...prev, [examId]: 'Waiting for workstations to enforce policy...' }));
+          for (let attempt = 0; attempt < 12; attempt++) {
+            await new Promise(resolve => setTimeout(resolve, 500));
+            try {
+              const readiness = await api.getExamEnforcementReadiness(examId);
+              if (readiness?.ready) {
+                break;
+              }
+            } catch {
+              // Non-fatal poll error, proceed to final activate gate
+            }
+          }
+        }
       }
 
       // Step 4: Activate exam (sends LAUNCH_EXAM_MODE).
@@ -287,9 +305,14 @@ export function ExamShieldPage() {
   return (
     <div className="page-container" style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
       <PageHeader title="EXAM SHIELD" description="Configure secure exam policies, launch proctoring sessions, and assign endpoints.">
-        <Button onClick={() => setCreateModalOpen(true)}>
-          <Plus size={16} /> New Exam
-        </Button>
+        <div style={{ display: 'flex', gap: '8px' }}>
+          <Button variant="outline" onClick={() => setWizardModalOpen(true)}>
+            <ShieldCheck size={16} /> Launch Exam Wizard
+          </Button>
+          <Button onClick={() => setCreateModalOpen(true)}>
+            <Plus size={16} /> Quick Create
+          </Button>
+        </div>
       </PageHeader>
 
       {loading ? (
@@ -628,6 +651,15 @@ export function ExamShieldPage() {
           </div>
         </form>
       </Modal>
+
+      <ExamWizardModal
+        open={wizardModalOpen}
+        onClose={() => setWizardModalOpen(false)}
+        onExamActivated={(examId) => {
+          setWizardModalOpen(false);
+          navigate(`/exams/${examId}`);
+        }}
+      />
     </div>
   );
 }

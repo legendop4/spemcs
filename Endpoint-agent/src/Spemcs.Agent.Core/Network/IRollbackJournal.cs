@@ -76,4 +76,10 @@ public interface IRollbackJournal
 
     /// <summary>Retrieves all persisted revoked key IDs.</summary>
     IReadOnlySet<string> GetRevokedKeys();
+
+    /// <summary>Persists the authoritative clean baseline captured when the host is in a verified clean state.</summary>
+    void SaveAuthoritativeCleanBaseline(FirewallProfileBaseline baseline, DateTimeOffset verifiedUtc);
+
+    /// <summary>Retrieves the last known authoritative clean baseline, if one has been verified and saved.</summary>
+    FirewallProfileBaseline? GetLastKnownCleanBaseline();
 }

@@ -11,6 +11,9 @@ from sqlalchemy import text
 
 from backend.app.config import settings, validate_production_secrets
 from backend.app.database import engine
+from backend.app.windows_asyncio_fix import install_windows_asyncio_fix
+
+install_windows_asyncio_fix()
 
 # Configure file + console logging
 log_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'logs'))
@@ -42,6 +45,12 @@ async def lifespan(app: FastAPI):
     try:
         with engine.connect() as conn:
             row = conn.execute(text("SELECT current_database(), current_schema();")).fetchone()
+            from urllib.parse import urlparse
+            _parsed = urlparse(settings.DATABASE_URL)
+            _db_host = _parsed.hostname or "127.0.0.1"
+            _db_port = _parsed.port or 5432
+            _db_name = row[0] if row else "unknown"
+            logger.info("DATABASE_HOST=%s DATABASE_PORT=%s DATABASE_NAME=%s", _db_host, _db_port, _db_name)
             logger.info(f"Connected to database={row[0]}, schema={row[1]}")
     except Exception as exc:
         logger.exception("Failed to connect to PostgreSQL database")
@@ -181,6 +190,7 @@ app.include_router(policies_router)
 
 from backend.routes.deployment import router as deployment_router
 app.include_router(deployment_router)
+app.include_router(deployment_router, prefix="/api")
 
 # WebSocket endpoints
 from backend.websocket.agent_ws import router as agent_ws_router

@@ -50,6 +50,7 @@ public sealed class ControlPipeWorker : BackgroundService
     /// <summary>Serializes keyring refreshes so concurrent applies cause one fetch, not N.</summary>
     private readonly SemaphoreSlim _keyStoreGate = new(1, 1);
 
+    private readonly IKeyringSyncService? _keyringSync;
     private bool _revocationsLoadedFromJournal;
     private bool _keyStoreHasKeys;
     private DateTimeOffset _lastKeyringFetchUtc = DateTimeOffset.MinValue;
@@ -60,7 +61,8 @@ public sealed class ControlPipeWorker : BackgroundService
         IEnforcementStateMachine enforcement,
         ITrustedKeyStore keyStore,
         IRollbackJournal journal,
-        IHttpClientFactory httpFactory)
+        IHttpClientFactory httpFactory,
+        IKeyringSyncService? keyringSync = null)
     {
         _log = log;
         _agent = agent;
@@ -68,6 +70,7 @@ public sealed class ControlPipeWorker : BackgroundService
         _keyStore = keyStore;
         _journal = journal;
         _httpFactory = httpFactory;
+        _keyringSync = keyringSync;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -81,8 +84,29 @@ public sealed class ControlPipeWorker : BackgroundService
         LoadPersistedRevocations();
 
         // The keyring fetch is network I/O and must not delay the control pipe becoming
-        // available. Anything that actually needs a key awaits EnsureKeyStoreInitializedAsync.
-        _ = EnsureKeyStoreInitializedAsync(stoppingToken);
+        // available. Start a background retry loop with exponential backoff until keys are loaded.
+        _ = Task.Run(async () =>
+        {
+            var backoff = 2;
+            while (!stoppingToken.IsCancellationRequested)
+            {
+                try
+                {
+                    await EnsureKeyStoreInitializedAsync(stoppingToken).ConfigureAwait(false);
+                    if (_keyringSync?.HasKeys == true || _keyStore.GetActiveKeyIds().Count > 0)
+                    {
+                        break;
+                    }
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    _log.LogDebug("Background keyring fetch retry failed: {Message}", ex.Message);
+                }
+
+                await Task.Delay(TimeSpan.FromSeconds(backoff), stoppingToken).ConfigureAwait(false);
+                backoff = Math.Min(backoff * 2, 30);
+            }
+        }, stoppingToken);
 
         while (!stoppingToken.IsCancellationRequested)
         {
@@ -226,6 +250,22 @@ public sealed class ControlPipeWorker : BackgroundService
                         break;
                     }
 
+                    case MessageTypes.GetDiagnosticStatus:
+                    {
+                        var status = _agent.GetDiagnosticStatus();
+                        var payload = new DiagnosticStatusPayload(
+                            status.NetworkMonitoringRunning,
+                            status.ProcessMonitoringRunning,
+                            status.EventUploaderRunning,
+                            status.WebSocketConnected,
+                            status.EnforcementActive,
+                            status.Summary);
+
+                        await PipeProtocol.WriteAsync(pipe, MessageTypes.DiagnosticStatusResult, payload, stoppingToken);
+                        _log.LogInformation("Replied to GET_DIAGNOSTIC_STATUS: {Summary}", status.Summary);
+                        break;
+                    }
+
                     default:
                     {
                         _log.LogWarning("Unrecognized request type: {Type}", request.Type);
@@ -256,6 +296,12 @@ public sealed class ControlPipeWorker : BackgroundService
     /// </remarks>
     private async Task EnsureKeyStoreInitializedAsync(CancellationToken ct)
     {
+        if (_keyringSync is not null)
+        {
+            await _keyringSync.EnsureKeyStoreInitializedAsync(ct).ConfigureAwait(false);
+            return;
+        }
+
         if (IsKeyringFresh())
         {
             return;

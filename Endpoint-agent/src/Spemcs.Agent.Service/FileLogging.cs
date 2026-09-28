@@ -39,7 +39,19 @@ internal sealed class RollingFileLogger : ILogger, IDisposable
         {
             _writer?.Dispose(); _path = path; var suffix = 0; var candidate = path;
             while (File.Exists(candidate) && new FileInfo(candidate).Length + incomingBytes > _maxBytes) candidate = Path.Combine(_directory, $"agent-{DateTime.UtcNow:yyyyMMdd}-{++suffix}.log");
-            _path = candidate; _writer = new StreamWriter(new FileStream(candidate, FileMode.Append, FileAccess.Write, FileShare.ReadWrite)) { AutoFlush = true };
+            while (true)
+            {
+                try
+                {
+                    _path = candidate;
+                    _writer = new StreamWriter(new FileStream(candidate, FileMode.Append, FileAccess.Write, FileShare.ReadWrite)) { AutoFlush = true };
+                    break;
+                }
+                catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
+                {
+                    candidate = Path.Combine(_directory, $"agent-{DateTime.UtcNow:yyyyMMdd}-{++suffix}.log");
+                }
+            }
         }
     }
     public void Dispose() { lock (s_gate) { _writer?.Dispose(); _writer = null; } }

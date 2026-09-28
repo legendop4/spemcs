@@ -79,6 +79,7 @@ POLICY_INVALID = "POLICY_INVALID"
 SIGNING_KEYS_UNAVAILABLE = "SIGNING_KEYS_UNAVAILABLE"
 NO_ASSIGNED_DEVICES = "NO_ASSIGNED_DEVICES"
 NO_ARMED_DEVICES = "NO_ARMED_DEVICES"
+UNARMED_DEVICES = "UNARMED_DEVICES"
 
 #: Not a refusal. The deployment is misconfigured in a way that will bite after the next restart,
 #: which is worth saying out loud at activation time without cancelling the exam in front of a
@@ -118,6 +119,18 @@ class EnforcementReadiness:
     def unarmed_device_ids(self) -> Set[UUID]:
         return self.assigned_device_ids - self.armed_device_ids
 
+    @property
+    def total_assigned_devices(self) -> int:
+        return len(self.assigned_device_ids)
+
+    @property
+    def enforcing_count(self) -> int:
+        return len(self.armed_device_ids)
+
+    @property
+    def armed_devices(self) -> int:
+        return len(self.armed_device_ids)
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "exam_id": str(self.exam_id),
@@ -129,6 +142,9 @@ class EnforcementReadiness:
             "policy_version": self.policy_version,
             "devices_assigned": len(self.assigned_device_ids),
             "devices_armed": len(self.armed_device_ids),
+            "total_assigned_devices": len(self.assigned_device_ids),
+            "enforcing_count": len(self.armed_device_ids),
+            "armed_devices": len(self.armed_device_ids),
         }
 
 
@@ -176,14 +192,35 @@ def evaluate_exam_readiness(
     else:
         problems.extend(_check_policy(policy, keys=keys, now=now, warnings=warnings))
 
-    # Armed devices are intersected with the assignment list rather than counted straight off
-    # device_policy_states: distribution is addressed by hardware UUID and does not itself check
-    # assignment, so a state row can exist for a workstation this exam never included.
-    armed_device_ids = {
-        state.device_id
+    # Strict invariant: a device is armed iff:
+    # 1. Assigned to this exam
+    # 2. State row exists for this exam
+    # 3. Policy matches the latest compiled policy_id
+    # 4. State status is STATUS_APPLIED (dps.is_armed)
+    # 5. Device is currently online in the Device table
+    devices = (
+        db.query(Device).filter(Device.device_id.in_(assigned_device_ids)).all()
+        if assigned_device_ids
+        else []
+    )
+    online_device_ids = {d.device_id for d in devices if d.status == "online"}
+    device_lookup = {d.device_id: d for d in devices}
+
+    states = {
+        state.device_id: state
         for state in dps.get_states_for_exam(db, exam.exam_id)
-        if dps.is_armed(state.status)
-    } & assigned_device_ids
+    }
+
+    armed_device_ids = {
+        dev_id
+        for dev_id in assigned_device_ids
+        if dev_id in states
+        and (policy_id is None or states[dev_id].policy_id == policy_id)
+        and dps.is_armed(states[dev_id].status)
+        and dev_id in online_device_ids
+    }
+
+    unarmed_device_ids = assigned_device_ids - armed_device_ids
 
     if not assigned_device_ids:
         problems.append(ReadinessProblem(
@@ -191,11 +228,80 @@ def evaluate_exam_readiness(
             "No devices are assigned to this exam, so there is nothing to enforce a policy on.",
         ))
     elif not armed_device_ids:
-        problems.append(ReadinessProblem(
-            NO_ARMED_DEVICES,
-            "The signed policy has not reached any assigned device. Distribute the policy to the "
-            "online workstations, then activate.",
-        ))
+        # If the policy itself is invalid (not yet valid, expired, etc.), that is the primary
+        # root cause blocking activation; avoid piling on a secondary NO_ARMED_DEVICES problem.
+        if not problems:
+            # Query assigned devices and their policy states to provide specific actionable diagnostic
+            offline_devs = [
+                device_lookup[d].device_name or str(d)
+                for d in assigned_device_ids
+                if d in device_lookup and d not in online_device_ids
+            ]
+            applying_devs = [
+                device_lookup[d].device_name or str(d)
+                for d in assigned_device_ids
+                if d in states and states[d].status == dps.STATUS_APPLYING and d in device_lookup
+            ]
+            pending_devs = [
+                device_lookup[d].device_name or str(d)
+                for d in assigned_device_ids
+                if (d not in states or states[d].status == dps.STATUS_PENDING) and d in device_lookup
+            ]
+            failed_devs = [
+                f"{device_lookup[d].device_name or str(d)} ({states[d].last_error or 'enforcement failed'})"
+                for d in assigned_device_ids
+                if d in states and states[d].status == dps.STATUS_FAILED and d in device_lookup
+            ]
+
+            if offline_devs and len(offline_devs) == len(assigned_device_ids):
+                msg = f"Assigned device is offline: {', '.join(offline_devs)}"
+            elif applying_devs and len(applying_devs) == len(assigned_device_ids):
+                msg = f"Policy received, waiting for enforcement: {', '.join(applying_devs)}"
+            elif pending_devs and len(pending_devs) == len(assigned_device_ids):
+                msg = f"Policy distribution pending for: {', '.join(pending_devs)}"
+            elif failed_devs:
+                msg = f"Enforcement failed on: {', '.join(failed_devs)}"
+            else:
+                msg = (
+                    "The signed policy has not reached any assigned device. Distribute the policy to the "
+                    "online workstations, then activate."
+                )
+
+            problems.append(ReadinessProblem(
+                NO_ARMED_DEVICES,
+                msg,
+            ))
+    elif unarmed_device_ids:
+        # Partial readiness: some devices are armed, but NOT ALL assigned devices are armed.
+        # Strict fail-closed invariant: 100% of assigned devices must be APPLIED and online.
+        if not problems:
+            unready_diagnostics = []
+            for uid in sorted(unarmed_device_ids, key=str):
+                dev = device_lookup.get(uid)
+                name = (dev.device_name if dev else None) or str(uid)
+                st = states.get(uid)
+                if uid not in online_device_ids:
+                    reason = "device offline"
+                elif not st:
+                    reason = "policy not distributed"
+                elif st.status == dps.STATUS_APPLYING:
+                    reason = "policy applying"
+                elif st.status == dps.STATUS_PENDING:
+                    reason = "distribution pending"
+                elif st.status == dps.STATUS_FAILED:
+                    reason = f"failed ({st.last_error or 'error'})"
+                elif policy_id and st.policy_id != policy_id:
+                    reason = "stale policy version"
+                else:
+                    reason = f"status {st.status}"
+                unready_diagnostics.append(f"{name} [{reason}]")
+
+            problems.append(ReadinessProblem(
+                UNARMED_DEVICES,
+                f"{len(unarmed_device_ids)} of {len(assigned_device_ids)} assigned device(s) are not ready: "
+                + ", ".join(unready_diagnostics)
+                + ". Every assigned workstation must be online and in APPLIED status before activation.",
+            ))
 
     return EnforcementReadiness(
         exam_id=exam.exam_id,
@@ -300,7 +406,7 @@ def _check_policy(
 
 
 def describe_unarmed_devices(db: Session, readiness: EnforcementReadiness) -> List[Dict[str, Any]]:
-    """Names for the assigned devices that are not enforcing, for the activation response.
+    """Names and statuses for the assigned devices that are not enforcing, for the activation response.
 
     Reported rather than silently dropped: an operator who launches an exam on 40 seats and gets
     38 needs the other two named, not a count.
@@ -309,16 +415,31 @@ def describe_unarmed_devices(db: Session, readiness: EnforcementReadiness) -> Li
     if not unarmed:
         return []
     devices = db.query(Device).filter(Device.device_id.in_(unarmed)).all()
-    known = {
-        d.device_id: {
+    states = {
+        state.device_id: state
+        for state in dps.get_states_for_exam(db, readiness.exam_id)
+    }
+    known = {}
+    for d in devices:
+        st = states.get(d.device_id)
+        known[d.device_id] = {
             "device_id": str(d.device_id),
             "device_name": d.device_name,
             "hardware_uuid": d.hardware_uuid,
+            "status": st.status if st else "PENDING",
+            "policy_status": st.status if st else "PENDING",
+            "last_error": st.last_error if st else ("Device is offline" if d.status != "online" else None),
+            "device_status": d.status,
         }
-        for d in devices
-    }
     return [
-        known.get(device_id, {"device_id": str(device_id), "device_name": None,
-                              "hardware_uuid": None})
+        known.get(device_id, {
+            "device_id": str(device_id),
+            "device_name": None,
+            "hardware_uuid": None,
+            "status": "PENDING",
+            "policy_status": "PENDING",
+            "last_error": None,
+            "device_status": "unknown",
+        })
         for device_id in sorted(unarmed, key=str)
     ]

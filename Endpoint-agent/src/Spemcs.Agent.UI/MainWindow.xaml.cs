@@ -10,11 +10,13 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.IO;
 using Spemcs.Agent.Core;
 using Spemcs.Agent.Core.Network;
 using Spemcs.Agent.Ipc;
 using Spemcs.Agent.UI.Models;
 using Spemcs.Agent.UI.Services;
+using Spemcs.Agent.UI.Views;
 
 namespace Spemcs.Agent.UI;
 
@@ -22,7 +24,6 @@ public partial class MainWindow : Window
 {
     private readonly string _backendUrl;
     private readonly HttpClient _http;
-    private readonly SqliteAgentStore _store;
     private readonly PreComplianceEngine _compliance;
     private readonly WindowsProcessSource _source;
     private readonly ConfigurableProcessClassifier _classifier;
@@ -36,13 +37,13 @@ public partial class MainWindow : Window
     /// </summary>
     private readonly ApprovedBrowserContext _approvedBrowser;
 
-    private ProcessMonitor? _monitor;
     private string _deviceName;
     private string _rollNumber = "2301921540174";
     private string _sessionId = Guid.NewGuid().ToString("N");
-    private CancellationTokenSource? _wsCts;
 
     private readonly IEnforcementServiceClient _enforcementService = new EnforcementServiceClient();
+    private CancellationTokenSource? _pipeCts;
+    private System.IO.Pipes.NamedPipeClientStream? _activePipeClient;
 
     public string DeviceName => _deviceName;
     public string RollNumber => RollNumberBox.Text.Trim();
@@ -75,8 +76,6 @@ public partial class MainWindow : Window
             Timeout = TimeSpan.FromSeconds(10)
         };
 
-        var dataDir = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "Spemcs");
-        _store = new SqliteAgentStore(dataDir);
         _source = new WindowsProcessSource();
 
         if (ApprovedBrowserFamilies.TryParse(_config.ApprovedBrowser, out var configuredFamily))
@@ -97,232 +96,250 @@ public partial class MainWindow : Window
         _classifier = new ConfigurableProcessClassifier(_approvedBrowser);
         _compliance = new PreComplianceEngine(_source, _classifier);
 
-        // Start persistent background WebSocket listener
-        StartWebSocketListener();
+        // Start background IPC pipe connection to Windows Service
+        StartAgentPipeListener();
+        StartUiSetupPipeListener();
     }
 
-    private void StartWebSocketListener()
+    private void StartUiSetupPipeListener()
     {
-        LogUi("StartWebSocketListener starting worker task.");
-        _wsCts?.Cancel();
-        _wsCts = new CancellationTokenSource();
-        _ = Task.Run(() => ConnectCentralWebSocketAsync(_wsCts.Token));
-    }
-
-    private async Task ConnectCentralWebSocketAsync(CancellationToken cancellationToken)
-    {
-        LogUi($"ConnectCentralWebSocketAsync starting. Backend: {_backendUrl}");
-        while (!cancellationToken.IsCancellationRequested)
+        var ct = _pipeCts?.Token ?? CancellationToken.None;
+        Task.Run(async () =>
         {
-            try
+            LogUi("Starting UI Setup IPC server (PipeNames.UiSetup)...");
+            while (!ct.IsCancellationRequested)
             {
-                // Self-heal: re-enrol if config.json carries no device token BEFORE opening WebSocket
-                if (string.IsNullOrWhiteSpace(_config.DeviceToken))
+                try
                 {
-                    try
+                    await using var server = PipeProtocol.CreateServer(PipeNames.UiSetup);
+                    await server.WaitForConnectionAsync(ct).ConfigureAwait(false);
+                    using var reader = new StreamReader(server, Encoding.UTF8);
+                    var line = await reader.ReadLineAsync().ConfigureAwait(false);
+                    if (string.Equals(line?.Trim(), "SHOW_SETUP", StringComparison.OrdinalIgnoreCase))
                     {
-                        var enrollmentKey = EnrollmentKeyProvider.Resolve();
-                        if (string.IsNullOrWhiteSpace(enrollmentKey))
-                        {
-                            LogUi("Self-heal registration skipped: no enrollment key is configured on this workstation.");
-                        }
-                        else
-                        {
-                            var regData = await new CentralApiClient().RegisterDeviceAsync(
-                                _backendUrl,
-                                new DeviceRegistrationRequest
-                                {
-                                    DeviceName = _deviceName,
-                                    HardwareUuid = string.IsNullOrWhiteSpace(_config.HardwareUuid)
-                                        ? _deviceName
-                                        : _config.HardwareUuid,
-                                    LabId = _config.LabId,
-                                    PcNumber = _config.PcNumber,
-                                    Hostname = Environment.MachineName,
-                                    EnrollmentKey = enrollmentKey,
-                                },
-                                cancellationToken).ConfigureAwait(false);
-
-                            if (!string.IsNullOrWhiteSpace(regData.DeviceToken))
-                            {
-                                _config.DeviceToken = regData.DeviceToken;
-                                new AgentConfigService().Save(_config);
-                                LogUi($"Self-heal registration succeeded for {_deviceName}; device token stored.");
-                            }
-                            else
-                            {
-                                LogUi("Self-heal registration returned no device token.");
-                            }
-                        }
-                    }
-                    catch (Exception bootEx)
-                    {
-                        LogUi($"Self-heal registration failed: {bootEx.Message}");
-                    }
-
-                    if (string.IsNullOrWhiteSpace(_config.DeviceToken))
-                    {
-                        LogUi("Workstation is unauthenticated (missing device token); waiting 5s before retrying.");
-                        await Task.Delay(5000, cancellationToken);
-                        continue;
-                    }
-                }
-
-                using var ws = new ClientWebSocket();
-                var wsUri = new Uri(_backendUrl.Replace("http://", "ws://").Replace("https://", "wss://").TrimEnd('/') + "/api/v1/ws/agent");
-
-                LogUi($"Connecting to {wsUri}...");
-                await ws.ConnectAsync(wsUri, cancellationToken);
-                LogUi($"WebSocket connected! State={ws.State}");
-
-                // Handshake with Central Server
-                var registerMsg = JsonSerializer.Serialize(new
-                {
-                    action = "REGISTER",
-                    hardware_uuid = _deviceName,
-                    device_token = _config.DeviceToken
-                });
-                var bytes = Encoding.UTF8.GetBytes(registerMsg);
-                await ws.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, cancellationToken);
-                LogUi($"Sent REGISTER payload for {_deviceName}");
-
-                var buffer = new byte[8192];
-                while (ws.State == WebSocketState.Open && !cancellationToken.IsCancellationRequested)
-                {
-                    var result = await ws.ReceiveAsync(new ArraySegment<byte>(buffer), cancellationToken);
-                    if (result.MessageType == WebSocketMessageType.Close)
-                    {
-                        LogUi($"WebSocket closed by remote endpoint (Status={result.CloseStatus}, Description={result.CloseStatusDescription}).");
-                        break;
-                    }
-
-                    var json = Encoding.UTF8.GetString(buffer, 0, result.Count);
-                    LogUi($"Received WebSocket frame ({result.Count} bytes): {json}");
-                    using var doc = JsonDocument.Parse(json);
-                    var root = doc.RootElement;
-
-                    string action = "";
-                    if (root.TryGetProperty("action", out var actionProp))
-                        action = actionProp.GetString() ?? "";
-                    else if (root.TryGetProperty("type", out var typeProp))
-                        action = typeProp.GetString() ?? "";
-                    else if (root.TryGetProperty("message_type", out var msgTypeProp))
-                        action = msgTypeProp.GetString() ?? "";
-
-                    LogUi($"Action recognized: '{action}'");
-
-                    // When Central Server Activates Exam: Surface and Run Pre-Compliance Scan
-                    if (action.Equals("LAUNCH_EXAM_MODE", StringComparison.OrdinalIgnoreCase) ||
-                        action.Equals("START_EXAM", StringComparison.OrdinalIgnoreCase))
-                    {
-                        LogUi("Triggering SurfaceScreenLock and RunPreComplianceScanAsync via Dispatcher...");
                         Dispatcher.Invoke(() =>
                         {
-                            try
+                            LogUi($"[UI_SETUP_REQUESTED] source=SHOW_SETUP_PIPE, pid={Environment.ProcessId}");
+                            var currentConfig = new AgentConfigService().Load();
+                            bool isAlreadyEnrolled = currentConfig != null && currentConfig.IsEnrolled && currentConfig.IsValid();
+
+                            LogUi($"[ENROLLMENT_STATE_EVALUATED] source=SHOW_SETUP_PIPE, enrolled={isAlreadyEnrolled}, hasDeviceId={!string.IsNullOrWhiteSpace(currentConfig?.DeviceId)}, hasToken={!string.IsNullOrWhiteSpace(currentConfig?.DeviceToken)}, configPath={new AgentConfigService().ConfigFilePath}, pid={Environment.ProcessId}");
+
+                            if (isAlreadyEnrolled)
                             {
-                                SurfaceScreenLock();
-                                _ = RunPreComplianceScanAsync();
+                                LogUi($"[UI_SETUP_SUPPRESSED] reason=ALREADY_ENROLLED, source=SHOW_SETUP_PIPE, enrolled=true, hasDeviceId={!string.IsNullOrWhiteSpace(currentConfig!.DeviceId)}, hasToken={!string.IsNullOrWhiteSpace(currentConfig.DeviceToken)}, pid={Environment.ProcessId}");
+                                return;
                             }
-                            catch (Exception dispEx)
-                            {
-                                LogUi($"Dispatcher exception during LAUNCH_EXAM_MODE: {dispEx}");
-                            }
+
+                            LogUi($"[UI_SETUP_WINDOW_SHOWN] reason=UNENROLLED, source=SHOW_SETUP_PIPE, enrolled=false, hasDeviceId={!string.IsNullOrWhiteSpace(currentConfig?.DeviceId)}, hasToken={!string.IsNullOrWhiteSpace(currentConfig?.DeviceToken)}, pid={Environment.ProcessId}");
+                            var wizard = new SetupWizardWindow();
+                            wizard.Topmost = true;
+                            wizard.Focus();
+                            wizard.ShowDialog();
                         });
-                    }
-                    else if (action.Equals("STOP_EXAM_MODE", StringComparison.OrdinalIgnoreCase) ||
-                             action.Equals("STOP_EXAM", StringComparison.OrdinalIgnoreCase))
-                    {
-                        LogUi("STOP_EXAM_MODE received.");
-                        if (Guid.TryParse(_sessionId, out var sessGuid))
-                        {
-                            try
-                            {
-                                var stopRes = await _enforcementService.RemovePolicyAsync(sessGuid, "Exam stopped", cancellationToken);
-                                LogUi($"[EnforcementService] RemovePolicy: Success={stopRes.Success}, State={stopRes.State}, Reason={stopRes.FailureReason}");
-
-                                if (stopRes.Success && _approvedBrowser.ReleaseSignedPolicy(sessGuid))
-                                {
-                                    LogUi($"Approved-browser binding released for session {sessGuid}; reverting to {_approvedBrowser.Effective}.");
-                                }
-                            }
-                            catch (Exception ex)
-                            {
-                                LogUi($"[EnforcementService] RemovePolicy error: {ex.Message}");
-                            }
-                        }
-                        Dispatcher.Invoke(() =>
-                        {
-                            _monitor?.Stop();
-                            Hide();
-                        });
-                    }
-                    else if (action.Equals("SIGNED_NETWORK_POLICY", StringComparison.OrdinalIgnoreCase) ||
-                             action.Equals("UPDATE_EXAM_POLICY", StringComparison.OrdinalIgnoreCase))
-                    {
-                        var signedMsgPayload = new SignedPolicyMessagePayload(
-                            root.GetProperty("message_type").GetString() ?? "",
-                            root.GetProperty("protocol_version").GetInt32(),
-                            root.GetProperty("raw_policy_json").GetString() ?? "",
-                            root.GetProperty("signature_base64").GetString() ?? ""
-                        );
-
-                        // Parse exam_id from raw_policy_json
-                        using var pDoc = JsonDocument.Parse(signedMsgPayload.RawPolicyJson);
-                        var examIdStr = pDoc.RootElement.GetProperty("exam_id").GetString();
-                        var examId = Guid.Parse(examIdStr!);
-
-                        var sessGuid = Guid.TryParse(_sessionId, out var parsedGuid) ? parsedGuid : Guid.NewGuid();
-
-                        if (action.Equals("SIGNED_NETWORK_POLICY", StringComparison.OrdinalIgnoreCase))
-                        {
-                            LogUi($"Forwarding SIGNED_NETWORK_POLICY to Service over named pipe: Session={sessGuid}, Exam={examId}");
-                            // Requirement 6: Domain|Private|Public. Named via the enum rather than
-                            // written as a literal so this call site cannot drift from the IPC
-                            // default the way the old hardcoded 6 did.
-                            var actResult = await _enforcementService.ApplyPolicyAsync(sessGuid, examId, signedMsgPayload, targetProfiles: (int)FirewallProfiles.All, cancellationToken: cancellationToken);
-                            LogUi($"[EnforcementService] ApplyPolicy: Success={actResult.Success}, State={actResult.State}, Reason={actResult.FailureReason}, RulesInstalled={actResult.InstalledRuleCount}");
-
-                            // Adopt the approved browser ONLY after the service reports success.
-                            // The UI does not verify signatures itself; success means the service
-                            // verified this exact raw_policy_json, so reading approved_browser out of
-                            // the same bytes carries that verification. Reading it before the apply,
-                            // or after a failure, would let an unsigned WebSocket frame steer the
-                            // monitor's idea of which browser is approved.
-                            if (actResult.Success)
-                            {
-                                AdoptSignedApprovedBrowser(sessGuid, pDoc.RootElement);
-                            }
-                        }
-                        else
-                        {
-                            LogUi($"Forwarding UPDATE_EXAM_POLICY to Service over named pipe: Session={sessGuid}, Exam={examId}");
-                            var updResult = await _enforcementService.UpdatePolicyAsync(sessGuid, examId, signedMsgPayload, cancellationToken: cancellationToken);
-                            LogUi($"[EnforcementService] UpdatePolicy: Success={updResult.Success}, State={updResult.State}, Reason={updResult.FailureReason}, RulesInstalled={updResult.InstalledRuleCount}");
-                        }
-                    }
-                    else if (action.Equals("HEARTBEAT_PING", StringComparison.OrdinalIgnoreCase))
-                    {
-                        var pongMsg = JsonSerializer.Serialize(new { action = "HEARTBEAT_PONG" });
-                        var pongBytes = Encoding.UTF8.GetBytes(pongMsg);
-                        await ws.SendAsync(new ArraySegment<byte>(pongBytes), WebSocketMessageType.Text, true, cancellationToken);
                     }
                 }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested) { break; }
+                catch (Exception ex)
+                {
+                    LogUi($"UI Setup IPC server error: {ex.Message}");
+                    await Task.Delay(1000, ct).ConfigureAwait(false);
+                }
+            }
+        });
+    }
 
-                // Enforce backoff delay on clean exit or socket closure before reconnecting
-                LogUi("WebSocket session ended. Waiting 5s before reconnecting...");
-                await Task.Delay(5000, cancellationToken);
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+    private void StartAgentPipeListener()
+    {
+        _pipeCts = new CancellationTokenSource();
+        var ct = _pipeCts.Token;
+
+        Task.Run(async () =>
+        {
+            LogUi("Starting background listener for Agent Service IPC (PipeNames.Agent)...");
+            while (!ct.IsCancellationRequested)
             {
-                break;
+                try
+                {
+                    var client = PipeProtocol.CreateClient(PipeNames.Agent);
+                    await client.ConnectAsync(ct).ConfigureAwait(false);
+                    LogUi($"[UI_PIPE_CONNECTED] Connected to Agent Service pipe {PipeNames.Agent}. pid={Environment.ProcessId}");
+                    _activePipeClient = client;
+
+                    while (!ct.IsCancellationRequested && client.IsConnected)
+                    {
+                        var envelope = await PipeProtocol.ReadAsync(client, ct).ConfigureAwait(false);
+                        if (envelope == null) break;
+
+                        LogUi($"Received pipe envelope: {envelope.Type}");
+
+                        switch (envelope.Type)
+                        {
+                            case MessageTypes.RequestRegistration:
+                            {
+                                Dispatcher.Invoke(() =>
+                                {
+                                    LogUi($"[UI_SETUP_REQUESTED] source=IPC_SERVICE, pid={Environment.ProcessId}");
+                                    var currentConfig = new AgentConfigService().Load();
+                                    bool isAlreadyEnrolled = currentConfig != null && currentConfig.IsEnrolled && currentConfig.IsValid();
+
+                                    LogUi($"[ENROLLMENT_STATE_EVALUATED] source=IPC_SERVICE, enrolled={isAlreadyEnrolled}, hasDeviceId={!string.IsNullOrWhiteSpace(currentConfig?.DeviceId)}, hasToken={!string.IsNullOrWhiteSpace(currentConfig?.DeviceToken)}, configPath={new AgentConfigService().ConfigFilePath}, pid={Environment.ProcessId}");
+
+                                    if (isAlreadyEnrolled)
+                                    {
+                                        LogUi($"[UI_SETUP_SUPPRESSED] reason=ALREADY_ENROLLED, source=IPC_SERVICE, enrolled=true, hasDeviceId={!string.IsNullOrWhiteSpace(currentConfig!.DeviceId)}, hasToken={!string.IsNullOrWhiteSpace(currentConfig.DeviceToken)}, pid={Environment.ProcessId}");
+                                        var payload = new RegistrationPayload(
+                                            currentConfig.DeviceName,
+                                            "127.0.0.1",
+                                            Guid.TryParse(currentConfig.DeviceId, out var gid) ? gid : null,
+                                            currentConfig.DeviceToken
+                                        );
+                                        _ = Task.Run(async () =>
+                                        {
+                                            try
+                                            {
+                                                await PipeProtocol.WriteAsync(client, MessageTypes.RegistrationData, payload, ct);
+                                                LogUi("[REGISTRATION_REPLIED] Sent existing authoritative registration data back to Service via pipe");
+                                            }
+                                            catch (Exception ex)
+                                            {
+                                                LogUi($"Failed to reply registration data: {ex.Message}");
+                                            }
+                                        });
+                                        return;
+                                    }
+
+                                    LogUi($"[UI_SETUP_WINDOW_SHOWN] reason=UNENROLLED, source=IPC_SERVICE, enrolled=false, hasDeviceId={!string.IsNullOrWhiteSpace(currentConfig?.DeviceId)}, hasToken={!string.IsNullOrWhiteSpace(currentConfig?.DeviceToken)}, pid={Environment.ProcessId}");
+                                    var wizard = new SetupWizardWindow();
+                                    wizard.Topmost = true;
+                                    wizard.Focus();
+                                    var res = wizard.ShowDialog();
+                                    if (res == true)
+                                    {
+                                        var freshlySavedConfig = new AgentConfigService().Load();
+                                        var payload = new RegistrationPayload(
+                                            freshlySavedConfig?.DeviceName ?? Environment.MachineName,
+                                            "127.0.0.1",
+                                            Guid.TryParse(freshlySavedConfig?.DeviceId, out var gid) ? gid : null,
+                                            freshlySavedConfig?.DeviceToken
+                                        );
+                                        _ = Task.Run(async () =>
+                                        {
+                                            try
+                                            {
+                                                await PipeProtocol.WriteAsync(client, MessageTypes.RegistrationData, payload, ct);
+                                                LogUi("[REGISTRATION_REPLIED] Sent fresh registration data back to Service via pipe");
+                                            }
+                                            catch (Exception ex)
+                                            {
+                                                LogUi($"Failed to reply registration data: {ex.Message}");
+                                            }
+                                        });
+                                    }
+                                });
+                                break;
+                            }
+
+                            case MessageTypes.ShowPreComplianceLoading:
+                            {
+                                Dispatcher.Invoke(() =>
+                                {
+                                    SurfaceScreenLock();
+                                    HeaderTitle.Text = "Pre-compliance check";
+                                    HeaderSubtitle.Text = "Verifying running applications against exam policy";
+                                    AccentBar.Background = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#E5E0D8"));
+                                    LoadingPanel.Visibility = Visibility.Visible;
+                                    PreComplianceResultPanel.Visibility = Visibility.Collapsed;
+                                    StudentVerificationPanel.Visibility = Visibility.Collapsed;
+                                    LogUi($"[PRECOMPLIANCE_SHOWN] Screen lock active, pre-compliance loading presented. pid={Environment.ProcessId}");
+                                });
+                                break;
+                            }
+
+                            case MessageTypes.UpdatePreComplianceResult:
+                            {
+                                var scan = envelope.Payload.Deserialize<PreComplianceScanPayload>();
+                                Dispatcher.Invoke(() =>
+                                {
+                                    LoadingPanel.Visibility = Visibility.Collapsed;
+                                    PreComplianceResultPanel.Visibility = Visibility.Visible;
+                                    StudentVerificationPanel.Visibility = Visibility.Collapsed;
+
+                                    if (scan != null && scan.IsClean)
+                                    {
+                                        HeaderSubtitle.Text = "System verified clean. No forbidden background processes detected.";
+                                        AccentBar.Background = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#10B981"));
+                                        StatusBadge.Background = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#EDF7ED"));
+                                        StatusBadge.BorderBrush = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#C8E6C9"));
+                                        StatusBadgeText.Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#2E7D32"));
+                                        StatusBadgeText.Text = "Pre-Compliance Check Passed. All running processes comply with examination security.";
+                                        SuspiciousProcessList.Visibility = Visibility.Collapsed;
+                                    }
+                                    else
+                                    {
+                                        HeaderSubtitle.Text = "Unapproved applications detected on this device";
+                                        AccentBar.Background = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#E5E0D8"));
+                                        StatusBadge.Background = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#FFF0F0"));
+                                        StatusBadge.BorderBrush = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#F8C8C8"));
+                                        StatusBadgeText.Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#901C1C"));
+                                        var count = scan?.SuspiciousProcesses?.Count ?? 0;
+                                        StatusBadgeText.Text = $"⚠  {count} unapproved applications detected. Close them before starting the exam.";
+                                        SuspiciousProcessList.ItemsSource = scan?.SuspiciousProcesses;
+                                        SuspiciousProcessList.Visibility = Visibility.Visible;
+                                    }
+
+                                    LogUi($"[PRECOMPLIANCE_SHOWN] UI presented pre-compliance scan results: Clean={scan?.IsClean}");
+                                });
+                                break;
+                            }
+
+                            case MessageTypes.ShowStudentVerification:
+                            {
+                                Dispatcher.Invoke(() =>
+                                {
+                                    TransitionToStudentVerification();
+                                    LogUi("UI presented in Student Verification state.");
+                                });
+                                break;
+                            }
+
+                            case MessageTypes.SessionStart:
+                            case MessageTypes.SessionStop:
+                            {
+                                Dispatcher.Invoke(() =>
+                                {
+                                    if (envelope.Type == MessageTypes.SessionStart)
+                                    {
+                                        LogUi($"[STUDENT_PASSWORD_VERIFIED] Student credentials verified successfully for roll: {_rollNumber}");
+                                        LogUi($"[STUDENT_SESSION_ACTIVE] Monitored exam session active for roll: {_rollNumber}");
+                                    }
+                                    Hide();
+                                    LogUi($"UI hidden upon {envelope.Type}.");
+                                });
+                                break;
+                            }
+                        }
+                    }
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    LogUi($"Agent pipe connection error/retry: {ex.Message}");
+                    await Task.Delay(1000, ct).ConfigureAwait(false);
+                }
+                finally
+                {
+                    if (_activePipeClient != null)
+                    {
+                        try { await _activePipeClient.DisposeAsync().ConfigureAwait(false); } catch { }
+                        _activePipeClient = null;
+                    }
+                }
             }
-            catch (Exception loopEx)
-            {
-                LogUi($"WebSocket connection loop error: {loopEx}");
-                // Reconnect with backoff
-                await Task.Delay(5000, cancellationToken);
-            }
-        }
+        }, ct);
     }
 
     /// <summary>
@@ -387,7 +404,7 @@ public partial class MainWindow : Window
     [System.Runtime.InteropServices.DllImport("user32.dll")]
     private static extern bool SetForegroundWindow(IntPtr hWnd);
 
-    private void SurfaceScreenLock()
+    public void SurfaceScreenLock()
     {
         LogUi($"SurfaceScreenLock invoked. Initial: WindowState={WindowState}, Visibility={Visibility}, IsVisible={IsVisible}");
         WindowState = WindowState.Maximized;
@@ -465,9 +482,31 @@ public partial class MainWindow : Window
         LoadingPanel.Visibility = Visibility.Collapsed;
         PreComplianceResultPanel.Visibility = Visibility.Collapsed;
         StudentVerificationPanel.Visibility = Visibility.Visible;
+        if (VerificationErrorBorder != null)
+        {
+            VerificationErrorBorder.Visibility = Visibility.Collapsed;
+        }
 
-        RollNumberBox.Focus();
-        RollNumberBox.SelectAll();
+        LogUi("[PASSWORD_SCREEN_SHOWN] Candidate verification screen presented with password entry.");
+
+        if (string.IsNullOrWhiteSpace(RollNumberBox.Text))
+        {
+            RollNumberBox.Text = _rollNumber;
+        }
+        if (StudentPasswordBox != null)
+        {
+            StudentPasswordBox.Password = string.Empty;
+        }
+        UpdateVerifyButtonState();
+        if (string.IsNullOrWhiteSpace(RollNumberBox.Text))
+        {
+            RollNumberBox.Focus();
+            RollNumberBox.SelectAll();
+        }
+        else
+        {
+            StudentPasswordBox?.Focus();
+        }
     }
 
     public async Task StartActiveMonitoringSessionAsync()
@@ -475,8 +514,7 @@ public partial class MainWindow : Window
         _rollNumber = RollNumberBox.Text.Trim();
         _sessionId = Guid.NewGuid().ToString("N");
 
-        var session = new AgentSession(_sessionId, _rollNumber, DateTimeOffset.UtcNow);
-        _store.SaveState(AgentState.Monitoring, session);
+        LogUi($"Starting active monitoring session: sessionId={_sessionId}, roll={_rollNumber}");
 
         // 1. Notify Central Server of Session Start
         try
@@ -504,6 +542,31 @@ public partial class MainWindow : Window
                 "api/v1/sessions/start",
                 !string.IsNullOrWhiteSpace(_config.DeviceToken),
                 (int)response.StatusCode));
+
+            // 1b. Validate student roll number and bind to session on backend
+            if (response.IsSuccessStatusCode && !string.IsNullOrWhiteSpace(_rollNumber))
+            {
+                try
+                {
+                    var verifyReq = new
+                    {
+                        sessionId = _sessionId,
+                        rollNumber = _rollNumber
+                    };
+                    using var verifyMsg = AgentRequestFactory.CreateJsonPost(
+                        "api/v1/sessions/verify-student", verifyReq, _config.DeviceToken);
+                    using var verifyResponse = await _http.SendAsync(verifyMsg).ConfigureAwait(true);
+
+                    LogUi(AgentRequestFactory.DescribeOutcome(
+                        "api/v1/sessions/verify-student",
+                        !string.IsNullOrWhiteSpace(_config.DeviceToken),
+                        (int)verifyResponse.StatusCode));
+                }
+                catch (Exception verifyEx)
+                {
+                    LogUi($"api/v1/sessions/verify-student failed: {verifyEx.Message}");
+                }
+            }
         }
         catch (Exception ex)
         {
@@ -513,46 +576,100 @@ public partial class MainWindow : Window
             LogUi($"api/v1/sessions/start failed: {ex.Message}");
         }
 
-        // 2. Start Live Background Process Monitor
-        //
-        // The token is read through a delegate rather than captured by value because the WebSocket
-        // self-heal path can write a freshly issued token into _config while monitoring is already
-        // running. A captured null would keep every subsequent event unauthenticated for the rest of
-        // the session.
-        var eventPublisher = new InlineEventPublisher(_http, () => _config.DeviceToken);
-        _monitor = new ProcessMonitor(
-            _source,
-            _classifier,
-            _store,
-            () => new AgentSnapshot(AgentState.Monitoring, new DeviceRegistration(Guid.NewGuid(), _deviceName, "127.0.0.1", DateTimeOffset.UtcNow), session),
-            eventPublisher);
-
-        _monitor.Start();
+        // 2. Monitoring is owned continuously by the Windows Service
+        LogUi("Session marked as Monitoring; Windows Service background monitors are running continuously.");
 
         // 3. Hide modal shield so student can take exam in Chrome
         Hide();
     }
 
-    private void PreComplianceContinueButton_Click(object sender, RoutedEventArgs e)
+    private async void PreComplianceContinueButton_Click(object sender, RoutedEventArgs e)
     {
         TransitionToStudentVerification();
+        if (_activePipeClient is not null && _activePipeClient.IsConnected)
+        {
+            try
+            {
+                await PipeProtocol.WriteAsync(_activePipeClient, MessageTypes.PreComplianceContinued, new { }, CancellationToken.None).ConfigureAwait(false);
+                LogUi("Sent PRE_COMPLIANCE_CONTINUED to Agent Service.");
+            }
+            catch (Exception ex)
+            {
+                LogUi($"Failed to send PRE_COMPLIANCE_CONTINUED: {ex.Message}");
+            }
+        }
     }
 
     private async void VerifyStudentButton_Click(object sender, RoutedEventArgs e)
     {
-        await StartActiveMonitoringSessionAsync();
+        var roll = RollNumber;
+        var pwd = StudentPasswordBox?.Password ?? "";
+        if (string.IsNullOrWhiteSpace(roll) || string.IsNullOrWhiteSpace(pwd)) return;
+
+        if (pwd.Length < 4)
+        {
+            if (VerificationErrorBorder != null && VerificationErrorText != null)
+            {
+                VerificationErrorText.Text = "Password must be at least 4 characters.";
+                VerificationErrorBorder.Visibility = Visibility.Visible;
+            }
+            return;
+        }
+
+        if (VerificationErrorBorder != null)
+        {
+            VerificationErrorBorder.Visibility = Visibility.Collapsed;
+        }
+        VerifyStudentButton.IsEnabled = false;
+
+        LogUi($"[STUDENT_PASSWORD_SUBMITTED] Roll={roll}");
+
+        if (_activePipeClient is not null && _activePipeClient.IsConnected)
+        {
+            try
+            {
+                await PipeProtocol.WriteAsync(_activePipeClient, MessageTypes.StudentVerificationResult, new StudentVerificationPayload(roll, pwd), CancellationToken.None).ConfigureAwait(false);
+                LogUi($"Sent STUDENT_VERIFICATION_RESULT ({roll}) to Agent Service.");
+            }
+            catch (Exception ex)
+            {
+                LogUi($"Failed to send STUDENT_VERIFICATION_RESULT: {ex.Message}");
+                VerifyStudentButton.IsEnabled = true;
+            }
+        }
+        else
+        {
+            await StartActiveMonitoringSessionAsync();
+        }
     }
 
     private void RollNumberBox_TextChanged(object sender, TextChangedEventArgs e)
     {
-        if (VerifyStudentButton != null)
-            VerifyStudentButton.IsEnabled = !string.IsNullOrWhiteSpace(RollNumber);
+        UpdateVerifyButtonState();
+    }
+
+    private void StudentPasswordBox_PasswordChanged(object sender, RoutedEventArgs e)
+    {
+        UpdateVerifyButtonState();
+    }
+
+    private void UpdateVerifyButtonState()
+    {
+        if (VerifyStudentButton != null && RollNumberBox != null && StudentPasswordBox != null)
+        {
+            VerifyStudentButton.IsEnabled = !string.IsNullOrWhiteSpace(RollNumberBox.Text) &&
+                                            !string.IsNullOrWhiteSpace(StudentPasswordBox.Password);
+        }
     }
 
     protected override void OnClosed(EventArgs e)
     {
-        _wsCts?.Cancel();
-        _monitor?.Stop();
+        _pipeCts?.Cancel();
+        if (_activePipeClient != null)
+        {
+            try { _activePipeClient.Dispose(); } catch { }
+            _activePipeClient = null;
+        }
         base.OnClosed(e);
     }
 }

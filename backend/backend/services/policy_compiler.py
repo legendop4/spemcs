@@ -533,10 +533,16 @@ def validate_management_server(management_server: Dict[str, Any]) -> Dict[str, A
     normalized_ips.sort()
     port = validate_port(management_server["port"])
 
-    return {
+    ret = {
         "ip_addresses": normalized_ips,
         "port": port,
     }
+    if "use_tls" in management_server:
+        ret["use_tls"] = bool(management_server["use_tls"])
+    if "expected_hostname" in management_server and management_server["expected_hostname"]:
+        ret["expected_hostname"] = str(management_server["expected_hostname"])
+
+    return ret
 
 
 # ==============================================================================
@@ -649,7 +655,11 @@ def compile_exam_policy(
     if not isinstance(key_id, str) or not key_id.strip():
         raise PolicyCompilationError("key_id is required and must be a non-empty string")
 
-    # 2. Validate Validity Window
+    # 2. Validate Validity Window (with bounded 5-minute clock-skew tolerance)
+    if not_before is None:
+        not_before = datetime.now(timezone.utc) - timedelta(minutes=5)
+    if expires_at is None:
+        expires_at = not_before + timedelta(hours=8)
     nb_str, exp_str = validate_validity_window(not_before, expires_at)
 
     # 2b. Validate approved browser (endpoint firewall-rule scoping identity)

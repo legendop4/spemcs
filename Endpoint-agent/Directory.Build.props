@@ -6,5 +6,8 @@
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <AnalysisLevel>latest</AnalysisLevel>
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+    <Version>2.2.8.0</Version>
+    <AssemblyVersion>2.2.8.0</AssemblyVersion>
+    <FileVersion>2.2.8.0</FileVersion>
   </PropertyGroup>
 </Project>

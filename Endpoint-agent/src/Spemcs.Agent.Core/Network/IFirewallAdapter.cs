@@ -28,4 +28,7 @@ public interface IFirewallAdapter
 
     /// <summary>Enumerates all rule models currently in the specified rule group.</summary>
     IReadOnlyList<FirewallRuleModel> GetRulesByGroup(string group);
+
+    /// <summary>Checks whether Windows Firewall is enabled for the specified profiles.</summary>
+    bool IsProfileEnabled(FirewallProfiles profile);
 }

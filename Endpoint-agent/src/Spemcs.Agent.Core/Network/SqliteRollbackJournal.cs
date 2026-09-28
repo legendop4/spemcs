@@ -123,6 +123,13 @@ public sealed class SqliteRollbackJournal : IRollbackJournal
                         reason TEXT NOT NULL,
                         revoked_utc TEXT NOT NULL
                     );
+
+                    CREATE TABLE IF NOT EXISTS authoritative_clean_baseline (
+                        id INTEGER PRIMARY KEY CHECK (id = 1),
+                        baseline_json TEXT NOT NULL,
+                        captured_utc TEXT NOT NULL,
+                        verified_utc TEXT NOT NULL
+                    );
                 ";
                 cmd.ExecuteNonQuery();
 
@@ -810,6 +817,49 @@ public sealed class SqliteRollbackJournal : IRollbackJournal
                 result.Add(reader.GetString(0));
             }
             return result;
+        }
+    }
+
+    public void SaveAuthoritativeCleanBaseline(FirewallProfileBaseline baseline, DateTimeOffset verifiedUtc)
+    {
+        ArgumentNullException.ThrowIfNull(baseline);
+        lock (_gate)
+        {
+            var json = JsonSerializer.Serialize(baseline);
+            using var conn = Open();
+            using var tx = conn.BeginTransaction();
+            using var cmd = conn.CreateCommand();
+            cmd.Transaction = tx;
+            cmd.CommandText = @"
+                INSERT INTO authoritative_clean_baseline (id, baseline_json, captured_utc, verified_utc)
+                VALUES (1, $json, $captured, $verified)
+                ON CONFLICT(id) DO UPDATE SET
+                    baseline_json = excluded.baseline_json,
+                    captured_utc = excluded.captured_utc,
+                    verified_utc = excluded.verified_utc;
+            ";
+            cmd.Parameters.AddWithValue("$json", json);
+            cmd.Parameters.AddWithValue("$captured", baseline.CapturedUtc.ToString("O", CultureInfo.InvariantCulture));
+            cmd.Parameters.AddWithValue("$verified", verifiedUtc.ToString("O", CultureInfo.InvariantCulture));
+            cmd.ExecuteNonQuery();
+            tx.Commit();
+        }
+    }
+
+    public FirewallProfileBaseline? GetLastKnownCleanBaseline()
+    {
+        lock (_gate)
+        {
+            using var conn = Open();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = "SELECT baseline_json FROM authoritative_clean_baseline WHERE id = 1;";
+            using var reader = cmd.ExecuteReader();
+            if (reader.Read())
+            {
+                var json = reader.GetString(0);
+                return JsonSerializer.Deserialize<FirewallProfileBaseline>(json);
+            }
+            return null;
         }
     }
 }

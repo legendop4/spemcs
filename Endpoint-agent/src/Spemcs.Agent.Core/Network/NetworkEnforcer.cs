@@ -33,10 +33,36 @@ public sealed class NetworkEnforcer : INetworkEnforcer
     {
         lock (_syncRoot)
         {
-            var baseline = _firewall.GetBaseline();
-            _logger.LogInformation("Captured firewall baseline. ActiveProfiles: {Profiles}, Domain: {Domain}, Private: {Private}, Public: {Public}",
-                baseline.ActiveProfiles, baseline.DomainDefaultOutbound, baseline.PrivateDefaultOutbound, baseline.PublicDefaultOutbound);
-            return Task.FromResult(baseline);
+            var existingSpemcsRules = _firewall.GetRuleNamesByGroup(FirewallRuleModel.SpemcsRuleGroup);
+            var incompleteSession = _journal.GetLatestActiveOrIncompleteSession();
+            var activeEnfState = _journal.GetActiveEnforcementState();
+
+            bool hasIncompleteSession = incompleteSession != null;
+            bool hasOrphanedEnfState = activeEnfState != null && activeEnfState.State is not (EnforcementState.RolledBack or EnforcementState.Idle);
+            bool hasSpemcsEvidence = existingSpemcsRules.Count > 0 || hasIncompleteSession || hasOrphanedEnfState;
+
+            if (!hasSpemcsEvidence)
+            {
+                var live = _firewall.GetBaseline();
+                _journal.SaveAuthoritativeCleanBaseline(live, DateTimeOffset.UtcNow);
+                _logger.LogInformation("Captured clean baseline: Domain={Domain}, Private={Private}, Public={Public}, ActiveProfiles={ActiveProfiles}",
+                    live.DomainDefaultOutbound, live.PrivateDefaultOutbound, live.PublicDefaultOutbound, live.ActiveProfiles);
+                return Task.FromResult(live);
+            }
+
+            var clean = _journal.GetLastKnownCleanBaseline() ??
+                        incompleteSession?.Baseline ??
+                        _journal.GetAllSessions().FirstOrDefault(s => s.Baseline != null)?.Baseline;
+
+            if (clean != null)
+            {
+                _logger.LogInformation("Evidence of SPEMCS state present during CaptureBaselineAsync; returning authoritative clean baseline: Domain={Domain}, Private={Private}, Public={Public}",
+                    clean.DomainDefaultOutbound, clean.PrivateDefaultOutbound, clean.PublicDefaultOutbound);
+                return Task.FromResult(clean);
+            }
+
+            var liveCurrent = _firewall.GetBaseline();
+            return Task.FromResult(liveCurrent);
         }
     }
 
@@ -49,10 +75,62 @@ public sealed class NetworkEnforcer : INetworkEnforcer
             _logger.LogInformation("Starting enforcement application for Session: {SessionId}, Policy: {PolicyId} (v{Version})",
                 session.SessionId, session.PolicyId, session.PolicyVersion);
 
-            // 1. Capture current baseline
-            var baseline = _firewall.GetBaseline();
-            _logger.LogInformation("Active runtime firewall profile bitmask: {Profiles} ({ProfileNames}), Domain={Domain}, Private={Private}, Public={Public}",
-                baseline.ActiveProfiles, baseline.ActiveProfiles.ToString(), baseline.DomainDefaultOutbound, baseline.PrivateDefaultOutbound, baseline.PublicDefaultOutbound);
+            // 1. Capture current baseline safely (Correction 1 & 2: Authoritative clean baseline tracking)
+            var currentBaseline = _firewall.GetBaseline();
+            bool isBlockInForce = currentBaseline.DomainDefaultOutbound == FirewallAction.Block ||
+                                  currentBaseline.PrivateDefaultOutbound == FirewallAction.Block ||
+                                  currentBaseline.PublicDefaultOutbound == FirewallAction.Block;
+
+            var existingSpemcsRules = _firewall.GetRuleNamesByGroup(FirewallRuleModel.SpemcsRuleGroup);
+            var incompleteSession = _journal.GetLatestActiveOrIncompleteSession();
+            var activeEnfState = _journal.GetActiveEnforcementState();
+
+            bool hasIncompleteSession = incompleteSession != null && incompleteSession.SessionId != session.SessionId;
+            bool hasOrphanedEnfState = activeEnfState != null && activeEnfState.SessionId != session.SessionId &&
+                activeEnfState.State is not (EnforcementState.RolledBack or EnforcementState.Idle);
+            bool hasSpemcsEvidence = existingSpemcsRules.Count > 0 || hasIncompleteSession || hasOrphanedEnfState;
+
+            FirewallProfileBaseline baseline;
+
+            if (!hasSpemcsEvidence)
+            {
+                // Clean host: accept current firewall state as the legitimate clean baseline (whether Allow OR Block per Correction 1)
+                baseline = currentBaseline;
+                _journal.SaveAuthoritativeCleanBaseline(baseline, DateTimeOffset.UtcNow);
+                _logger.LogInformation("Clean host baseline captured and saved as authoritative: Domain={Domain}, Private={Private}, Public={Public}, ActiveProfiles={ActiveProfiles}",
+                    baseline.DomainDefaultOutbound, baseline.PrivateDefaultOutbound, baseline.PublicDefaultOutbound, baseline.ActiveProfiles);
+            }
+            else if (!isBlockInForce)
+            {
+                // SPEMCS rules or sessions exist, but outbound action is not Block (e.g. concurrent session under Allow baseline)
+                baseline = currentBaseline;
+                if (_journal.GetLastKnownCleanBaseline() == null)
+                {
+                    _journal.SaveAuthoritativeCleanBaseline(baseline, DateTimeOffset.UtcNow);
+                }
+            }
+            else
+            {
+                _logger.LogWarning("Evidence of dirty/incomplete SPEMCS state detected: {RuleCount} rules in group '{Group}', IncompleteSession={HasIncomplete}, OrphanedState={HasOrphaned}",
+                    existingSpemcsRules.Count, FirewallRuleModel.SpemcsRuleGroup, hasIncompleteSession, hasOrphanedEnfState);
+
+                var lastClean = _journal.GetLastKnownCleanBaseline() ??
+                                incompleteSession?.Baseline ??
+                                _journal.GetAllSessions().FirstOrDefault(s => s.Baseline != null)?.Baseline;
+
+                if (lastClean != null)
+                {
+                    _logger.LogInformation("Recovered authoritative clean baseline from journal: Domain={Domain}, Private={Private}, Public={Public}",
+                        lastClean.DomainDefaultOutbound, lastClean.PrivateDefaultOutbound, lastClean.PublicDefaultOutbound);
+                    baseline = lastClean;
+                }
+                else
+                {
+                    throw new InvalidOperationException(
+                        $"Cannot activate enforcement: Host contains {existingSpemcsRules.Count} SPEMCS rules or an incomplete session with BLOCK in force, " +
+                        "and no authoritative clean baseline is recorded. Prior state must be rolled back first.");
+                }
+            }
 
             // 2. Persist PREPARED state to durable journal
             var record = new JournalRecord(
@@ -159,7 +237,7 @@ public sealed class NetworkEnforcer : INetworkEnforcer
             var sessionRecord = _journal.GetSession(sessionId);
             if (sessionRecord is null)
             {
-                _logger.LogInformation("No active enforcement session recorded for Session: {SessionId}. Nothing to remove.", sessionId);
+                _logger.LogWarning("RemoveEnforcementAsync called for unknown Session: {SessionId}; treating as a safe no-op.", sessionId);
                 return Task.FromResult(new RollbackResult(
                     Success: true,
                     SessionId: sessionId,
@@ -184,7 +262,8 @@ public sealed class NetworkEnforcer : INetworkEnforcer
         lock (_syncRoot)
         {
             var sessionRecord = _journal.GetSession(sessionId);
-            if (sessionRecord is null)
+            var baseline = sessionRecord?.Baseline ?? _journal.GetLastKnownCleanBaseline();
+            if (baseline is null)
             {
                 return Task.FromResult(new RollbackResult(
                     Success: false,
@@ -192,7 +271,7 @@ public sealed class NetworkEnforcer : INetworkEnforcer
                     RulesRemovedCount: 0,
                     BaselineRestored: false,
                     ConflictDetected: false,
-                    ErrorMessage: "Session record not found in rollback journal."
+                    ErrorMessage: "Session record and last known clean baseline not found in rollback journal."
                 ));
             }
 
@@ -205,11 +284,14 @@ public sealed class NetworkEnforcer : INetworkEnforcer
             // confirmed BLOCK was in force. Anywhere else, a profile that is not BLOCK is explained by
             // SPEMCS's own incomplete work rather than by a third party, so it must not be reported as
             // an external conflict.
+            var targetProfiles = sessionRecord?.TargetProfiles ?? FirewallProfiles.All;
+            var blockWasVerified = sessionRecord?.Phase is EnforcementPhase.Active;
+
             var baselineResult = RestoreBaselineSafely(
                 sessionId,
-                sessionRecord.Baseline,
-                sessionRecord.TargetProfiles,
-                blockWasVerified: sessionRecord.Phase is EnforcementPhase.Active);
+                baseline,
+                targetProfiles,
+                blockWasVerified: blockWasVerified);
             return Task.FromResult(new RollbackResult(
                 Success: baselineResult.Success,
                 SessionId: sessionId,
@@ -367,13 +449,31 @@ public sealed class NetworkEnforcer : INetworkEnforcer
 
             var cleaned = CleanUpUnownedGroupRules(LiveSessionIds());
 
+            var cleanBaseline = _journal.GetLastKnownCleanBaseline();
+            var baselineRestored = false;
+            var conflictDetected = false;
+
+            if (cleanBaseline is not null)
+            {
+                var currentBaseline = _firewall.GetBaseline();
+                if (currentBaseline.DomainDefaultOutbound == FirewallAction.Block ||
+                    currentBaseline.PrivateDefaultOutbound == FirewallAction.Block ||
+                    currentBaseline.PublicDefaultOutbound == FirewallAction.Block)
+                {
+                    _logger.LogInformation("Orphan rules found while profiles are on BLOCK; restoring last known clean baseline.");
+                    var restoreRes = RestoreBaselineSafely(Guid.Empty, cleanBaseline, FirewallProfiles.All, blockWasVerified: false);
+                    baselineRestored = restoreRes.Restored;
+                    conflictDetected = restoreRes.Conflict;
+                }
+            }
+
             return Task.FromResult(new RecoveryResult(
                 RecoveryRequired: true,
                 Success: true,
                 RecoveredSessionId: null,
                 OrphanRulesCleaned: cleaned,
-                BaselineRestored: false,
-                ConflictDetected: false,
+                BaselineRestored: baselineRestored,
+                ConflictDetected: conflictDetected,
                 Details: $"Cleaned {cleaned} orphan rules."
             ));
         }
@@ -485,31 +585,17 @@ public sealed class NetworkEnforcer : INetworkEnforcer
 
     private RollbackResult PerformSafeRollbackInternal(
         Guid sessionId,
-        FirewallProfileBaseline baseline,
+        FirewallProfileBaseline? baseline,
         FirewallProfiles targetProfiles,
         EnforcementPhase currentPhase)
     {
         _logger.LogInformation("Performing safe rollback for Session: {SessionId} from Phase: {Phase}", sessionId, currentPhase);
 
+        // Baseline resolution: if null, fallback to last known clean baseline
+        baseline ??= _journal.GetLastKnownCleanBaseline();
+
         // ---------------------------------------------------------------------
         // Step 1: Converge the profile outbound defaults on the CAPTURED baseline.
-        //
-        // The two facts this decision needs are different from each other, and conflating them was
-        // the old defect:
-        //
-        //   blockWasWritten  - could SPEMCS have changed DefaultOutboundAction at all? BLOCK is
-        //                      written only after every allow rule is installed and verified, so in
-        //                      Prepared and ApplyingRules it provably was not written yet and there
-        //                      is nothing to undo. Every other phase - including the terminal ones -
-        //                      must converge. The old whitelist omitted Failed, Conflict and
-        //                      RolledBack, which left a session that died in Failed with its
-        //                      profiles still on BLOCK and no code path that would ever restore them.
-        //
-        //   blockWasVerified - did readback CONFIRM BLOCK was in force? Only Active means that. This
-        //                      is the flag that licenses reporting an external-modification conflict,
-        //                      and restricting it to Active is what stops a partial enforcement, a
-        //                      crash during rollback, or a second rollback of an already-restored
-        //                      session from being reported as somebody tampering with the firewall.
         // ---------------------------------------------------------------------
         var blockWasWritten = currentPhase is not (EnforcementPhase.Prepared or EnforcementPhase.ApplyingRules);
         var blockWasVerified = currentPhase is EnforcementPhase.Active;
@@ -518,8 +604,16 @@ public sealed class NetworkEnforcer : INetworkEnforcer
 
         if (blockWasWritten)
         {
-            _journal.UpdatePhase(sessionId, EnforcementPhase.RollingBackDefault);
-            baselineRestore = RestoreBaselineSafely(sessionId, baseline, targetProfiles, blockWasVerified);
+            if (baseline is null)
+            {
+                _logger.LogError("Session {SessionId}: cannot restore baseline because neither session baseline nor authoritative clean baseline is available.", sessionId);
+                baselineRestore = (Success: false, Restored: false, Conflict: false, Error: "No clean baseline found in session or journal to restore.");
+            }
+            else
+            {
+                _journal.UpdatePhase(sessionId, EnforcementPhase.RollingBackDefault);
+                baselineRestore = RestoreBaselineSafely(sessionId, baseline, targetProfiles, blockWasVerified);
+            }
         }
         else
         {
@@ -545,10 +639,6 @@ public sealed class NetworkEnforcer : INetworkEnforcer
             : string.Join(" ", new[] { baselineRestore.Error, removalOutcome.Error }.Where(s => !string.IsNullOrEmpty(s)));
 
         return new RollbackResult(
-            // Success is a claim about CONVERGENCE, not about whether anything unusual was seen. A
-            // conflict that was nevertheless converged on the baseline is a successful rollback with
-            // an incident attached; callers that must react to the incident read ConflictDetected,
-            // which EnforcementStateMachine.DeactivateAsync already does.
             Success: baselineRestore.Success && removalOutcome.Error is null,
             SessionId: sessionId,
             RulesRemovedCount: removalOutcome.RemovedCount,
@@ -558,34 +648,6 @@ public sealed class NetworkEnforcer : INetworkEnforcer
         );
     }
 
-    /// <summary>
-    /// Deletes exactly the rules belonging to <paramref name="sessionId"/> and nothing else.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// Ownership is established from two independent sources and the WEAKER one is used as a filter,
-    /// not as an authority:
-    /// </para>
-    /// <list type="bullet">
-    /// <item><description>
-    /// The journal's applied-rule list is the durable record of what this session actually installed.
-    /// It is authoritative about intent - but it is data on disk, so a name in it is accepted only if
-    /// it also carries this session's name prefix. Without that check a corrupted or tampered journal
-    /// row could name <c>"Codex"</c>, or another product's rule, and rollback would dutifully delete
-    /// it by exact name.
-    /// </description></item>
-    /// <item><description>
-    /// A scan of the SPEMCS group filtered by this session's prefix catches rules that reached the
-    /// firewall but never reached the journal - the crash window between <c>AddRule</c> and
-    /// <c>RecordAppliedRule</c>. Restricting the scan to the group means a rule outside SPEMCS's own
-    /// group is never a candidate no matter what it is called.
-    /// </description></item>
-    /// </list>
-    /// <para>
-    /// Neither source can widen the other: the result is the union, and every member of the union has
-    /// been checked against <see cref="FirewallRuleModel.SessionNamePrefix"/> for this session.
-    /// </para>
-    /// </remarks>
     private (int RemovedCount, string? Error) RemoveSessionOwnedRules(Guid sessionId)
     {
         var sessionPrefix = FirewallRuleModel.SessionNamePrefix(sessionId);
@@ -614,9 +676,6 @@ public sealed class NetworkEnforcer : INetworkEnforcer
 
         if (rejected.Count > 0)
         {
-            // Loud, because the only ways to get here are journal corruption and tampering, and both
-            // are worth an operator's attention. Not fatal: the prefix scan still cleans up the rules
-            // this session really does own.
             _logger.LogError(
                 "Rollback for session {SessionId} REFUSED to delete {Count} journaled rule name(s) that do not carry this session's prefix '{Prefix}': {Names}. The journal row may be corrupt or tampered with.",
                 sessionId, rejected.Count, sessionPrefix, string.Join(", ", rejected));
@@ -632,10 +691,20 @@ public sealed class NetworkEnforcer : INetworkEnforcer
             }
             else
             {
-                // Already gone. Expected on a retried rollback and after a crash between the COM
-                // delete and the journal write, so it is not an error.
                 _logger.LogDebug("Rule {RuleName} was already absent; nothing to remove.", ruleName);
             }
+        }
+
+        // Post-rollback readback verification
+        var remainingRules = _firewall.GetRuleNamesByGroup(FirewallRuleModel.SpemcsRuleGroup)
+            .Where(r => r.StartsWith(sessionPrefix, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        if (remainingRules.Count > 0)
+        {
+            var verifyError = $"Post-rollback verification failed: {remainingRules.Count} rule(s) for session {sessionId} remain in firewall: {string.Join(", ", remainingRules)}.";
+            _logger.LogError(verifyError);
+            return (removedCount, verifyError);
         }
 
         return (removedCount, null);

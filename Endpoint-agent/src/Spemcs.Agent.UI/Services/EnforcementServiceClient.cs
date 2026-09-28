@@ -17,6 +17,7 @@ public interface IEnforcementServiceClient
     Task<NetworkPolicyResultPayload> ApplyPolicyAsync(Guid sessionId, Guid examId, SignedPolicyMessagePayload signedMessage, int targetProfiles = 7, CancellationToken cancellationToken = default);
     Task<NetworkPolicyResultPayload> UpdatePolicyAsync(Guid sessionId, Guid examId, SignedPolicyMessagePayload signedMessage, CancellationToken cancellationToken = default);
     Task<NetworkPolicyResultPayload> RemovePolicyAsync(Guid sessionId, string reason = "Exam stopped", CancellationToken cancellationToken = default);
+    Task<DiagnosticStatusPayload?> GetDiagnosticStatusAsync(CancellationToken cancellationToken = default);
 }
 
 public sealed class EnforcementServiceClient : IEnforcementServiceClient
@@ -26,6 +27,30 @@ public sealed class EnforcementServiceClient : IEnforcementServiceClient
     public EnforcementServiceClient(string pipeName = PipeNames.Control)
     {
         _pipeName = pipeName;
+    }
+
+    public async Task<DiagnosticStatusPayload?> GetDiagnosticStatusAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await using var client = PipeProtocol.CreateClient(_pipeName);
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutCts.CancelAfter(TimeSpan.FromSeconds(5));
+
+            await client.ConnectAsync(timeoutCts.Token);
+            await PipeProtocol.WriteAsync(client, MessageTypes.GetDiagnosticStatus, new { }, timeoutCts.Token);
+
+            var response = await PipeProtocol.ReadAsync(client, timeoutCts.Token);
+            if (response != null && response.Type == MessageTypes.DiagnosticStatusResult)
+            {
+                return response.Payload.Deserialize<DiagnosticStatusPayload>();
+            }
+            return null;
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     public async Task<NetworkPolicyResultPayload> ApplyPolicyAsync(

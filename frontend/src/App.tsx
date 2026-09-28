@@ -10,6 +10,9 @@ import { AlertsPage } from '@/pages/AlertsPage';
 import { AuditLogsPage } from '@/pages/AuditLogsPage';
 import { SettingsPage } from '@/pages/SettingsPage';
 
+import { LabsPage } from '@/pages/LabsPage';
+import { PoliciesPage } from '@/pages/PoliciesPage';
+
 // New pages
 const LiveMonitorPage = lazy(() => import('@/pages/LiveMonitorPage'));
 const DeviceStatusPage = lazy(() => import('@/pages/DeviceStatusPage'));
@@ -58,8 +61,13 @@ function AppRoutes() {
         <Route path="/login" element={<PublicRoute><LoginPage /></PublicRoute>} />
         <Route element={<ProtectedRoute><AppShell /></ProtectedRoute>}>
           <Route path="/dashboard" element={<DashboardPage />} />
+          <Route path="/labs" element={<LabsPage />} />
+          <Route path="/policies" element={<PoliciesPage />} />
           <Route path="/exam-shield" element={<ExamShieldPage />} />
           <Route path="/exam-shield/monitor/:id" element={
+            <Suspense fallback={<LoadingFallback />}><LiveMonitorPage /></Suspense>
+          } />
+          <Route path="/exams/:id" element={
             <Suspense fallback={<LoadingFallback />}><LiveMonitorPage /></Suspense>
           } />
           <Route path="/devices" element={

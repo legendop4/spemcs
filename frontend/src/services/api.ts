@@ -106,7 +106,15 @@ export const getDeviceStatus = (id: string) => fetchJson(`/devices/${id}/status`
 
 // --- Labs ---
 export const getLabs = () => fetchJson('/labs');
+export const getLab = (id: string) => fetchJson(`/labs/${id}`);
+export const createLab = (data: any) => fetchJson('/labs', { method: 'POST', body: JSON.stringify(data) });
+export const updateLab = (id: string, data: any) => fetchJson(`/labs/${id}`, { method: 'PUT', body: JSON.stringify(data) });
+export const deleteLab = (id: string) => fetchJson(`/labs/${id}`, { method: 'DELETE' });
 export const getLabDevices = (labId: string) => fetchJson(`/labs/${labId}/devices`);
+export const assignLabDevices = (labId: string, deviceIds: string[]) =>
+  fetchJson(`/labs/${labId}/devices`, { method: 'POST', body: JSON.stringify({ device_ids: deviceIds }) });
+export const removeLabDevice = (labId: string, deviceId: string) =>
+  fetchJson(`/labs/${labId}/devices/${deviceId}`, { method: 'DELETE' });
 export const setLabSpemcs = (labId: string, enabled: boolean) =>
   fetchJson(`/labs/${labId}/status`, { method: 'PATCH', body: JSON.stringify({ spemcs_enabled: enabled }) });
 
@@ -122,6 +130,7 @@ export const getExamDevices = (examId: string) => fetchJson(`/exams/${examId}/de
 export const getExamSessions = (examId: string) => fetchJson(`/exams/${examId}/sessions`);
 export const getExamAlerts = (examId: string) => fetchJson(`/exams/${examId}/alerts`);
 export const getExamTimeline = (examId: string) => fetchJson(`/exams/${examId}/timeline`);
+export const getExamEnforcementReadiness = (examId: string) => fetchJson(`/exams/${examId}/enforcement-readiness`);
 
 // --- Policies ---
 export const getPolicyVendors = () => fetchJson('/policies/vendors');
@@ -137,6 +146,11 @@ export const distributeExamPolicy = (examId: string, hardwareUuid: string) =>
   fetchJson(`/policies/distribute/${examId}/${hardwareUuid}`, { method: 'POST' });
 export const updateExamPolicy = (examId: string, hardwareUuid: string) =>
   fetchJson(`/policies/update/${examId}/${hardwareUuid}`, { method: 'POST' });
+export const getExamDevicePolicyStates = (examId: string) =>
+  fetchJson(`/policies/exam/${examId}/device-states`);
+export const getSigningKey = () => fetchJson('/policies/signing-key/public');
+export const rotateSigningKey = (reason?: string) =>
+  fetchJson('/policies/signing-key/rotate', { method: 'POST', body: JSON.stringify({ reason }) });
 
 // --- Alerts ---
 export const getAlerts = () => fetchJson('/alerts');

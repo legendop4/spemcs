@@ -45,6 +45,26 @@ public sealed class WindowsFirewallAdapter : IFirewallAdapter
         );
     }
 
+    public bool IsProfileEnabled(FirewallProfiles profile)
+    {
+        dynamic policy = CreatePolicyInstance();
+        try
+        {
+            if (profile.HasFlag(FirewallProfiles.Domain) && !(bool)policy.FirewallEnabled((int)FirewallProfiles.Domain))
+                return false;
+            if (profile.HasFlag(FirewallProfiles.Private) && !(bool)policy.FirewallEnabled((int)FirewallProfiles.Private))
+                return false;
+            if (profile.HasFlag(FirewallProfiles.Public) && !(bool)policy.FirewallEnabled((int)FirewallProfiles.Public))
+                return false;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning("Failed to query FirewallEnabled status: {Message}", ex.Message);
+            return false;
+        }
+    }
+
     public void SetDefaultOutboundAction(FirewallProfiles profile, FirewallAction action)
     {
         object policy = CreatePolicyInstance();

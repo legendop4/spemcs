@@ -266,4 +266,16 @@ public class WindowsFirewallAdapterIntegrationTests
         var ex = Assert.ThrowsAny<Exception>(() => fwRuleBad.RemoteAddresses = "::1");
         Assert.Contains("Value does not fall within the expected range", ex.Message);
     }
+
+    [Fact]
+    public void WindowsFirewall_IsProfileEnabled_CanQueryHostStateWithoutException()
+    {
+        var adapter = new WindowsFirewallAdapter();
+        var baseline = adapter.GetBaseline();
+        // Method should execute cleanly and return boolean without throwing
+        _ = adapter.IsProfileEnabled(FirewallProfiles.Domain);
+        _ = adapter.IsProfileEnabled(FirewallProfiles.Private);
+        _ = adapter.IsProfileEnabled(FirewallProfiles.Public);
+        _ = adapter.IsProfileEnabled(baseline.ActiveProfiles);
+    }
 }

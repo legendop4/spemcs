@@ -72,13 +72,13 @@ _MAX_ERROR_LENGTH = 255
 
 
 def is_armed(status: Optional[str]) -> bool:
-    """Whether a status means the device is enforcing, or is expected to be.
+    """Whether a status means the device is confirmed enforcing live packet filtering.
 
-    ``APPLYING`` counts as armed. See the module docstring: the endpoint does not yet report
-    ``APPLIED``, so requiring it would make every enforcement exam unstartable. This is the single
-    place that decision lives, so tightening it later is a one-line change with tests attached.
+    Only STATUS_APPLIED represents confirmed live enforcement acknowledged by the endpoint.
+    STATUS_APPLYING, STATUS_PENDING, STATUS_FAILED, STATUS_ROLLED_BACK, and any unknown
+    status are strictly not armed (fail-closed).
     """
-    return status is not None and status not in _NOT_ARMED
+    return status == STATUS_APPLIED
 
 
 def _truncate(message: Optional[str]) -> Optional[str]:

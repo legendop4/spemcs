@@ -524,6 +524,8 @@ public sealed class ManagementFirewallEnforcementTests : IDisposable
             _rules.Add(rule);
         }
 
+        public bool IsProfileEnabled(FirewallProfiles profile) => true;
+
         public bool RemoveRule(string ruleName)
         {
             _operations.Add($"RemoveRule: {ruleName}");
@@ -560,6 +562,8 @@ public sealed class ManagementFirewallEnforcementTests : IDisposable
             DomainDefaultOutbound, PrivateDefaultOutbound, PublicDefaultOutbound,
             FirewallProfiles.Domain | FirewallProfiles.Private | FirewallProfiles.Public,
             DateTimeOffset.UtcNow);
+
+        public bool IsProfileEnabled(FirewallProfiles profile) => true;
 
         public void SetDefaultOutboundAction(FirewallProfiles profile, FirewallAction action)
         {

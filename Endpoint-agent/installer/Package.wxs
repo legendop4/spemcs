@@ -22,14 +22,15 @@
 
   <Package Name="SPEMCS Endpoint Agent"
            Manufacturer="SPEMCS Security Inc."
-           Version="2.1.0.0"
+           Version="2.2.8.0"
            UpgradeCode="C781A814-118D-4F23-9D5C-2782A0399587"
            Scope="perMachine">
 
     <SummaryInformation Description="SPEMCS Secure Examination Endpoint Agent"
                          Manufacturer="SPEMCS Security Inc." />
 
-    <MajorUpgrade AllowSameVersionUpgrades="yes"
+    <MajorUpgrade Schedule="afterInstallInitialize"
+                  AllowSameVersionUpgrades="yes"
                   DowngradeErrorMessage="A newer version of SPEMCS Endpoint Agent is already installed." />
 
     <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
@@ -164,14 +165,14 @@
       </ServiceInstall>
 
       <!--
-        Start on install, stop on uninstall. Deliberately NOT Stop="both"/Start="both": a major
-        upgrade already sequences uninstall-then-install, and stopping on an upgrade's install pass
-        would bounce the agent mid-exam.
+        Start on install and upgrade (install); stop on both install (upgrade) and uninstall.
+        This ensures upgrades stop the running service cleanly, replace files without locks,
+        and start the new service automatically without requiring post-install PowerShell.
       -->
       <ServiceControl Id="AgentServiceControl"
                       Name="SPEMCS Endpoint Agent"
                       Start="install"
-                      Stop="uninstall"
+                      Stop="both"
                       Remove="uninstall"
                       Wait="yes" />
     </Component>
@@ -202,7 +203,9 @@
     <!-- Preconfigured config.json and machine-level environment variables for automatic enrollment -->
     <ComponentGroup Id="FirstRunData" Directory="CONFIGFOLDER">
       <Component Id="ConfigFileComponent"
-                 Guid="B3A2E1C0-2F41-4D4B-9C7A-1E5A0D3C4B62">
+                 Guid="B3A2E1C0-2F41-4D4B-9C7A-1E5A0D3C4B62"
+                 NeverOverwrite="yes"
+                 Permanent="yes">
         <File Id="ConfigFile"
               Source="..\installer\data\config.json"
               Name="config.json"
@@ -273,7 +276,7 @@
                      Key="Software\SPEMCS\EndpointAgent\FirstRun"
                      Name="SeenVersion"
                      Type="string"
-                     Value="2.1.0.0"
+                     Value="2.2.8.0"
                      KeyPath="yes" />
       <CreateFolder />
     </Component>
@@ -307,9 +310,10 @@
                   Return="ignore" />
 
     <InstallExecuteSequence>
+      <StartServices Condition="VersionNT AND NOT REMOVE~=&quot;ALL&quot;" />
       <Custom Action="LaunchEnrollmentWizard"
               After="InstallFinalize"
-              Condition="NOT Installed" />
+              Condition="NOT Installed AND NOT WIX_UPGRADE_DETECTED" />
     </InstallExecuteSequence>
 
     <Feature Id="MainFeature" Title="SPEMCS Endpoint Agent" Level="1">

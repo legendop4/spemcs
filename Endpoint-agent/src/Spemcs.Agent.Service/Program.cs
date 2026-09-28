@@ -10,6 +10,50 @@ builder.Logging.ClearProviders();
 builder.Logging.AddProvider(new RollingFileLoggerProvider(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "Spemcs", "Logs")));
 builder.Services.AddWindowsService(options => options.ServiceName = "SPEMCS Endpoint Agent");
 var root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "Spemcs");
+var configPathEarly = Path.Combine(root, "Endpoint Agent", "config.json");
+
+// Eradicate previous stale registration databases if fresh/un-enrolled
+try
+{
+    bool isStaleOrUnenrolled = false;
+    if (File.Exists(configPathEarly))
+    {
+        using var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(configPathEarly));
+        var rootElem = doc.RootElement;
+
+        bool hasRegistered = rootElem.TryGetProperty("registered", out var regProp) &&
+            (regProp.ValueKind == System.Text.Json.JsonValueKind.True ||
+             (regProp.ValueKind == System.Text.Json.JsonValueKind.String && bool.TryParse(regProp.GetString(), out var rb) && rb));
+
+        bool hasDeviceId = rootElem.TryGetProperty("deviceId", out var idProp) &&
+            !string.IsNullOrWhiteSpace(idProp.GetString()) &&
+            Guid.TryParse(idProp.GetString(), out var devIdGuid) && devIdGuid != Guid.Empty;
+
+        bool hasDeviceToken = rootElem.TryGetProperty("deviceToken", out var tokProp) &&
+            !string.IsNullOrWhiteSpace(tokProp.GetString());
+
+        if (!hasRegistered || (!hasDeviceId && !hasDeviceToken))
+        {
+            isStaleOrUnenrolled = true;
+        }
+    }
+    else
+    {
+        isStaleOrUnenrolled = true;
+    }
+
+    if (isStaleOrUnenrolled)
+    {
+        var dbFile = Path.Combine(root, "agent.db");
+        if (File.Exists(dbFile)) File.Delete(dbFile);
+        if (File.Exists(dbFile + "-shm")) File.Delete(dbFile + "-shm");
+        if (File.Exists(dbFile + "-wal")) File.Delete(dbFile + "-wal");
+        var jFile = Path.Combine(root, "network_journal.db");
+        if (File.Exists(jFile)) File.Delete(jFile);
+    }
+}
+catch { }
+
 builder.Services.AddSingleton<IAgentStore>(_ => new SqliteAgentStore(root));
 builder.Services.AddSingleton<IUiLauncher, InteractiveSessionUiLauncher>();
 builder.Services.AddSingleton<IExamUiGateway, NamedPipeUiGateway>();
@@ -39,6 +83,7 @@ var approvedBrowserProvenance = "built-in fallback (no 'approvedBrowser' in conf
 // binary. Null here means unconfigured, which surfaces as a 401 from registration naming the
 // problem, rather than as a working default nobody replaces.
 string? enrollmentKey = null;
+string? initialDeviceToken = null;
 
 if (File.Exists(configPath))
 {
@@ -55,6 +100,20 @@ if (File.Exists(configPath))
             && !string.IsNullOrWhiteSpace(eProp.GetString()))
         {
             enrollmentKey = eProp.GetString();
+        }
+
+        bool isReg = doc.RootElement.TryGetProperty("registered", out var regP) &&
+            (regP.ValueKind == System.Text.Json.JsonValueKind.True ||
+             (regP.ValueKind == System.Text.Json.JsonValueKind.String && bool.TryParse(regP.GetString(), out var rb) && rb));
+
+        bool hasValidId = doc.RootElement.TryGetProperty("deviceId", out var idP) &&
+            Guid.TryParse(idP.GetString(), out var gid) && gid != Guid.Empty;
+
+        if (isReg && hasValidId && doc.RootElement.TryGetProperty("deviceToken", out var dtProp)
+            && dtProp.ValueKind == System.Text.Json.JsonValueKind.String
+            && !string.IsNullOrWhiteSpace(dtProp.GetString()))
+        {
+            initialDeviceToken = dtProp.GetString();
         }
 
         if (doc.RootElement.TryGetProperty("approvedBrowser", out var bProp)
@@ -129,13 +188,27 @@ builder.Services.AddSingleton<IEnforcementStateMachine, EnforcementStateMachine>
 // One credential store for the whole process. Registration writes the device token into it and
 // the session and event adapters read it, so this MUST be a singleton: three separate instances
 // would mean registration credentials that no other call can see.
-builder.Services.AddSingleton(_ => new DeviceCredentialStore(enrollmentKey));
+builder.Services.AddSingleton(_ => new DeviceCredentialStore(enrollmentKey, initialDeviceToken));
 
-builder.Services.AddHttpClient("BackendApi", c => c.BaseAddress = new Uri(backendUrl));
-builder.Services.AddHttpClient<IRegistrationService, BackendRegistrationService>(c => c.BaseAddress = new Uri(backendUrl));
-builder.Services.AddHttpClient<ISessionService, BackendSessionService>(c => c.BaseAddress = new Uri(backendUrl));
-builder.Services.AddHttpClient<IEventPublisher, BackendEventPublisher>(c => c.BaseAddress = new Uri(backendUrl));
+builder.Services.AddTransient(_ => new DynamicBackendAddressHandler(initialBackendUrl: backendUrl));
 
+builder.Services.AddHttpClient("BackendApi", c => c.BaseAddress = new Uri(backendUrl))
+    .AddHttpMessageHandler<DynamicBackendAddressHandler>();
+builder.Services.AddHttpClient<IRegistrationService, BackendRegistrationService>(c => c.BaseAddress = new Uri(backendUrl))
+    .AddHttpMessageHandler<DynamicBackendAddressHandler>();
+builder.Services.AddHttpClient<ISessionService, BackendSessionService>(c => c.BaseAddress = new Uri(backendUrl))
+    .AddHttpMessageHandler<DynamicBackendAddressHandler>();
+builder.Services.AddHttpClient<IEventPublisher, BackendEventPublisher>(c => c.BaseAddress = new Uri(backendUrl))
+    .AddHttpMessageHandler<DynamicBackendAddressHandler>();
+
+builder.Services.AddSingleton(resolved);
+builder.Services.AddSingleton<IKeyringSyncService, KeyringSyncService>();
+builder.Services.AddSingleton<IExamLifecycleCoordinator, ExamLifecycleCoordinator>();
+builder.Services.AddSingleton<IRegistrationSynchronizer, RegistrationSynchronizer>();
+
+builder.Services.AddSingleton<CentralWebSocketWorker>();
+builder.Services.AddSingleton<IWebSocketStatusProvider>(sp => sp.GetRequiredService<CentralWebSocketWorker>());
+builder.Services.AddHostedService(sp => sp.GetRequiredService<CentralWebSocketWorker>());
 builder.Services.AddSingleton<AgentWorker>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<AgentWorker>());
 builder.Services.AddHostedService<ControlPipeWorker>();

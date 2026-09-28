@@ -91,6 +91,8 @@ public class AgentConfigService : IAgentConfigService
         {
             File.Move(tempPath, ConfigFilePath);
         }
+
+        MainWindow.LogUi($"[CONFIG_PERSISTED] configPath={ConfigFilePath}, enrolled={config.IsEnrolled}, hasDeviceId={!string.IsNullOrWhiteSpace(config.DeviceId)}, hasToken={!string.IsNullOrWhiteSpace(config.DeviceToken)}, pid={Environment.ProcessId}");
     }
 
     public void Delete()

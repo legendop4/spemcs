@@ -14,6 +14,17 @@ public sealed class MockFirewallAdapter : IFirewallAdapter
     public FirewallAction PrivateDefaultOutbound { get; set; } = FirewallAction.Allow;
     public FirewallAction PublicDefaultOutbound { get; set; } = FirewallAction.Allow;
     public FirewallProfiles ActiveProfiles { get; set; } = FirewallProfiles.Domain | FirewallProfiles.Private | FirewallProfiles.Public;
+    public bool DomainProfileEnabled { get; set; } = true;
+    public bool PrivateProfileEnabled { get; set; } = true;
+    public bool PublicProfileEnabled { get; set; } = true;
+
+    public bool IsProfileEnabled(FirewallProfiles profile)
+    {
+        if (profile.HasFlag(FirewallProfiles.Domain) && !DomainProfileEnabled) return false;
+        if (profile.HasFlag(FirewallProfiles.Private) && !PrivateProfileEnabled) return false;
+        if (profile.HasFlag(FirewallProfiles.Public) && !PublicProfileEnabled) return false;
+        return true;
+    }
 
     public List<FirewallRuleModel> Rules { get; } = new();
 
@@ -143,9 +154,17 @@ public sealed class MockFirewallAdapter : IFirewallAdapter
     /// only ever delete SPEMCS's own rules would model a safety property the production code does not
     /// have, and would silently pass any regression that started deleting other products' rules.
     /// </remarks>
+    public HashSet<string> RefuseToRemoveRuleNames { get; } = new(StringComparer.OrdinalIgnoreCase);
+
+    public void BlockRemovalOf(string ruleName) => RefuseToRemoveRuleNames.Add(ruleName);
+
     public bool RemoveRule(string ruleName)
     {
         RemovalAttempts.Add(ruleName);
+        if (RefuseToRemoveRuleNames.Contains(ruleName))
+        {
+            return false;
+        }
         var removedSpemcs = Rules.RemoveAll(r => r.Name.Equals(ruleName, StringComparison.OrdinalIgnoreCase)) > 0;
         var removedUnrelated = UnrelatedRuleNames.RemoveAll(n => n.Equals(ruleName, StringComparison.OrdinalIgnoreCase)) > 0;
         return removedSpemcs || removedUnrelated;

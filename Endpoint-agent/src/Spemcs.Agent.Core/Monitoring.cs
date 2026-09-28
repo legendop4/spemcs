@@ -25,6 +25,8 @@ public sealed class ProcessMonitor
     private CancellationTokenSource? _monitorCancellation;
     private Task? _monitorTask;
 
+    public bool IsRunning => _monitorCancellation is not null && !_monitorCancellation.IsCancellationRequested;
+
     public ProcessMonitor(
         IProcessSource source,
         IProcessClassifier classifier,

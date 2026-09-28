@@ -71,11 +71,12 @@ def activate_exam(
     exam = db.query(Exam).filter(Exam.exam_id == exam_id).first()
     if not exam:
         raise ValueError(f"Exam {exam_id} not found")
-    if exam.status == ExamStatus.ACTIVE.value:
-        raise ValueError(f"Exam {exam_id} is already active")
-
-    exam.status = ExamStatus.ACTIVE.value
-    exam.started_at = datetime.utcnow()
+    is_repeat = (exam.status == ExamStatus.ACTIVE.value)
+    if not is_repeat:
+        exam.status = ExamStatus.ACTIVE.value
+        exam.started_at = exam.started_at or datetime.utcnow()
+    else:
+        logger.info(f"Exam {exam_id} is already active; performing idempotent activation refresh.")
 
     # Get assigned devices with their hardware UUIDs
     exam_devices = (
@@ -87,6 +88,28 @@ def activate_exam(
     device_ids = [ed.device_id for ed in exam_devices if ed.device_id]
     devices = db.query(Device).filter(Device.device_id.in_(device_ids)).all() if device_ids else []
     device_map = {d.device_id: d for d in devices}
+
+    # Reconcile any stale sessions for the assigned devices from previously ended/stopped exams
+    if device_ids:
+        stale_sessions = (
+            db.query(ExamSession)
+            .filter(
+                ExamSession.device_id.in_(device_ids),
+                ExamSession.status == "active",
+                ExamSession.exam_id != exam_id,
+            )
+            .all()
+        )
+        for st_sess in stale_sessions:
+            parent_exam = db.query(Exam).filter(Exam.exam_id == st_sess.exam_id).first()
+            if not parent_exam or parent_exam.status in (ExamStatus.STOPPED.value, ExamStatus.COMPLETED.value):
+                logger.info(f"Reconciling stale session {st_sess.session_id} on device {st_sess.device_id} before activating exam {exam_id}")
+                st_sess.status = "completed"
+                st_sess.ended_at = datetime.utcnow()
+            elif parent_exam.status == ExamStatus.ACTIVE.value:
+                dev_obj = device_map.get(st_sess.device_id)
+                dev_label = (dev_obj.device_name if dev_obj else None) or str(st_sess.device_id)
+                raise ValueError(f"Cannot activate: device '{dev_label}' is currently active in another exam '{parent_exam.exam_name}'")
 
     hardware_uuids = []
     for ed in exam_devices:
@@ -163,6 +186,7 @@ def get_active_exam_for_device(db: Session, device_id: UUID) -> Optional[Exam]:
             ExamDevice.device_id == device_id,
             Exam.status == ExamStatus.ACTIVE.value,
         )
+        .order_by(Exam.started_at.desc().nullslast(), Exam.created_at.desc())
         .first()
     )
     return result

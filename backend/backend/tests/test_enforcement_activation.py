@@ -137,10 +137,11 @@ def world(db):
             made["exams"].append(row.exam_id)
             return row
 
-        def device(self, *, hardware_uuid=None, name=None):
+        def device(self, *, hardware_uuid=None, name=None, status="online"):
             row = Device(
                 hardware_uuid=hardware_uuid if hardware_uuid is not None else str(uuid.uuid4()),
                 device_name=name or f"Lab:PC-{uuid.uuid4().hex[:6]}",
+                status=status,
             )
             db.add(row)
             db.commit()
@@ -177,7 +178,7 @@ def world(db):
                 destination_resolver=resolver,
             )
 
-        def arm(self, exam, device, policy, status=dps.STATUS_APPLYING):
+        def arm(self, exam, device, policy, status=dps.STATUS_APPLIED):
             return dps.record_state(
                 db,
                 exam_id=exam.exam_id,
@@ -222,7 +223,7 @@ def _fresh(db, model, pk):
 # ==============================================================================
 @pytest.mark.parametrize("status,expected", [
     (dps.STATUS_APPLIED, True),
-    (dps.STATUS_APPLYING, True),
+    (dps.STATUS_APPLYING, False),
     (dps.STATUS_PENDING, False),
     (dps.STATUS_FAILED, False),
     (dps.STATUS_ROLLED_BACK, False),
@@ -233,17 +234,8 @@ def test_is_armed_classifies_each_lifecycle_status(status, expected):
 
 
 def test_is_armed_treats_an_unknown_status_as_not_armed():
-    """The complement framing, checked rather than assumed.
-
-    ``_NOT_ARMED`` lists the statuses that are *not* enforcing, so a value nobody has classified is
-    armed by default - the wrong direction for a flag that gates whether an exam may start. This
-    test fails the moment somebody flips it to an allow-list of armed statuses without thinking
-    about the default.
-    """
-    assert dps.is_armed("SOMETHING_NOBODY_HAS_DEFINED_YET") is True, (
-        "is_armed is deliberately permissive for unknown statuses; the fail-closed guard is at the "
-        "boundary (agent_ws._map_reported_status), which never lets an unknown status be stored"
-    )
+    """Fail-closed: only STATUS_APPLIED is considered armed."""
+    assert dps.is_armed("SOMETHING_NOBODY_HAS_DEFINED_YET") is False
     assert "SOMETHING_NOBODY_HAS_DEFINED_YET" not in dps.VALID_STATUSES
 
 
@@ -451,9 +443,15 @@ def test_the_device_states_endpoint_publishes_status_and_armed_separately(
     body = resp.json()
     assert len(body) == 1
     assert body[0]["status"] == "APPLYING"
-    assert body[0]["armed"] is True
+    assert body[0]["armed"] is False
     assert body[0]["device_name"] == device.device_name
     assert body[0]["hardware_uuid"] == device.hardware_uuid
+
+    world.arm(exam, device, policy, status=dps.STATUS_APPLIED)
+    resp2 = client.get(f"/api/policies/exam/{exam.exam_id}/device-states")
+    assert resp2.status_code == 200
+    assert resp2.json()[0]["status"] == "APPLIED"
+    assert resp2.json()[0]["armed"] is True
 
 
 def test_a_failed_device_is_reported_as_not_armed_with_its_error(client, db, world, keys):
@@ -634,6 +632,18 @@ def test_distribution_then_activation_is_the_whole_loop(client, db, world, keys,
 
     distributed = client.post(f"/api/policies/distribute/{exam.exam_id}/{device.hardware_uuid}")
     assert distributed.status_code == 200, distributed.text
+
+    # Fail-closed: while APPLYING (in flight), activation must be refused
+    refused_applying = client.post(f"/api/exams/{exam.exam_id}/activate")
+    assert refused_applying.status_code == 409
+
+    # Endpoint validates policy and reports APPLIED
+    agent_ws._persist_policy_state(
+        device.hardware_uuid,
+        reported_status="APPLIED",
+        exam_id=str(exam.exam_id),
+        version=1,
+    )
 
     activated = client.post(f"/api/exams/{exam.exam_id}/activate")
     assert activated.status_code == 200, activated.text
@@ -835,12 +845,11 @@ def test_activation_is_refused_when_the_stored_row_no_longer_matches_its_signatu
 # ==============================================================================
 # P1-S.3  Partial readiness: armed seats launch, un-armed seats are named
 # ==============================================================================
-def test_unarmed_devices_are_not_launched_and_are_not_called_monitoring(client, db, world, keys):
-    """The fail-open this replaces ran in both directions at once: a workstation that received no
-    policy was told to enter exam mode with no lockdown, and the dashboard labelled it
-    ``monitoring`` - the word an invigilator reads as "this seat is controlled"."""
+def test_unarmed_devices_cause_activation_refusal_with_409(client, db, world, keys):
+    """Fail-closed: 100% of assigned devices must be APPLIED and online.
+    If any device is not armed or offline, activation must be refused with 409."""
     exam = world.exam()
-    armed, offline = world.device(), world.device()
+    armed, offline = world.device(), world.device(status="offline")
     world.assign(exam, armed)
     world.assign(exam, offline)
     policy = world.policy(exam)
@@ -848,13 +857,8 @@ def test_unarmed_devices_are_not_launched_and_are_not_called_monitoring(client, 
 
     resp = client.post(f"/api/exams/{exam.exam_id}/activate")
 
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-    assert body["devices_targeted"] == 1
-    assert [d["device_id"] for d in body["devices_not_enforcing"]] == [str(offline.device_id)]
-    assert body["devices_not_enforcing"][0]["device_name"] == offline.device_name
-    assert _device_status(db, exam, armed) == ExamDeviceStatus.MONITORING.value
-    assert _device_status(db, exam, offline) == ExamDeviceStatus.PENDING.value
+    assert resp.status_code == 409, resp.text
+    assert _fresh(db, Exam, exam.exam_id).status == ExamStatus.PENDING.value
 
 
 def _device_status(db, exam, device) -> str:
@@ -886,7 +890,7 @@ def test_the_readiness_endpoint_reports_the_same_refusal_as_activate(client, wor
 
 def test_the_readiness_endpoint_names_the_devices_that_are_not_enforcing(client, world, keys):
     exam = world.exam()
-    armed, offline = world.device(), world.device()
+    armed, offline = world.device(), world.device(status="offline")
     world.assign(exam, armed)
     world.assign(exam, offline)
     policy = world.policy(exam)
@@ -894,7 +898,7 @@ def test_the_readiness_endpoint_names_the_devices_that_are_not_enforcing(client,
 
     body = client.get(f"/api/exams/{exam.exam_id}/enforcement-readiness").json()
 
-    assert body["ready"] is True
+    assert body["ready"] is False
     assert body["devices_assigned"] == 2
     assert body["devices_armed"] == 1
     assert [d["device_id"] for d in body["unarmed_devices"]] == [str(offline.device_id)]

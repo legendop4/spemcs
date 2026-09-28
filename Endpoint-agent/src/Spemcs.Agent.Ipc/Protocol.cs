@@ -15,6 +15,7 @@ public static class PipeNames
 {
     public const string Agent = "spemcs-agent-v1";
     public const string Control = "spemcs-control-v1";
+    public const string UiSetup = "spemcs-ui-setup-v1";
 }
 
 public static class MessageTypes
@@ -35,13 +36,23 @@ public static class MessageTypes
     public const string UpdateNetworkPolicy = "UPDATE_NETWORK_POLICY";
     public const string RemoveNetworkPolicy = "REMOVE_NETWORK_POLICY";
     public const string NetworkPolicyResult = "NETWORK_POLICY_RESULT";
+    public const string GetDiagnosticStatus = "GET_DIAGNOSTIC_STATUS";
+    public const string DiagnosticStatusResult = "DIAGNOSTIC_STATUS_RESULT";
 }
 
 public sealed record PipeEnvelope(string Type, int Version, string CorrelationId, DateTimeOffset TimestampUtc, JsonElement Payload);
-public sealed record RegistrationPayload(string DeviceName, string IpAddress);
+public sealed record RegistrationPayload(string DeviceName, string IpAddress, Guid? DeviceId = null, string? DeviceToken = null);
 public sealed record RegistrationRequestPayload(string IpAddress);
-public sealed record StudentVerificationPayload(string RollNumber);
+public sealed record StudentVerificationPayload(string RollNumber, string? Password = null);
 public sealed record CommandResultPayload(bool Accepted, string State, string? Error = null);
+
+public sealed record DiagnosticStatusPayload(
+    bool NetworkMonitoringRunning,
+    bool ProcessMonitoringRunning,
+    bool EventUploaderRunning,
+    bool WebSocketConnected,
+    bool EnforcementActive,
+    string Summary);
 
 public sealed record ProcessDisplayPayload(string Name, string? ExecutablePath, string Category, string? Reason);
 public sealed record PreComplianceScanPayload(bool IsLoading, bool IsClean, IReadOnlyList<ProcessDisplayPayload> SuspiciousProcesses, string StatusText);
