@@ -13,6 +13,9 @@
 # untrack the existing ones. Those must be removed from the index and every credential they
 # contain rotated - see SPEMCS_TAKEOVER_AUDIT.md.
 .env.txt
+.env.neon.fallback
+.env.*.fallback
+.env.fallback
 *.pem
 *.key
 *.pfx
@@ -145,3 +148,20 @@ out*.txt
 
 # Database Backups
 db_backup.json
+
+# ── Terraform ────────────────────────────────────────────────
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.tfvars
+!*.tfvars.example
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+

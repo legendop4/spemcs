@@ -288,7 +288,7 @@ cat .env
 ```powershell
 curl -X POST http://127.0.0.1:8000/api/auth/register `
   -H "Content-Type: application/json" `
-  -d '{"username": "admin", "email": "admin@campusshield.edu", "password": "Admin@0123", "role": "admin"}'
+  -d '{"username": "admin", "email": "admin@campusshield.edu", "password": "<SECURE_ADMIN_PASSWORD>", "role": "admin"}'
 ```
 
 ---

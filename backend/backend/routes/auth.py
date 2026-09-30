@@ -11,7 +11,7 @@ from backend.app.database import get_db
 from backend.app.dependencies import require_admin
 from backend.models.audit_log import AuditLog
 from backend.models.user import User
-from backend.schemas.user import UserCreate, UserRead, UserLogin, Token
+from backend.schemas.user import UserCreate, UserRead, UserLogin, Token, PasswordChangeRequest
 from backend.services.auth_service import (
     create_access_token,
     hash_password,
@@ -125,3 +125,38 @@ def login(req: UserLogin, db: Session = Depends(get_db)):
 def get_current_user_info(user: User = Depends(require_auth)):
     """Return the user represented by the supplied bearer token."""
     return user
+
+
+@router.post("/change-password", status_code=status.HTTP_200_OK)
+def change_password(
+    req: PasswordChangeRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_auth),
+):
+    """Change the authenticated operator's password."""
+    if not verify_password(req.current_password, user.password_hash or ""):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Incorrect current password",
+        )
+
+    if req.current_password == req.new_password:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="New password must be different from current password",
+        )
+
+    new_hash = hash_password(req.new_password)
+    user.password = new_hash
+    user.password_hash = new_hash
+    db.add(AuditLog(
+        user_id=user.user_id,
+        action="PASSWORD_CHANGED",
+        entity_type="user",
+        entity_id=str(user.user_id),
+        details={"username": user.username},
+    ))
+    db.commit()
+    logger.info("Password successfully changed for user %s", user.username)
+    return {"status": "ok", "message": "Password changed successfully"}
+

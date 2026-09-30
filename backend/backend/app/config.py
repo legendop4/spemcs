@@ -38,6 +38,12 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 480  # 8 hours
     ALGORITHM: str = "HS256"
 
+    # Initial Admin Password (used only when seeding a fresh database if no admin exists)
+    INITIAL_ADMIN_PASSWORD: str = Field(
+        default="",
+        validation_alias=AliasChoices("INITIAL_ADMIN_PASSWORD", "SPEMCS_INITIAL_ADMIN_PASSWORD"),
+    )
+
     # CORS
     # Development browser requests are same-origin through Vite's /api proxy.
     # Deployments that bypass that proxy can supply an explicit JSON list here.
@@ -50,6 +56,30 @@ class Settings(BaseSettings):
     # M8 Security
     DEVICE_TOKEN_SECRET: str = "dev-device-token-secret-change-in-production"
     ENROLLMENT_BOOTSTRAP_KEY: str = "spemcs-enrollment-bootstrap-key-default"
+
+    # ── Management Server Control Plane (M3/M8/M9) ───────────────
+    # The central backend address advertised in compiled policies for endpoint connectivity & heartbeat.
+    MANAGEMENT_SERVER_IP: str = Field(
+        default="192.168.11.65",
+        validation_alias=AliasChoices("MANAGEMENT_SERVER_IP", "SPEMCS_MANAGEMENT_SERVER_IP"),
+    )
+    MANAGEMENT_SERVER_PORT: int = Field(
+        default=8000,
+        validation_alias=AliasChoices("MANAGEMENT_SERVER_PORT", "SPEMCS_MANAGEMENT_SERVER_PORT"),
+    )
+    MANAGEMENT_SERVER_USE_TLS: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("MANAGEMENT_SERVER_USE_TLS", "SPEMCS_MANAGEMENT_SERVER_USE_TLS"),
+    )
+
+    def get_management_server_dict(self) -> dict:
+        """Returns the configured management server dictionary for policy compilation."""
+        ips = [ip.strip() for ip in self.MANAGEMENT_SERVER_IP.split(",") if ip.strip()]
+        return {
+            "ip_addresses": ips if ips else ["192.168.11.65"],
+            "port": self.MANAGEMENT_SERVER_PORT,
+            "use_tls": self.MANAGEMENT_SERVER_USE_TLS,
+        }
 
     # ── Policy signing key material ──────────────────────────────
     # Directory holding the RSA policy-signing keyring. The private key is generated ONCE and
@@ -78,6 +108,20 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices(
             "SIGNING_KEY_ALLOW_EPHEMERAL", "SPEMCS_SIGNING_KEY_ALLOW_EPHEMERAL"
         ),
+    )
+
+    # Runtime-injected private signing key PEM (e.g. from AWS Secrets Manager in ECS Fargate).
+    # When provided, ensures that ephemeral container restarts persist the exact same
+    # signing identity across task lifecycles without relying on persistent local disk volumes.
+    SIGNING_KEY_PEM: str = Field(
+        default="",
+        validation_alias=AliasChoices("SIGNING_KEY_PEM", "SPEMCS_SIGNING_KEY_PEM"),
+    )
+
+    # Runtime-injected JSON bundle containing both private_key_pem and optionally keyring_json.
+    SIGNING_KEY_SECRET_JSON: str = Field(
+        default="",
+        validation_alias=AliasChoices("SIGNING_KEY_SECRET_JSON", "SPEMCS_SIGNING_KEY_SECRET_JSON"),
     )
 
     # ── Trusted destination resolution (requirement 3) ───────────
@@ -118,6 +162,21 @@ class Settings(BaseSettings):
     # stop a private range reaching an allowlist. Loopback, link-local (including the cloud
     # metadata address), multicast and tunnel ranges are refused regardless of this setting.
     POLICY_ALLOW_PRIVATE_DESTINATIONS: bool = True
+
+    # ── Deployment & Artifact paths (Stage 1 cloud decoupling) ────
+    INSTALLER_ARTIFACT_PATH: str = Field(
+        default="",
+        validation_alias=AliasChoices("INSTALLER_ARTIFACT_PATH", "SPEMCS_INSTALLER_ARTIFACT_PATH"),
+    )
+    TRAFFIC_TEST_SCRIPT_PATH: str = Field(
+        default="",
+        validation_alias=AliasChoices("TRAFFIC_TEST_SCRIPT_PATH", "SPEMCS_TRAFFIC_TEST_SCRIPT_PATH"),
+    )
+    DIAGNOSTIC_OUTPUT_DIR: str = Field(
+        default="",
+        validation_alias=AliasChoices("DIAGNOSTIC_OUTPUT_DIR", "SPEMCS_DIAGNOSTIC_OUTPUT_DIR"),
+    )
+
 
     model_config = {
         "env_file": _find_dotenv(),

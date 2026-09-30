@@ -35,11 +35,6 @@ export function LoginPage() {
     }
   };
 
-  const fillDemo = () => {
-    setUsername('admin');
-    setPassword('Admin@0123');
-  };
-
   return (
     <div className="login-page">
       <div className="bg-blob bg-blob-1" />
@@ -110,15 +105,6 @@ export function LoginPage() {
                 {loading ? 'Signing in...' : 'Sign In'}
               </Button>
             </form>
-
-            <div className="login-demo">
-              <button className="login-demo-btn" onClick={fillDemo}>
-                Use demo credentials
-              </button>
-              <div className="login-demo-info">
-                <span>admin / Admin@0123</span>
-              </div>
-            </div>
           </div>
         </div>
       </div>

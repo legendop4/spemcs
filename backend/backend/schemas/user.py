@@ -60,3 +60,9 @@ class TokenData(BaseModel):
     user_id: Optional[str] = None
     username: Optional[str] = None
     role: Optional[str] = None
+
+
+class PasswordChangeRequest(BaseModel):
+    current_password: str
+    new_password: str = Field(min_length=8, max_length=128)
+
