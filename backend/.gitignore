@@ -11,6 +11,9 @@
 # already tracked here. Ignoring it prevents new copies; the tracked one still needs removing
 # from the index and its credentials rotating.
 .env.txt
+.env.neon.fallback
+.env.*.fallback
+.env.fallback
 *.pem
 *.key
 *.pfx

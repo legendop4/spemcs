@@ -267,13 +267,31 @@ async def register_device(
 @router.post("/devices/purge")
 async def purge_device(
     req: DeviceRegisterReq,
+    request: Request,
     db: Session = Depends(get_db),
 ):
     """Completely eradicates previous device registrations for this PC from database."""
-    expected_key = os.getenv("SPEMCS_ENROLLMENT_BOOTSTRAP_KEY", DEFAULT_ENROLLMENT_KEY)
-    if (req.enrollmentKey or "") != expected_key:
-        raise HTTPException(status_code=401, detail="Invalid enrollment bootstrap key")
-    
+    import hmac
+
+    expected_key = (settings.ENROLLMENT_BOOTSTRAP_KEY or "").strip()
+    if not expected_key:
+        logger.error("Device purge refused: ENROLLMENT_BOOTSTRAP_KEY is not configured")
+        raise HTTPException(
+            status_code=503,
+            detail="Device enrollment is not configured on this server",
+        )
+
+    provided_key = req.enrollmentKey or request.headers.get("X-Enrollment-Key")
+    if not provided_key or not hmac.compare_digest(
+        provided_key.encode("utf-8"),
+        expected_key.encode("utf-8"),
+    ):
+        logger.warning("Device purge rejected: missing or invalid bootstrap enrollment key")
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid or missing enrollment bootstrap key",
+        )
+
     purged_count = device_service.purge_device_registration(
         db=db,
         hardware_uuid=req.hardwareUuid,
