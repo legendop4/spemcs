@@ -18,6 +18,9 @@ import {
   AlertTriangle,
   CheckCircle2,
   Cpu,
+  Monitor,
+  Wifi,
+  WifiOff,
 } from 'lucide-react';
 import { ExamWizardModal } from '@/components/ui/ExamWizardModal';
 import * as api from '@/services/api';
@@ -55,6 +58,16 @@ export function ExamShieldPage() {
   const [creating, setCreating] = useState(false);
   const [deactivatingId, setDeactivatingId] = useState<string | null>(null);
 
+  // Enforcement readiness per pending exam
+  const [readinessMap, setReadinessMap] = useState<Record<string, any>>({});
+
+  // Manage Assigned Devices Modal state
+  const [manageModalOpen, setManageModalOpen] = useState(false);
+  const [managingExam, setManagingExam] = useState<any>(null);
+  const [assignedDevices, setAssignedDevices] = useState<any[]>([]);
+  const [loadingAssignedDevices, setLoadingAssignedDevices] = useState(false);
+  const [removingDeviceId, setRemovingDeviceId] = useState<string | null>(null);
+
   // Load vendors on mount
   useEffect(() => {
     api.getPolicyVendors()
@@ -87,6 +100,56 @@ export function ExamShieldPage() {
         .finally(() => setTreeLoading(false));
     }
   }, [createModalOpen]);
+
+  const fetchExamReadiness = (examId: string) => {
+    api.getExamEnforcementReadiness(examId)
+      .then(readiness => {
+        setReadinessMap(prev => ({ ...prev, [examId]: readiness }));
+      })
+      .catch(() => {
+        // Exam not ready or non-enforcement
+      });
+  };
+
+  // Poll/fetch readiness for pending exams
+  useEffect(() => {
+    exams.forEach((exam: any) => {
+      if (exam.status === 'pending' && exam.network_enforcement) {
+        fetchExamReadiness(exam.exam_id);
+      }
+    });
+  }, [exams]);
+
+  const handleOpenManageDevices = async (exam: any) => {
+    setManagingExam(exam);
+    setManageModalOpen(true);
+    setLoadingAssignedDevices(true);
+    try {
+      const devs = await api.getExamDevices(exam.exam_id);
+      setAssignedDevices(devs || []);
+      fetchExamReadiness(exam.exam_id);
+    } catch (err: any) {
+      showToast(err.message || 'Failed to load assigned devices', 'error');
+    } finally {
+      setLoadingAssignedDevices(false);
+    }
+  };
+
+  const handleRemoveDevice = async (deviceId: string, deviceName: string) => {
+    if (!managingExam) return;
+    try {
+      setRemovingDeviceId(deviceId);
+      await api.removeExamDevice(managingExam.exam_id, deviceId);
+      setAssignedDevices(prev => prev.filter(d => d.device_id !== deviceId));
+      fetchExamReadiness(managingExam.exam_id);
+      showToast(`Workstation ${deviceName} removed from exam`, 'info');
+    } catch (err: any) {
+      showToast(err.message || 'Failed to remove device', 'error');
+    } finally {
+      setRemovingDeviceId(null);
+    }
+  };
+
 
   const handleCreateExam = async (e: FormEvent) => {
     e.preventDefault();
@@ -422,9 +485,44 @@ export function ExamShieldPage() {
                             </span>
                           )}
                         </div>
+
+                        {/* Live Readiness Breakdown */}
+                        {readinessMap[exam.exam_id] && (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', flexWrap: 'wrap', marginTop: '2px' }}>
+                            <span style={{ fontWeight: 600, color: 'var(--color-text-primary)' }}>
+                              Assigned seats: {readinessMap[exam.exam_id].total_assigned ?? exam.device_count ?? 0}
+                            </span>
+                            <span style={{ color: 'var(--color-success-fg, #057a55)', fontWeight: 600 }}>
+                              &middot; Ready: {readinessMap[exam.exam_id].ready_count ?? readinessMap[exam.exam_id].counts?.ready ?? 0}
+                            </span>
+                            {(readinessMap[exam.exam_id].offline > 0 || readinessMap[exam.exam_id].counts?.offline > 0) && (
+                              <span style={{ color: 'var(--color-text-muted)', fontWeight: 500 }}>
+                                &middot; Offline: {readinessMap[exam.exam_id].offline ?? readinessMap[exam.exam_id].counts?.offline}
+                              </span>
+                            )}
+                            {(readinessMap[exam.exam_id].failed > 0 || readinessMap[exam.exam_id].counts?.failed > 0) && (
+                              <span style={{ color: 'var(--color-danger, #e02424)', fontWeight: 600 }}>
+                                &middot; Failed: {readinessMap[exam.exam_id].failed ?? readinessMap[exam.exam_id].counts?.failed}
+                              </span>
+                            )}
+                            {(readinessMap[exam.exam_id].not_connected > 0 || readinessMap[exam.exam_id].counts?.not_connected > 0) && (
+                              <span style={{ color: '#D89400', fontWeight: 600 }}>
+                                &middot; Not connected: {readinessMap[exam.exam_id].not_connected ?? readinessMap[exam.exam_id].counts?.not_connected}
+                              </span>
+                            )}
+                          </div>
+                        )}
                       </div>
 
                       <div className="ds-flex-row ds-items-center" style={{ gap: '10px', flexShrink: 0 }}>
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          onClick={() => handleOpenManageDevices(exam)}
+                          style={{ fontSize: '12px', fontWeight: 500 }}
+                        >
+                          <Monitor size={13} /> Manage Assigned Devices
+                        </Button>
                         {hasLockdown && !isCompiled && (
                           <Button
                             size="sm"
@@ -650,6 +748,143 @@ export function ExamShieldPage() {
             )}
           </div>
         </form>
+      </Modal>
+
+      {/* Manage Assigned Devices Modal */}
+      <Modal
+        open={manageModalOpen}
+        onClose={() => setManageModalOpen(false)}
+        title={`Manage Assigned Devices — ${managingExam?.exam_name || ''}`}
+        size="lg"
+        footer={
+          <div className="ds-flex-row ds-items-center" style={{ gap: '12px', justifyContent: 'flex-end' }}>
+            <Button
+              variant="primary"
+              onClick={() => {
+                setManageModalOpen(false);
+                if (managingExam) {
+                  fetchExamReadiness(managingExam.exam_id);
+                }
+              }}
+            >
+              Done
+            </Button>
+          </div>
+        }
+      >
+        <div className="ds-flex-col" style={{ gap: '16px' }}>
+          {/* Readiness Summary Banner */}
+          {managingExam && readinessMap[managingExam.exam_id] && (
+            <div
+              style={{
+                padding: '12px 16px',
+                borderRadius: '8px',
+                backgroundColor: readinessMap[managingExam.exam_id].ready ? 'rgba(5, 122, 85, 0.08)' : 'rgba(224, 36, 36, 0.08)',
+                border: readinessMap[managingExam.exam_id].ready ? '1px solid rgba(5, 122, 85, 0.2)' : '1px solid rgba(224, 36, 36, 0.2)',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '6px',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap' }}>
+                <span style={{ fontSize: '13px', fontWeight: 600, color: readinessMap[managingExam.exam_id].ready ? 'var(--color-success-fg)' : 'var(--color-danger)' }}>
+                  {readinessMap[managingExam.exam_id].ready
+                    ? '✓ All assigned workstations are online and policy-enforced. Ready to activate.'
+                    : '⚠ Launch blocked: Unready workstations must be armed or removed before activation.'}
+                </span>
+                <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--color-text-secondary)' }}>
+                  Assigned: {assignedDevices.length} &middot; Ready: {readinessMap[managingExam.exam_id].ready_count ?? readinessMap[managingExam.exam_id].counts?.ready ?? 0}
+                </span>
+              </div>
+              <div style={{ display: 'flex', gap: '12px', fontSize: '12px', color: 'var(--color-text-muted)' }}>
+                <span>Offline: {readinessMap[managingExam.exam_id].offline ?? readinessMap[managingExam.exam_id].counts?.offline ?? 0}</span>
+                <span>Failed: {readinessMap[managingExam.exam_id].failed ?? readinessMap[managingExam.exam_id].counts?.failed ?? 0}</span>
+                <span>Not connected: {readinessMap[managingExam.exam_id].not_connected ?? readinessMap[managingExam.exam_id].counts?.not_connected ?? 0}</span>
+              </div>
+            </div>
+          )}
+
+          <p style={{ fontSize: '13px', color: 'var(--color-text-muted)' }}>
+            Workstations assigned to this exam. Remove offline or unready workstations to proceed with activation on live systems.
+          </p>
+
+          {loadingAssignedDevices ? (
+            <div className="ds-flex-col" style={{ gap: '8px' }}>
+              <Skeleton className="h-10" />
+              <Skeleton className="h-10" />
+            </div>
+          ) : assignedDevices.length === 0 ? (
+            <div style={{ textAlign: 'center', padding: '24px', backgroundColor: 'var(--color-bg)', borderRadius: '8px', color: 'var(--color-text-muted)' }}>
+              No workstations assigned to this exam.
+            </div>
+          ) : (
+            <div style={{ maxHeight: '360px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              {assignedDevices.map((d: any) => {
+                const isOnline = d.device_status === 'online';
+                const policyState = d.policy_status || d.exam_device_status || 'PENDING';
+                const isRemoving = removingDeviceId === d.device_id;
+
+                return (
+                  <div
+                    key={d.device_id}
+                    className="ds-flex-row ds-justify-between ds-items-center"
+                    style={{
+                      padding: '12px 16px',
+                      backgroundColor: '#ffffff',
+                      border: '1px solid rgba(0,0,0,0.08)',
+                      borderRadius: '8px',
+                    }}
+                  >
+                    <div className="ds-flex-col" style={{ gap: '2px' }}>
+                      <div className="ds-flex-row ds-items-center" style={{ gap: '8px' }}>
+                        <span style={{ fontSize: '14px', fontWeight: 600, color: 'var(--color-text-primary)' }}>
+                          {d.pc_number || d.device_name}
+                        </span>
+                        <span style={{
+                          fontSize: '11px',
+                          padding: '2px 8px',
+                          borderRadius: '12px',
+                          backgroundColor: isOnline ? 'var(--color-success-bg, #def7ec)' : '#f3f4f6',
+                          color: isOnline ? 'var(--color-success-fg, #03543f)' : 'var(--color-text-muted)',
+                          fontWeight: 500,
+                        }}>
+                          {isOnline ? 'Online' : 'Offline'}
+                        </span>
+                        <span style={{
+                          fontSize: '11px',
+                          padding: '2px 8px',
+                          borderRadius: '12px',
+                          backgroundColor: policyState === 'APPLIED' ? 'rgba(5, 122, 85, 0.1)' : policyState === 'FAILED' ? 'rgba(224, 36, 36, 0.1)' : 'rgba(216, 148, 0, 0.1)',
+                          color: policyState === 'APPLIED' ? 'var(--color-success-fg)' : policyState === 'FAILED' ? 'var(--color-danger)' : '#D89400',
+                          fontWeight: 600,
+                        }}>
+                          Policy: {policyState}
+                        </span>
+                      </div>
+                      <div style={{ fontSize: '11px', color: 'var(--color-text-muted)' }}>
+                        HW: {d.hardware_uuid} &middot; Lab: {d.lab_name || 'N/A'}
+                        {d.last_error && (
+                          <span style={{ color: 'var(--color-danger)', marginLeft: '6px' }}>
+                            &middot; Error: {d.last_error}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    <Button
+                      size="sm"
+                      variant="outline-danger"
+                      disabled={isRemoving}
+                      onClick={() => handleRemoveDevice(d.device_id, d.pc_number || d.device_name)}
+                    >
+                      <Trash2 size={13} /> {isRemoving ? 'Removing...' : 'Remove'}
+                    </Button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
       </Modal>
 
       <ExamWizardModal

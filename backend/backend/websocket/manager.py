@@ -437,6 +437,13 @@ class RealtimeManager:
                 logger.warning(f"Device {hw_uuid} failed heartbeat")
                 disconnected.append(hw_uuid)
                 await self.unregister_device(ws)
+                try:
+                    from backend.websocket.agent_ws import _update_device_presence
+                    from fastapi.concurrency import run_in_threadpool
+                    await run_in_threadpool(_update_device_presence, hw_uuid, False)
+                except Exception as db_err:
+                    logger.error(f"Failed to update device presence on heartbeat loss: {db_err}")
+
         
         # Check dashboard connections
         for ws in list(self._dashboard_connections):

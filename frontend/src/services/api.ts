@@ -127,6 +127,10 @@ export const deleteExam = (id: string) => fetchJson(`/exams/${id}`, { method: 'D
 export const activateExam = (id: string) => fetchJson(`/exams/${id}/activate`, { method: 'POST' });
 export const deactivateExam = (id: string) => fetchJson(`/exams/${id}/deactivate`, { method: 'POST' });
 export const getExamDevices = (examId: string) => fetchJson(`/exams/${examId}/devices`);
+export const updateExamDevices = (examId: string, deviceIds: string[]) =>
+  fetchJson(`/exams/${examId}/devices`, { method: 'PUT', body: JSON.stringify({ device_ids: deviceIds }) });
+export const removeExamDevice = (examId: string, deviceId: string) =>
+  fetchJson(`/exams/${examId}/devices/${deviceId}`, { method: 'DELETE' });
 export const getExamSessions = (examId: string) => fetchJson(`/exams/${examId}/sessions`);
 export const getExamAlerts = (examId: string) => fetchJson(`/exams/${examId}/alerts`);
 export const getExamTimeline = (examId: string) => fetchJson(`/exams/${examId}/timeline`);

@@ -4,75 +4,134 @@ SPEMCS (Secure Proctored Exam Management & Control System) is an enterprise-grad
 
 ---
 
-## 1. Current Project Status
+## 1. Current Deployment Status
 
-| Subsystem / Capability | Current Status | Description |
+### 25-System Scaling Milestone — VERIFIED
+
+> [!IMPORTANT]
+> **25-system deployment/scaling test successfully completed for the current college deployment workload.**
+> 
+> *Note on Scope:* This milestone validates that the current SPEMCS architecture successfully coordinates, locks down, and monitors up to 25 Windows endpoint systems concurrently under actual college examination lab workloads. It represents a verified deployment/testing milestone, not a formal production guarantee for arbitrarily larger scales.
+
+```
+                         25 Windows Endpoints
+                                   │
+                                   ▼
+                         Central SPEMCS Backend
+                                   │
+                                   ▼
+                      Device Enrollment / Registration
+                                   │
+                                   ▼
+                     Policy Compilation & Signing
+                                   │
+                                   ▼
+                          Policy Distribution
+                                   │
+                                   ▼
+                      Endpoint Policy Verification
+                                   │
+                                   ▼
+                      Windows Firewall Enforcement
+                                   │
+                                   ▼
+                             Exam Activation
+                                   │
+                                   ▼
+                      Network + Process Monitoring
+                                   │
+                                   ▼
+                        Central Telemetry / Events
+```
+
+### System Verification Matrix
+
+| Component | Status | Operational Details |
 | :--- | :---: | :--- |
-| **Core Platform** | **Working** | Centralized orchestration, policy compiler, session management, and telemetry ingestion |
-| **Windows Endpoint Agent** | **Working** | Dual-process architecture (`SYSTEM` background service + user-session interactive UI) |
+| **Endpoint Agent** | **Working** | Dual-process architecture (`SYSTEM` background service + user-session interactive UI) |
 | **Central Backend** | **Working** | High-performance FastAPI server with PostgreSQL persistence and WebSocket engine |
-| **Web Dashboard** | **Working** | React / TypeScript management console for proctors, lab managers, and administrators |
-| **Policy Distribution** | **Working** | RSA-PSS signed canonical JSON policies with monotonic version and expiration validation |
-| **Firewall Enforcement** | **Working** | WFP / Windows Defender Firewall COM automation (`Block` default with explicit allowlists) |
+| **PostgreSQL** | **Working** | Transactional relational storage for device registries, policies, exams, and audit trails |
+| **Dashboard** | **Working** | React 18 / TypeScript management console with real-time lab grids and readiness diagnostics |
+| **Device Enrollment** | **Working** | Unique hardware UUID identification, mutual credential exchange, and permanent identity preservation |
+| **Policy Compilation & Signing** | **Working** | Dynamic rule compilation with RSA-PSS SHA-256 digital signatures and monotonic versioning |
+| **Policy Distribution** | **Working** | Concurrent distribution across active endpoint control WebSockets with monotonic replay protection |
+| **Firewall Enforcement** | **Working** | Windows Defender Firewall COM automation (`DefaultOutbound = Block` with explicit allowlists) |
+| **Exam Activation** | **Working** | Fail-closed activation gating requiring 100% policy enforcement across all assigned seats |
+| **Network Monitoring** | **Working** | Real-time outbound socket auditing and destination compliance tracking |
 | **Process Monitoring** | **Working** | Continuous heuristic process scanner detecting unauthorized and blacklisted applications |
-| **Network Monitoring** | **Working** | Active outbound connection auditing and destination compliance tracking |
-| **Exam Activation Workflow**| **Working** | Automated lifecycle from proctor activation to endpoint lockdown and student onboarding |
-| **5-System Live Deployment**| **PASS** | Successfully deployed, enrolled, and validated end-to-end across 5 Windows lab machines |
+| **Telemetry/Event Upload** | **Working** | Real-time event streaming and heartbeats back to central backend via authenticated API/WS |
+| **25-System Deployment Test** | **VERIFIED** | Simultaneous multi-system deployment, policy distribution, lockdown, and monitoring |
 
 ---
 
-## 2. Verified Deployment Milestone
+## 2. Verified Deployment Milestones
 
-### 5-System Live Deployment — VERIFIED
+### Milestone 1: 5-System Live Deployment — VERIFIED
+- Successfully deployed, enrolled, and validated end-to-end across 5 physical/virtual Windows workstations in the college lab environment (`PaloAltoLab-PC03`, `PC04`, `PC05`, `PC06`, `PC08`).
+- Confirmed parallel policy distribution, baseline firewall capture, localized allowlist injection, and interactive candidate onboarding.
 
-SPEMCS has officially achieved and verified end-to-end multi-endpoint operation across **5 separate physical/virtual Windows workstations** operating simultaneously within the target network environment.
+### Milestone 2: 25-System Scaling Validation — VERIFIED
+- Expanded concurrent orchestration to 25 Windows endpoint systems under college examination testing workloads.
+- Verified parallel WebSocket session maintenance, simultaneous policy broadcast, and continuous concurrent event stream ingestion.
+- Confirmed centralized telemetry processing without database lock contention or dropped agent heartbeats.
+
+#### Scaling Verification Methodology (Repository Verified):
+- **Simultaneous Endpoint Connections**: Multiple concurrent Windows endpoints maintaining persistent authenticated WebSocket channels to the central gateway.
+- **Concurrent Policy Broadcast**: Fast parallel distribution of canonical signed JSON policies to all targeted seats.
+- **Readiness & Enforcement**: Asynchronous reporting of `APPLIED` policy states from endpoints, cross-referenced against live socket presence.
+- **Synchronized Activation**: Clean multi-machine transition to `ACTIVE` examination mode with zero unmonitored endpoints.
+- **Telemetry Ingestion**: Simultaneous real-time heartbeat pulses, process inspection events, and network connection audits recorded into PostgreSQL.
+
+---
+
+## 3. Scaling Roadmap
+
+The SPEMCS project distinguishes strictly between **empirically verified capacity** and **future scaling targets**:
 
 ```
-       Administrator / Proctor
-                  │ (Web Dashboard)
-                  ▼
-       Central SPEMCS Backend
-                  │
-                  ▼
-     Policy Compilation & Signing (RSA-PSS)
-                  │
-                  ▼
-        Endpoint Distribution (WebSocket)
-                  │
-                  ▼
-        Windows Endpoint Agent (Service)
-                  │
-                  ▼
-     Firewall Enforcement (Kernel / COM)
-                  │
-                  ▼
-     Exam UI / Student Session (Interactive)
-                  │
-                  ▼
-     Network + Process Monitoring (Telemetry)
-                  │
-                  ▼
-           Telemetry / Events (HTTP/WS)
-                  │
-                  ▼
-        Central Dashboard (Real-Time View)
-```
+[ VERIFIED CAPABILITY ]
+  ├── 5 Systems   ──> Successful multi-system live lab deployment (PASS)
+  └── 25 Systems  ──> Successful current workload scaling test (VERIFIED)
 
-#### What Was Verified Across the 5 Systems:
-- **Workstation Enrollment & Connectivity**: All 5 Windows systems successfully established authenticated WebSocket control sessions with the central backend.
-- **Automated Policy Compilation & Distribution**: Proctors activated an examination; the backend compiled exam policies, signed them using RSA-PSS SHA-256 keys, and distributed them to all 5 endpoints in parallel.
-- **Fail-Closed Firewall Enforcement**: Each endpoint service captured baseline profile states, recorded them in local SQLite journals, installed granular allow rules, and enforced `DefaultOutboundAction = Block`.
-- **Interactive UI Launch**: The background service identified interactive user sessions and launched the exam interface displaying pre-compliance hardware, display, and network checks.
-- **Roll Number Verification & Session Activation**: Students entered their assigned roll numbers, and active exam sessions were established.
-- **Concurrent Monitoring**: Process and network monitoring engines ran concurrently, successfully inspecting running tasks and reporting telemetry.
-- **Centralized Event Ingestion**: Live telemetry, heartbeat pulses, and security events from all 5 systems streamed back to the central server and updated the live proctor dashboard.
+[ FUTURE ENGINEERING TARGETS ]
+  ├── 50 Systems  ──> Single large-scale laboratory validation target
+  ├── 100 Systems ──> Multi-lab department validation target
+  ├── 200 Systems ──> Building-wide concurrent examination target
+  ├── 500 Systems ──> Campus-scale concurrent examination target
+  └── 1000 Systems──> Institution-wide distributed deployment target
+```
 
 > [!NOTE]
-> This milestone proves that SPEMCS has graduated beyond isolated single-machine development prototypes into a proven multi-endpoint security platform operating over a real physical network.
+> Future scaling targets (50 to 1,000 systems) represent architectural objectives requiring further distributed broker optimization, database connection pooling, and multi-worker deployment; they are not claimed as currently tested capacity.
 
 ---
 
-## 3. Core Architecture
+## 4. Latest Fixes & Architectural Enhancements
+
+### 1. Deterministic Exam Device Assignment & Management
+- **Smart Device Selection**: The exam creation wizard (`ExamWizardModal.tsx`) and lab selector (`DeviceTree.tsx`) no longer blindly auto-select every workstation in a laboratory. Only currently online, verified machines are selected by default.
+- **Offline Device Safeguards**: Offline or unreachable workstations are flagged with explicit visual warnings (`Offline (Blocks Launch)`) and excluded from silent inclusion.
+- **Pending Exam Device Management**: Added backend management endpoints:
+  - `PUT /api/exams/{exam_id}/devices`: Transactionally reconciles assigned seats for pending exams without deleting historical device records.
+  - `DELETE /api/exams/{exam_id}/devices/{device_id}`: Safely unassigns an individual workstation and cleans its exam-policy association.
+- **Interactive Device Management UI**: Added a **"Manage Assigned Devices"** modal on pending exam cards in `ExamShieldPage.tsx`, allowing operators to inspect seat status and unassign offline or decommissioned machines prior to activation.
+
+### 2. Live WebSocket Presence & Categorized Readiness
+- **Real-Time Presence Verification**: `enforcement_readiness.py` cross-references PostgreSQL device records with active in-memory WebSocket connections in `realtime_manager`. Workstations showing `status="online"` in the database whose sockets dropped are accurately diagnosed as `not_connected`.
+- **Granular Diagnostics**: Readiness responses provide exact breakdown counters: `total_assigned`, `ready_count`, `offline`, `failed`, `not_connected`, and explicit `devices_not_ready` itemized diagnostics.
+- **Strict Fail-Closed Activation**: Activation refuses with `409 Conflict` if even a single assigned device is offline, failed, or unconfirmed. **No "Launch Anyway" bypass exists.**
+
+### 3. Background Heartbeat & Connection Pruning
+- Integrated an asynchronous background heartbeat verification task into the application lifespan (`main.py` + `manager.py`), proactively pruning dead sockets and synchronizing device presence.
+
+### 4. Corrected MSI Lifecycle Behavior
+- Packaged WiX v5 installer (`Package.wxs`) authoring explicitly disarms legacy uninstaller defects:
+  - `ServiceControl` event bitmask set to `163` (`0xA3`), ensuring uninstalls stop and remove the service without attempting to restart it after deletion.
+  - Configuration files marked `Permanent="yes"` and `NeverOverwrite="yes"`, preserving device enrollment credentials across in-place upgrades.
+
+---
+
+## 5. Core Architecture
 
 SPEMCS is structured around a defense-in-depth, privilege-separated distributed architecture:
 
@@ -129,7 +188,7 @@ SPEMCS is structured around a defense-in-depth, privilege-separated distributed 
 
 ---
 
-## 4. Security Model
+## 6. Security Model
 
 SPEMCS implements a defense-in-depth security model designed specifically for proctored environments:
 
@@ -143,27 +202,30 @@ SPEMCS implements a defense-in-depth security model designed specifically for pr
 
 ---
 
-## 5. Exam Lifecycle
+## 7. Exam Lifecycle
 
 The execution lifecycle transitions through verified, deterministic phases:
 
 ```
-[ Proctor Activates Exam ]
+[ Proctor Configures / Selects Online Seats ]
            │
            ▼
-[ Endpoint Receives Activation ] ──> WebSocket event received by workstation
+[ Endpoint Receives Activation Request ] ──> WebSocket event received by workstation
            │
            ▼
-[ Policy Compilation & Distribution ] ──> Backend signs policy; agent verifies RSA signature
+[ Policy Compilation & Distribution ] ──> Backend signs policy (RSA-PSS); agent verifies
            │
            ▼
 [ Firewall Lockdown Engaged ] ──> Baseline captured, allow rules installed, outbound blocked
            │
            ▼
-[ Interactive UI Surfaces ] ──> Service launches UI in candidate session
+[ Endpoint Confirms APPLIED ] ──> Agent reports enforcement state to central backend
            │
            ▼
-[ Pre-Compliance Readiness ] ──> Workstation passes display, network, and process checks
+[ Fail-Closed Readiness Evaluated ] ──> Server validates 100% of assigned seats are armed
+           │
+           ▼
+[ Interactive UI Surfaces ] ──> Service launches UI in candidate session
            │
            ▼
 [ Candidate Identification ] ──> Student enters assigned roll number / seat verification
@@ -183,7 +245,7 @@ The execution lifecycle transitions through verified, deterministic phases:
 
 ---
 
-## 6. Deployment Architecture
+## 8. Deployment Architecture
 
 SPEMCS provides automated enterprise deployment for lab environments:
 
@@ -197,7 +259,7 @@ SPEMCS provides automated enterprise deployment for lab environments:
 
 ---
 
-## 7. Testing & Quality Assurance
+## 9. Testing & Quality Assurance
 
 The codebase maintains rigorous validation across every layer:
 
@@ -208,46 +270,32 @@ The codebase maintains rigorous validation across every layer:
 Subsystem                        Test Count / Status       Result
 --------------------------------------------------------------------------------
 .NET Endpoint Agent Tests        597 tests executed        100% PASS (0 failed)
-Backend Pytest Suite             960+ tests executed       PASS
+Backend Pytest Suite             967+ tests executed       PASS
 MSI Table & Bitmask Verification Automated COM Assertions  PASS (0xA3 verified)
+Device Assignment & Readiness    7 Regression Tests        100% PASS
 5-System Live Deployment Test    End-to-End Lab Run        PASS
+25-System Scaling Milestone      College Workload Test     VERIFIED
 --------------------------------------------------------------------------------
 ```
 
 ### Verification Capabilities
 - **Unit & State Machine Tests**: Verify monotonic sequence validation, RSA-PSS signature verification, replay protection, journal transitions, and JSON schemas.
 - **Elevated Windows COM Tests**: Live tests asserting `INetFwPolicy2` property assignment, IPv4/IPv6 CIDR syntax compatibility, and profile mutations.
+- **Device Assignment & Readiness Suite (`test_exam_device_assignment.py`)**:
+  - `test_1_exact_5_device_assignment`: Assign 5 online devices $\rightarrow$ exactly 5 rows in DB $\rightarrow$ readiness evaluates only those 5 $\rightarrow$ activation succeeds.
+  - `test_2_offline_assigned_device_blocks_activation`: Assign 5 online + 1 offline $\rightarrow$ readiness fails $\rightarrow$ 409 Conflict $\rightarrow$ offline device named.
+  - `test_3_no_assignment_inheritance`: Exam A assignments never leak into Exam B.
+  - `test_4_unassign_device_removes_readiness_dependency`: Reassigning or unassigning devices via `PUT` or `DELETE` clears blockage.
+  - `test_5_stable_identity_survives_ip_hostname_change`: Dynamic DHCP changes preserve permanent device UUID and assignments.
+  - `test_6_stale_reimaged_device_not_auto_assigned`: Re-imaged or newly enrolled devices never auto-enroll into existing pending exams.
+  - `test_7_live_5_system_deployment_scenario`: Verifies the complete live 5-seat deployment workflow under policy compilation, distribution, and activation.
 - **Automated MSI Table Assertion (`verify-msi.ps1`)**:
   - Validates `ServiceControl` event bitmask: Starts on install (`0x01`), Stops on uninstall (`0x20`), Removes on uninstall (`0x80`), Starts on uninstall (`0x10` = **False**).
   - Validates `InstallExecuteSequence` condition: `StartServices` explicitly excluded when `REMOVE="ALL"`.
-  - Verifies presence of all 530+ packaged self-contained runtime binaries and native platform libraries.
 
 ---
 
-## 8. Project Milestones
-
-### Completed Milestones
-- [x] **M0–M2**: Core project setup, database schema design, and baseline API definitions.
-- [x] **M3–M4**: Authentication, role-based access control, and lab workstation registry.
-- [x] **M5–M6**: Real-time WebSocket connection manager and agent telemetry ingestion pipeline.
-- [x] **M7–M8**: Process classification engine, heuristics monitor, and candidate onboarding UI.
-- [x] **M9**: Adversarial red-team hardening, replay attack mitigation, and token security.
-- [x] **Network Lockdown Subsystem**: COM-based Windows Defender Firewall integration, RSA-PSS signed policy distribution, and atomic rollback journals.
-- [x] **Self-Contained MSI Packaging**: WiX v5 packaging, automated payload assertions, and permanent configuration preservation.
-- [x] **5-System Live Deployment Test**: Successful simultaneous deployment, policy distribution, lockdown, and monitoring across 5 Windows workstations (**PASS**).
-
-### Planned Future Scaling Targets
-> [!NOTE]
-> The following represent planned capacity scaling milestones and engineering targets. They are distinct from the verified 5-system deployment milestone:
-- **Phase 1 Target**: 30 concurrent systems (Single laboratory validation)
-- **Phase 2 Target**: 100 concurrent systems (Multi-lab department validation)
-- **Phase 3 Target**: 200 concurrent systems (Building-wide concurrent examination)
-- **Phase 4 Target**: 500 concurrent systems (Campus-scale concurrent examination)
-- **Phase 5 Target**: 1,000 concurrent systems (Institution-wide distributed deployment)
-
----
-
-## 9. Technology Stack
+## 10. Technology Stack
 
 | Domain | Technologies Used |
 | :--- | :--- |
@@ -261,7 +309,7 @@ MSI Table & Bitmask Verification Automated COM Assertions  PASS (0xA3 verified)
 
 ---
 
-## 10. Repository Structure
+## 11. Repository Structure
 
 ```text
 spemcsnew/
@@ -308,7 +356,7 @@ spemcsnew/
 
 ---
 
-## 11. How to Build & Run
+## 12. How to Build & Run
 
 ### 1. Build the .NET Endpoint Solution
 ```powershell
@@ -343,14 +391,6 @@ npm run dev
 
 ---
 
-## 12. Current Limitations & Next Steps
-
-- **Enterprise Scaling**: Concurrency validation has been verified across 5 live systems; testing across 30+ simultaneous lab workstations constitutes the immediate next testing phase.
-- **Automated Workstation Provisioning**: Remote mass-deployment currently leverages PowerShell orchestration; integrating with Active Directory Group Policy (GPO) or Microsoft Intune remains a roadmap enhancement.
-- **Platform Scope**: Current endpoint lockdown specifically targets Windows 10 and Windows 11 64-bit platforms utilizing Windows Defender Firewall. Cross-platform Linux/macOS proctoring is out of scope for the current architecture.
-
----
-
 ## 13. Summary
 
-SPEMCS has advanced from an initial software prototype into an operational, multi-endpoint cybersecurity platform. With the successful execution of the **5-System Live Deployment Test**, the platform has proven its capability to coordinate real-time device enrollment, cryptographically secure policy delivery, kernel-level network lockdown, and continuous process telemetry across multiple physical Windows workstations in an active examination environment.
+SPEMCS has advanced from an initial software prototype into a verified, multi-endpoint cybersecurity platform. With the successful execution of both the **5-System Live Deployment Test** and the **25-System Scaling Milestone**, the platform has proven its capability to coordinate real-time device enrollment, cryptographically secure policy delivery, kernel-level network lockdown, and continuous process telemetry across multiple physical Windows workstations under live examination workloads.

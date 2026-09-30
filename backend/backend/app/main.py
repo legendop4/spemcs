@@ -106,9 +106,30 @@ async def lifespan(app: FastAPI):
         except Exception as startup_err:
             logger.error(f"Failed to load active exams into cache: {startup_err}")
 
+    import asyncio
+    heartbeat_task = None
+    async def _heartbeat_loop():
+        interval = getattr(settings, "WS_HEARTBEAT_INTERVAL", 30)
+        while True:
+            try:
+                await asyncio.sleep(interval)
+                await realtime_manager.heartbeat_check()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Periodic heartbeat check error: {e}")
+
+    heartbeat_task = asyncio.create_task(_heartbeat_loop())
+
     logger.info("SPEMCS API startup complete")
     yield
     # Shutdown
+    if heartbeat_task:
+        heartbeat_task.cancel()
+        try:
+            await heartbeat_task
+        except asyncio.CancelledError:
+            pass
     logger.info("SPEMCS API shutting down")
 
 

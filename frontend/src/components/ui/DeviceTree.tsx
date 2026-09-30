@@ -32,6 +32,12 @@ export function DeviceTree({ nodes, selectedDeviceIds, onSelectionChange, showSt
     return (node.children || []).flatMap(getDescendantDeviceIds);
   };
 
+  // Get all device nodes under a node
+  const getDescendantDeviceNodes = (node: TreeNode): TreeNode[] => {
+    if (node.type === 'device' && node.device_id) return [node];
+    return (node.children || []).flatMap(getDescendantDeviceNodes);
+  };
+
   // Compute check state: 'checked', 'unchecked', or 'indeterminate'
   const getCheckState = (node: TreeNode): 'checked' | 'unchecked' | 'indeterminate' => {
     const deviceIds = getDescendantDeviceIds(node);
@@ -43,14 +49,22 @@ export function DeviceTree({ nodes, selectedDeviceIds, onSelectionChange, showSt
   };
 
   const toggleNode = (node: TreeNode) => {
-    const deviceIds = getDescendantDeviceIds(node);
+    const descendantNodes = getDescendantDeviceNodes(node);
     const newSelected = new Set(selectedDeviceIds);
     const currentState = getCheckState(node);
 
     if (currentState === 'checked') {
-      deviceIds.forEach(id => newSelected.delete(id));
+      descendantNodes.forEach(d => { if (d.device_id) newSelected.delete(d.device_id); });
     } else {
-      deviceIds.forEach(id => newSelected.add(id));
+      // Individual device: allow explicit selection
+      if (node.type === 'device' && node.device_id) {
+        newSelected.add(node.device_id);
+      } else {
+        // Group (building/lab) level selection: ONLY select ONLINE devices!
+        // Prevents silent inclusion of offline/unready workstations.
+        const onlineDescendants = descendantNodes.filter(d => d.status === 'online');
+        onlineDescendants.forEach(d => { if (d.device_id) newSelected.add(d.device_id); });
+      }
     }
     onSelectionChange(newSelected);
   };

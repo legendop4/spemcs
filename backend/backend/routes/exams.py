@@ -10,11 +10,19 @@ from sqlalchemy.orm import Session
 
 from backend.app.database import get_db
 from backend.app.dependencies import require_staff
-from backend.models.exam import Exam, ExamDevice
+from backend.models.exam import Exam, ExamDevice, ExamStatus, ExamDeviceStatus
+from backend.models.device import Device
+from backend.models.policy import DevicePolicyState
 from backend.models.alert import Alert
 from backend.models.session import ExamSession
-from backend.schemas.exam import ExamCreate, ExamRead, ExamUpdate
-from backend.services import device_policy_state_service as dps, enforcement_readiness, exam_service, realtime_service
+from backend.schemas.exam import ExamCreate, ExamRead, ExamUpdate, ExamAssignDevices
+from backend.services import (
+    device_policy_state_service as dps,
+    enforcement_readiness,
+    exam_service,
+    policy_service,
+    realtime_service,
+)
 from backend.services.auth_service import require_role
 
 logger = logging.getLogger(__name__)
@@ -407,6 +415,127 @@ def get_exam_devices(exam_id: UUID, db: Session = Depends(get_db)):
     if exam is None:
         raise HTTPException(status_code=404, detail="Exam not found")
     return exam_service.get_devices_for_exam(db, exam_id)
+
+
+@router.put("/{exam_id}/devices")
+def update_exam_devices(
+    exam_id: UUID,
+    payload: ExamAssignDevices,
+    db: Session = Depends(get_db),
+    _user=Depends(require_role(["admin", "proctor"])),
+):
+    """Update assigned devices for a pending exam.
+    
+    Strictly restricted to PENDING exams. Validates all target device IDs,
+    transactionally reconciles exam_devices rows, safely removes policy states
+    for unassigned devices, and never deletes the Device records themselves.
+    """
+    exam = db.get(Exam, exam_id)
+    if exam is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Exam not found")
+    if exam.status != ExamStatus.PENDING.value:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Cannot modify assigned devices: exam is '{exam.status}', but must be 'pending'",
+        )
+
+    target_ids = set(payload.device_ids)
+    if target_ids:
+        existing_devices = db.query(Device).filter(Device.device_id.in_(target_ids)).all()
+        found_ids = {d.device_id for d in existing_devices}
+        missing_ids = target_ids - found_ids
+        if missing_ids:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid device IDs: {[str(i) for i in missing_ids]} do not exist",
+            )
+
+    current_rows = db.query(ExamDevice).filter(ExamDevice.exam_id == exam_id).all()
+    current_ids = {row.device_id for row in current_rows if row.device_id}
+
+    to_remove = current_ids - target_ids
+    to_add = target_ids - current_ids
+
+    if to_remove:
+        db.query(ExamDevice).filter(
+            ExamDevice.exam_id == exam_id,
+            ExamDevice.device_id.in_(to_remove),
+        ).delete(synchronize_session=False)
+        db.query(DevicePolicyState).filter(
+            DevicePolicyState.exam_id == exam_id,
+            DevicePolicyState.device_id.in_(to_remove),
+        ).delete(synchronize_session=False)
+
+    policy = policy_service.get_latest_exam_policy(db, exam_id)
+    for dev_id in to_add:
+        db.add(ExamDevice(
+            exam_id=exam_id,
+            device_id=dev_id,
+            status=ExamDeviceStatus.PENDING.value,
+        ))
+        if policy:
+            dps.record_state(
+                db,
+                exam_id=exam_id,
+                device_id=dev_id,
+                policy_id=policy.policy_id,
+                status=dps.STATUS_PENDING,
+                last_error="Pending policy distribution",
+            )
+
+    db.commit()
+    logger.info(
+        "Exam %s devices updated: %d assigned (+%d, -%d)",
+        exam_id, len(target_ids), len(to_add), len(to_remove),
+    )
+    return exam_service.get_devices_for_exam(db, exam_id)
+
+
+@router.delete("/{exam_id}/devices/{device_id}", status_code=status.HTTP_200_OK)
+def remove_exam_device(
+    exam_id: UUID,
+    device_id: UUID,
+    db: Session = Depends(get_db),
+    _user=Depends(require_role(["admin", "proctor"])),
+):
+    """Unassign a device from a pending exam.
+    
+    Removes the exam_devices assignment and cleans any associated device_policy_states
+    record safely without deleting the Device itself.
+    """
+    exam = db.get(Exam, exam_id)
+    if exam is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Exam not found")
+    if exam.status != ExamStatus.PENDING.value:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Cannot remove device: exam is '{exam.status}', but must be 'pending'",
+        )
+
+    assignment = db.query(ExamDevice).filter(
+        ExamDevice.exam_id == exam_id,
+        ExamDevice.device_id == device_id,
+    ).first()
+    if not assignment:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Device '{device_id}' is not assigned to exam '{exam_id}'",
+        )
+
+    db.delete(assignment)
+    db.query(DevicePolicyState).filter(
+        DevicePolicyState.exam_id == exam_id,
+        DevicePolicyState.device_id == device_id,
+    ).delete(synchronize_session=False)
+    db.commit()
+
+    logger.info("Unassigned device %s from exam %s", device_id, exam_id)
+    return {
+        "status": "unassigned",
+        "exam_id": str(exam_id),
+        "device_id": str(device_id),
+    }
+
 
 
 @router.get("/{exam_id}/sessions")

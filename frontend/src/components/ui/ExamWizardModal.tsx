@@ -108,12 +108,15 @@ export function ExamWizardModal({ open, onClose, onExamActivated }: ExamWizardMo
         .then((devices: any[]) => {
           if (devices && devices.length > 0) {
             setAvailableDevices(devices);
-            setSelectedDeviceIds(new Set(devices.map(d => d.device_id)));
+            // Default selection: strictly only online devices (preserve operator safety)
+            const onlineDevs = devices.filter((d: any) => d.status === 'online' || d.device_status === 'online');
+            setSelectedDeviceIds(new Set(onlineDevs.map((d: any) => d.device_id)));
           } else {
             // Fallback to all devices
             api.getDevices().then(all => {
               setAvailableDevices(all || []);
-              setSelectedDeviceIds(new Set((all || []).map((d: any) => d.device_id)));
+              const onlineDevs = (all || []).filter((d: any) => d.status === 'online' || d.device_status === 'online');
+              setSelectedDeviceIds(new Set(onlineDevs.map((d: any) => d.device_id)));
             });
           }
         })
@@ -131,6 +134,11 @@ export function ExamWizardModal({ open, onClose, onExamActivated }: ExamWizardMo
       else next.add(id);
       return next;
     });
+  };
+
+  const handleSelectOnlineOnly = () => {
+    const onlineDevs = availableDevices.filter((d: any) => d.status === 'online' || d.device_status === 'online');
+    setSelectedDeviceIds(new Set(onlineDevs.map((d: any) => d.device_id)));
   };
 
   const handleSelectAllDevices = () => {
@@ -419,9 +427,14 @@ export function ExamWizardModal({ open, onClose, onExamActivated }: ExamWizardMo
                   {selectedDeviceIds.size} of {availableDevices.length} workstation(s) selected
                 </p>
               </div>
-              <Button variant="outline" size="sm" onClick={handleSelectAllDevices}>
-                {selectedDeviceIds.size === availableDevices.length ? 'Deselect All' : 'Select All'}
-              </Button>
+              <div className="ds-flex-row ds-items-center" style={{ gap: '8px' }}>
+                <Button variant="outline" size="sm" onClick={handleSelectOnlineOnly}>
+                  Select Online Only
+                </Button>
+                <Button variant="outline" size="sm" onClick={handleSelectAllDevices}>
+                  {selectedDeviceIds.size === availableDevices.length ? 'Deselect All' : 'Select All'}
+                </Button>
+              </div>
             </div>
 
             {loadingDevices ? (
@@ -443,7 +456,8 @@ export function ExamWizardModal({ open, onClose, onExamActivated }: ExamWizardMo
                         padding: '10px 14px',
                         borderRadius: '6px',
                         border: isSelected ? '1px solid var(--color-warning)' : '1px solid rgba(0,0,0,0.06)',
-                        backgroundColor: isSelected ? 'rgba(216, 148, 0, 0.05)' : '#ffffff',
+                        backgroundColor: isSelected ? 'rgba(216, 148, 0, 0.05)' : (!isOnline ? '#fbfbfb' : '#ffffff'),
+                        opacity: !isOnline && !isSelected ? 0.75 : 1,
                         display: 'flex',
                         alignItems: 'center',
                         justifyContent: 'space-between',
@@ -466,9 +480,16 @@ export function ExamWizardModal({ open, onClose, onExamActivated }: ExamWizardMo
                         </div>
                       </div>
 
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '11px', color: isOnline ? 'var(--color-success)' : 'var(--color-text-muted)' }}>
-                        {isOnline ? <Wifi size={12} /> : <WifiOff size={12} />}
-                        {isOnline ? 'Online' : 'Offline'}
+                      <div className="ds-flex-row ds-items-center" style={{ gap: '8px' }}>
+                        {isSelected && !isOnline && (
+                          <span style={{ fontSize: '10px', fontWeight: 600, color: 'var(--color-danger)', backgroundColor: 'var(--color-danger-bg, #fde8e8)', padding: '2px 6px', borderRadius: '4px' }}>
+                            Offline (Blocks Launch)
+                          </span>
+                        )}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '11px', color: isOnline ? 'var(--color-success)' : 'var(--color-text-muted)' }}>
+                          {isOnline ? <Wifi size={12} /> : <WifiOff size={12} />}
+                          {isOnline ? 'Online' : 'Offline'}
+                        </div>
                       </div>
                     </div>
                   );

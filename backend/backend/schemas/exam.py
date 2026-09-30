@@ -107,3 +107,10 @@ class ExamDeviceRead(ExamDeviceBase):
     id: UUID
     device_name: Optional[str] = None
     device_status: Optional[str] = None
+
+
+class ExamAssignDevices(BaseModel):
+    device_ids: List[UUID]
+
+    model_config = ConfigDict(from_attributes=True)
+
