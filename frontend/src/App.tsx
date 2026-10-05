@@ -10,10 +10,26 @@ import { AlertsPage } from '@/pages/AlertsPage';
 import { AuditLogsPage } from '@/pages/AuditLogsPage';
 import { SettingsPage } from '@/pages/SettingsPage';
 
+import { LabsPage } from '@/pages/LabsPage';
+import { PoliciesPage } from '@/pages/PoliciesPage';
+
 // New pages
 const LiveMonitorPage = lazy(() => import('@/pages/LiveMonitorPage'));
 const DeviceStatusPage = lazy(() => import('@/pages/DeviceStatusPage'));
 const ReportsPage = lazy(() => import('@/pages/ReportsPage'));
+
+// Enterprise Experience
+import { EnterpriseShell } from '@/components/enterprise/EnterpriseShell';
+import { EnterpriseOverview } from '@/pages/enterprise/EnterpriseOverview';
+import { EnterpriseEndpoints } from '@/pages/enterprise/EnterpriseEndpoints';
+import { EnterpriseEvents } from '@/pages/enterprise/EnterpriseEvents';
+import { EnterpriseAlerts } from '@/pages/enterprise/EnterpriseAlerts';
+import { EnterprisePolicies } from '@/pages/enterprise/EnterprisePolicies';
+import { EnterpriseSessions } from '@/pages/enterprise/EnterpriseSessions';
+import { EnterpriseAudit } from '@/pages/enterprise/EnterpriseAudit';
+import { EnterpriseAuthority } from '@/pages/enterprise/EnterpriseAuthority';
+import { EnterpriseSettings } from '@/pages/enterprise/EnterpriseSettings';
+import { SpemcsLandingPage } from '@/pages/public/SpemcsLandingPage';
 
 function ProtectedRoute({ children }: { children: ReactNode }) {
   const { isAuthenticated, authLoading } = useApp();
@@ -29,7 +45,7 @@ function PublicRoute({ children }: { children: ReactNode }) {
   const { isAuthenticated, authLoading } = useApp();
   if (authLoading) return <LoadingFallback />;
   if (isAuthenticated) {
-    return <Navigate to="/dashboard" replace />;
+    return <Navigate to="/console/overview" replace />;
   }
   return <>{children}</>;
 }
@@ -55,11 +71,22 @@ function AppRoutes() {
     <>
       <ScrollToTop />
       <Routes>
+        {/* SPEMCS Public Product Website */}
+        <Route path="/" element={<SpemcsLandingPage />} />
+
+        {/* Authentication */}
         <Route path="/login" element={<PublicRoute><LoginPage /></PublicRoute>} />
+
+        {/* College UI (Untouched) */}
         <Route element={<ProtectedRoute><AppShell /></ProtectedRoute>}>
           <Route path="/dashboard" element={<DashboardPage />} />
+          <Route path="/labs" element={<LabsPage />} />
+          <Route path="/policies" element={<PoliciesPage />} />
           <Route path="/exam-shield" element={<ExamShieldPage />} />
           <Route path="/exam-shield/monitor/:id" element={
+            <Suspense fallback={<LoadingFallback />}><LiveMonitorPage /></Suspense>
+          } />
+          <Route path="/exams/:id" element={
             <Suspense fallback={<LoadingFallback />}><LiveMonitorPage /></Suspense>
           } />
           <Route path="/devices" element={
@@ -72,8 +99,27 @@ function AppRoutes() {
           <Route path="/audit-logs" element={<AuditLogsPage />} />
           <Route path="/settings" element={<SettingsPage />} />
         </Route>
-        <Route path="/" element={<Navigate to="/dashboard" replace />} />
-        <Route path="*" element={<Navigate to="/dashboard" replace />} />
+
+        {/* SPEMCS Enterprise Security Console */}
+        <Route element={<ProtectedRoute><EnterpriseShell /></ProtectedRoute>}>
+          <Route path="/console" element={<Navigate to="/console/overview" replace />} />
+          <Route path="/console/overview" element={<EnterpriseOverview />} />
+          <Route path="/console/endpoints" element={<EnterpriseEndpoints />} />
+          <Route path="/console/events" element={<EnterpriseEvents />} />
+          <Route path="/console/alerts" element={<EnterpriseAlerts />} />
+          <Route path="/console/policies" element={<EnterprisePolicies />} />
+          <Route path="/console/sessions" element={<EnterpriseSessions />} />
+          <Route path="/console/audit" element={<EnterpriseAudit />} />
+          <Route path="/console/authority" element={<EnterpriseAuthority />} />
+          <Route path="/console/settings" element={<EnterpriseSettings />} />
+          {/* Backwards compatibility aliases */}
+          <Route path="/enterprise" element={<Navigate to="/console/overview" replace />} />
+          <Route path="/enterprise/overview" element={<Navigate to="/console/overview" replace />} />
+          <Route path="/enterprise/endpoints" element={<Navigate to="/console/endpoints" replace />} />
+          <Route path="/enterprise/events" element={<Navigate to="/console/events" replace />} />
+        </Route>
+
+        <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
       <ToastContainer />
     </>

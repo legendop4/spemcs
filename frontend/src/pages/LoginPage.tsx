@@ -1,11 +1,13 @@
 import { useState, type FormEvent, type ChangeEvent } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation, Link } from 'react-router-dom';
 import { useApp } from '@/context/AppContext';
-import { Button } from '@/components/ui/Button';
+import { Shield, ArrowRight, Lock, Key, AlertCircle, ArrowLeft } from 'lucide-react';
+import '@/landing.css';
 
 export function LoginPage() {
   const { login } = useApp();
   const navigate = useNavigate();
+  const location = useLocation();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
@@ -16,7 +18,7 @@ export function LoginPage() {
     setError('');
 
     if (!username.trim() || !password.trim()) {
-      setError('Please enter both username and password.');
+      setError('Operator username and password are required.');
       return;
     }
 
@@ -24,90 +26,203 @@ export function LoginPage() {
     try {
       const success = await login(username.trim(), password);
       if (success) {
-        navigate('/dashboard');
+        // Redirect to intended destination or default to security console
+        const from = location.state?.from?.pathname || '/console/overview';
+        navigate(from, { replace: true });
       } else {
-        setError('Invalid credentials. Please try again.');
+        setError('Authentication rejected. Invalid credentials or expired session.');
       }
     } catch (err: any) {
-      setError(err.message || 'Login failed. Please try again.');
+      setError(err.message || 'Authentication error. Unable to establish secure session.');
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div className="login-page">
-      <div className="bg-blob bg-blob-1" />
-      <div className="bg-blob bg-blob-2" />
-      <div className="bg-blob bg-blob-3" />
-      <div className="login-grid-bg" />
-      <div className="login-tri login-tri-1" />
-      <div className="login-tri login-tri-2" />
-      <div className="login-tri login-tri-3" />
+    <div className="sp-auth-canvas">
+      {/* Background Architectural Canvas */}
+      <div className="sp-grid-canvas" />
+      <div className="sp-ambient-top" />
 
-      <div className="login-container">
-        <div className="login-left">
-          <div className="login-brand">
-            <img src="/logo.jpg" alt="CampusShield Logo" width="40" height="40" style={{ borderRadius: '8px', objectFit: 'cover' }} />
-            <span>CAMPUS<span style={{ fontWeight: 700 }}>SHIELD</span></span>
-          </div>
+      {/* Top Header Strip */}
+      <header style={{ padding: '1.5rem', position: 'relative', zIndex: 10 }}>
+        <div className="sp-container sp-flex-between">
+          <Link to="/" className="sp-flex-items-center sp-gap-3" style={{ textDecoration: 'none' }}>
+            <div
+              style={{
+                width: '32px',
+                height: '32px',
+                borderRadius: '4px',
+                backgroundColor: '#0D121B',
+                border: '1px solid #1E293B',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+            >
+              <Shield style={{ width: '16px', height: '16px', color: '#00E5FF' }} />
+            </div>
+            <div className="sp-flex-items-center sp-gap-2">
+              <span className="sp-mono" style={{ fontWeight: 800, fontSize: '1.15rem', color: '#FFFFFF', letterSpacing: '-0.02em' }}>
+                SPEMCS
+              </span>
+              <span className="sp-badge sp-badge-cyan" style={{ fontSize: '0.62rem' }}>
+                CONTROL PLANE
+              </span>
+            </div>
+          </Link>
 
-          <div className="login-hero">
-            <h1 className="login-hero-title">SECURE</h1>
-            <h1 className="login-hero-title">YOUR CAMPUS.</h1>
-            <p className="login-hero-subtitle">
-              Protect infrastructure.<br />
-              Protect examinations.<br />
-              Protect integrity.
+          <Link
+            to="/"
+            className="sp-mono sp-flex-items-center sp-gap-2"
+            style={{ fontSize: '0.75rem', color: '#94A3B8', textDecoration: 'none' }}
+          >
+            <ArrowLeft style={{ width: '14px', height: '14px' }} /> Return to Overview
+          </Link>
+        </div>
+      </header>
+
+      {/* Center Auth Card */}
+      <main className="sp-container" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <div className="sp-auth-box">
+          
+          {/* Card Header */}
+          <div style={{ marginBottom: '2rem', textAlign: 'center' }}>
+            <div
+              style={{
+                width: '42px',
+                height: '42px',
+                borderRadius: '6px',
+                background: 'rgba(0, 229, 255, 0.08)',
+                border: '1px solid rgba(0, 229, 255, 0.25)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                margin: '0 auto 1rem auto',
+              }}
+            >
+              <Lock style={{ width: '20px', height: '20px', color: '#00E5FF' }} />
+            </div>
+            <h1 style={{ fontSize: '1.5rem', fontWeight: 800, color: '#FFFFFF', letterSpacing: '-0.025em', margin: 0 }}>
+              Operator Authentication
+            </h1>
+            <p style={{ fontSize: '0.85rem', color: '#94A3B8', marginTop: '0.35rem' }}>
+              Sign in to access the SPEMCS Security Console.
             </p>
           </div>
 
-          <div className="login-footer">
-            <span>College Infrastructure & Exam Security Management Portal</span>
-          </div>
-        </div>
+          {/* Form */}
+          <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+            
+            <div>
+              <label
+                htmlFor="username"
+                className="sp-mono"
+                style={{ display: 'block', fontSize: '0.72rem', color: '#CBD5E1', marginBottom: '0.4rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}
+              >
+                Operator Identity / Username
+              </label>
+              <input
+                id="username"
+                type="text"
+                className="sp-auth-input sp-auth-input-mono"
+                placeholder="admin"
+                value={username}
+                onChange={(e: ChangeEvent<HTMLInputElement>) => setUsername(e.target.value)}
+                autoComplete="username"
+                required
+              />
+            </div>
 
-        <div className="login-right">
-          <div className="login-card glass">
-            <h2 className="login-card-title">Sign In</h2>
-            <p className="login-card-subtitle">Enter your credentials to access the portal.</p>
-
-            <form onSubmit={handleSubmit} className="login-form">
-              <div className="form-field">
-                <label className="form-label" htmlFor="username">Username</label>
-                <input
-                  id="username"
-                  type="text"
-                  className="form-input"
-                  placeholder="admin"
-                  value={username}
-                  onChange={(e: ChangeEvent<HTMLInputElement>) => setUsername(e.target.value)}
-                  autoComplete="username"
-                />
+            <div>
+              <div className="sp-flex-between" style={{ marginBottom: '0.4rem' }}>
+                <label
+                  htmlFor="password"
+                  className="sp-mono"
+                  style={{ fontSize: '0.72rem', color: '#CBD5E1', textTransform: 'uppercase', letterSpacing: '0.05em' }}
+                >
+                  Credential / Password
+                </label>
               </div>
+              <input
+                id="password"
+                type="password"
+                className="sp-auth-input"
+                placeholder="••••••••••••"
+                value={password}
+                onChange={(e: ChangeEvent<HTMLInputElement>) => setPassword(e.target.value)}
+                autoComplete="current-password"
+                required
+              />
+            </div>
 
-              <div className="form-field">
-                <label className="form-label" htmlFor="password">Password</label>
-                <input
-                  id="password"
-                  type="password"
-                  className="form-input"
-                  placeholder="Enter your password"
-                  value={password}
-                  onChange={(e: ChangeEvent<HTMLInputElement>) => setPassword(e.target.value)}
-                  autoComplete="current-password"
-                />
+            {error && (
+              <div
+                className="sp-flex-items-center sp-gap-2 sp-mono"
+                style={{
+                  padding: '0.75rem',
+                  borderRadius: '4px',
+                  background: 'rgba(239, 68, 68, 0.1)',
+                  border: '1px solid rgba(239, 68, 68, 0.3)',
+                  color: '#EF4444',
+                  fontSize: '0.75rem',
+                }}
+              >
+                <AlertCircle style={{ width: '16px', height: '16px', flexShrink: 0 }} />
+                <span>{error}</span>
               </div>
+            )}
 
-              {error && <div className="login-error">{error}</div>}
+            <button
+              type="submit"
+              className="sp-btn-primary"
+              disabled={loading}
+              style={{ width: '100%', padding: '0.75rem', fontSize: '0.875rem', marginTop: '0.5rem' }}
+            >
+              {loading ? (
+                <span className="sp-flex-items-center sp-gap-2">
+                  <span className="sp-pulse-dot" style={{ width: '6px', height: '6px', background: '#06090E' }} />
+                  Verifying Session...
+                </span>
+              ) : (
+                <span className="sp-flex-items-center sp-gap-2">
+                  Sign In to Console <ArrowRight style={{ width: '15px', height: '15px' }} />
+                </span>
+              )}
+            </button>
+          </form>
 
-              <Button type="submit" size="lg" className="login-submit" disabled={loading}>
-                {loading ? 'Signing in...' : 'Sign In'}
-              </Button>
-            </form>
+          {/* Restrained Security / Trust Metadata */}
+          <div
+            className="sp-mono"
+            style={{
+              marginTop: '2rem',
+              paddingTop: '1.25rem',
+              borderTop: '1px solid #1E293B',
+              fontSize: '0.68rem',
+              color: '#64748B',
+              textAlign: 'center',
+              lineHeight: 1.6,
+            }}
+          >
+            <div>TLS 1.3 STRICT ENFORCED // MUTUAL TOKEN AUTH</div>
+            <div style={{ color: '#475569', marginTop: '4px' }}>
+              All access attempts generate immutable audit trail entries in PostgreSQL.
+            </div>
           </div>
+
         </div>
-      </div>
+      </main>
+
+      {/* Footer Strip */}
+      <footer style={{ padding: '1.5rem', textAlign: 'center', position: 'relative', zIndex: 10 }}>
+        <div className="sp-mono" style={{ fontSize: '0.7rem', color: '#475569' }}>
+          SPEMCS Enterprise Endpoint Security & Policy Enforcement • Reference AWS Production Topology
+        </div>
+      </footer>
     </div>
   );
 }
+
+export default LoginPage;

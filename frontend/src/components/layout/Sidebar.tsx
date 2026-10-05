@@ -11,6 +11,8 @@ import {
   Monitor,
   FileText,
   Wifi,
+  Building2,
+  FileCode,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 
@@ -44,10 +46,17 @@ export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: Side
       items: [{ label: 'Dashboard', path: '/dashboard', icon: LayoutDashboard }],
     },
     {
+      title: 'Infrastructure',
+      items: [
+        { label: 'Labs', path: '/labs', icon: Building2 },
+        { label: 'Workstations', path: '/devices', icon: Monitor },
+      ],
+    },
+    {
       title: 'Proctoring',
       items: [
         { label: 'Exam Shield', path: '/exam-shield', icon: ShieldCheck },
-        { label: 'Devices', path: '/devices', icon: Monitor },
+        { label: 'Policies & Vendors', path: '/policies', icon: FileCode },
         { label: 'Alerts', path: '/alerts', icon: AlertTriangle, badge: openAlertCount },
       ],
     },

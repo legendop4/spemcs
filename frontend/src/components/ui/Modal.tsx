@@ -8,10 +8,11 @@ interface ModalProps {
   title: string;
   children: ReactNode;
   footer?: ReactNode;
+  actions?: ReactNode;
   size?: 'sm' | 'md' | 'lg';
 }
 
-export function Modal({ open, onClose, title, children, footer, size = 'md' }: ModalProps) {
+export function Modal({ open, onClose, title, children, footer, actions, size = 'md' }: ModalProps) {
   useEffect(() => {
     if (!open) return;
     const handler = (e: KeyboardEvent) => {
@@ -43,7 +44,7 @@ export function Modal({ open, onClose, title, children, footer, size = 'md' }: M
           </button>
         </div>
         <div className="modal-body">{children}</div>
-        {footer && <div className="modal-footer">{footer}</div>}
+        {(footer || actions) && <div className="modal-footer">{footer || actions}</div>}
       </div>
     </div>
   );

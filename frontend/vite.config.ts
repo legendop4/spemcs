@@ -29,9 +29,13 @@ export default defineConfig(({ mode }) => {
       host: '0.0.0.0',
       proxy: {
         '/api': {
-          target: `http://${backendHost}:${backendPort}`,
+          target: backendPort === '443' ? `https://${backendHost}` : `http://${backendHost}:${backendPort}`,
           changeOrigin: true,
+          secure: false,
           ws: true,
+          headers: {
+            host: 'spemcs.shivamsharma.tech',
+          },
           configure: (proxy, _options) => {
             proxy.on('error', (err) => {
               const code = (err as any)?.code || '';

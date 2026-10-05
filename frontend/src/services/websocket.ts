@@ -9,8 +9,24 @@
  * - State preservation across reconnects
  */
 
-const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-const WS_URL = `${wsProtocol}//${window.location.host}/api/v1/ws/dashboard`;
+function getWebSocketUrl(): string {
+  if (import.meta.env.VITE_WS_URL) {
+    return import.meta.env.VITE_WS_URL;
+  }
+  const isLocal =
+    typeof window !== 'undefined' &&
+    (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
+
+  if (isLocal) {
+    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    return `${wsProtocol}//${window.location.host}/api/v1/ws/dashboard`;
+  }
+
+  return 'wss://spemcs.shivamsharma.tech/api/v1/ws/dashboard';
+}
+
+const WS_URL = getWebSocketUrl();
+
 
 /**
  * Key the auth context stores the operator JWT under (see context/AppContext.tsx).
